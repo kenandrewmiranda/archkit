@@ -758,14 +758,119 @@ follows your patterns, avoids known gotchas, and calls APIs correctly.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// WIZARD FLOW
+// WIZARD — Step definitions, navigation, save/load
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function main() {
-  banner();
+const PROGRESS_FILE = ".archkit-progress.json";
 
-  // ── Step 1: Project Name ──────────────────────────────────────────────
-  heading(ICONS.rocket, "Step 1 — Project Identity");
+const STEPS = [
+  { id: "appName",  label: "Project Identity",  stateKeys: ["appName"],               dependsOn: [],                       run: stepAppName },
+  { id: "appType",  label: "Application Type",   stateKeys: ["appType"],               dependsOn: [],                       run: stepAppType },
+  { id: "stack",    label: "Technology Stack",    stateKeys: ["stack"],                 dependsOn: ["appType"],              run: stepStack },
+  { id: "features", label: "Define Features",    stateKeys: ["features"],              dependsOn: ["appType"],              run: stepFeatures },
+  { id: "skills",   label: "Package Skills",     stateKeys: ["skills"],                dependsOn: ["appType", "stack"],     run: stepSkills },
+  { id: "output",   label: "Output & Options",   stateKeys: ["outDir", "claudeMode"],  dependsOn: [],                       run: stepOutput },
+  { id: "preview",  label: "Preview & Generate",  stateKeys: [],                        dependsOn: ["appName","appType","stack","features","skills","output"], run: stepPreview },
+];
+
+function createInitialState() {
+  return { appName: null, appType: null, stack: null, features: null, skills: null, outDir: null, claudeMode: null, _completedSteps: [] };
+}
+
+// ── Save / Load ─────────────────────────────────────────────────────────
+
+function saveProgress(state) {
+  const data = {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    state: { ...state, _completedSteps: undefined },
+    completedSteps: state._completedSteps,
+  };
+  fs.writeFileSync(PROGRESS_FILE, JSON.stringify(data, null, 2));
+  console.log("");
+  success(`Progress saved to ${PROGRESS_FILE}`);
+  info("Run archkit again to resume where you left off.");
+  console.log("");
+}
+
+function loadProgress() {
+  if (!fs.existsSync(PROGRESS_FILE)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(PROGRESS_FILE, "utf8"));
+    if (data.version !== 1) return null;
+    return data;
+  } catch { return null; }
+}
+
+function deleteProgressFile() {
+  try { fs.unlinkSync(PROGRESS_FILE); } catch {}
+}
+
+// ── Navigation ──────────────────────────────────────────────────────────
+
+function invalidateFrom(stepId, state) {
+  const toInvalidate = new Set();
+  const queue = [stepId];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    for (const step of STEPS) {
+      if (step.dependsOn.includes(current) && !toInvalidate.has(step.id)) {
+        toInvalidate.add(step.id);
+        queue.push(step.id);
+      }
+    }
+  }
+  for (const id of toInvalidate) {
+    const step = STEPS.find(s => s.id === id);
+    if (step) step.stateKeys.forEach(k => { state[k] = null; });
+    state._completedSteps = state._completedSteps.filter(s => s !== id);
+  }
+}
+
+async function promptNavigation(currentIndex) {
+  const isFirst = currentIndex === 0;
+  const choices = [
+    { name: `${C.green}${ICONS.arrow}${C.reset} Continue to next step`, value: "continue", short: "Continue" },
+  ];
+  if (!isFirst) {
+    choices.push({ name: `${C.blue}${ICONS.corner}${C.reset} Go back to a previous step`, value: "back", short: "Back" });
+  }
+  choices.push(
+    { name: `${C.yellow}${ICONS.file}${C.reset} Save progress & exit`, value: "save", short: "Save" },
+    { name: `${C.red}${ICONS.cross}${C.reset} Exit without saving`, value: "exit", short: "Exit" },
+  );
+
+  console.log("");
+  const { action } = await inquirer.prompt([{
+    type: "list",
+    name: "action",
+    message: "What next?",
+    prefix: `  ${ICONS.arch}`,
+    choices,
+  }]);
+  return action;
+}
+
+async function promptGoBack(completedSteps) {
+  const choices = completedSteps.map(id => {
+    const step = STEPS.find(s => s.id === id);
+    return { name: step.label, value: id, short: step.label };
+  });
+
+  const { targetId } = await inquirer.prompt([{
+    type: "list",
+    name: "targetId",
+    message: "Go back to which step?",
+    prefix: `  ${ICONS.arch}`,
+    choices,
+  }]);
+  return targetId;
+}
+
+// ── Step functions ──────────────────────────────────────────────────────
+
+async function stepAppName(state) {
+  heading(ICONS.rocket, `Step 1/${STEPS.length} — Project Identity`);
   info("What are we building? This name appears in generated files.");
   console.log("");
 
@@ -773,15 +878,17 @@ async function main() {
     type: "input",
     name: "appName",
     message: "Project name:",
-    default: "my-app",
+    default: state.appName || "my-app",
     prefix: `  ${ICONS.arch}`,
   }]);
 
   success(`Project: ${appName}`);
+  return { appName };
+}
 
-  // ── Step 2: App Type ──────────────────────────────────────────────────
+async function stepAppType(state) {
   divider();
-  heading(ICONS.mag, "Step 2 — Application Type");
+  heading(ICONS.mag, `Step 2/${STEPS.length} — Application Type`);
   info("This determines your architecture pattern, folder structure,");
   info("default stack, reserved words, and graph node templates.");
   console.log("");
@@ -796,6 +903,7 @@ async function main() {
       value: k,
       short: v.name,
     })),
+    default: state.appType || undefined,
     pageSize: 10,
   }]);
 
@@ -824,9 +932,14 @@ async function main() {
     console.log(`  ${C.gray}${i + 1}.${C.reset} ${r}`);
   });
 
-  // ── Step 3: Stack ─────────────────────────────────────────────────────
+  return { appType };
+}
+
+async function stepStack(state) {
+  const at = APP_TYPES[state.appType];
+
   divider();
-  heading(ICONS.package, "Step 3 — Technology Stack");
+  heading(ICONS.package, `Step 3/${STEPS.length} — Technology Stack`);
   info("Default stack for this app type. Customize any layer or press Enter to keep defaults.");
   console.log("");
 
@@ -844,8 +957,9 @@ async function main() {
     prefix: `  ${ICONS.arch}`,
   }]);
 
-  let stack = { ...at.defaultStack };
+  let stack = state.stack || { ...at.defaultStack };
   if (wantCustomStack) {
+    stack = {};
     console.log("");
     tip("Press Enter to keep the default for each layer.");
     console.log("");
@@ -863,10 +977,14 @@ async function main() {
 
   console.log("");
   success("Stack configured.");
+  return { stack };
+}
 
-  // ── Step 4: Features ──────────────────────────────────────────────────
+async function stepFeatures(state) {
+  const at = APP_TYPES[state.appType];
+
   divider();
-  heading("🏗", "Step 4 — Define Your Features");
+  heading("\uD83C\uDFD7", `Step 4/${STEPS.length} — Define Your Features`);
   info("Features become clusters in your architecture graph.");
   info("Each gets its own .graph file with controller, service, repo nodes.");
   console.log("");
@@ -889,7 +1007,16 @@ async function main() {
 
   let features = useSuggested ? [...at.suggestedFeatures] : [];
 
-  if (useSuggested && features.length > 0) {
+  // Restore previously added custom features if resuming
+  if (state.features && state.features.length > 0) {
+    const suggestedIds = new Set(at.suggestedFeatures.map(f => f.id));
+    const customFeatures = state.features.filter(f => !suggestedIds.has(f.id));
+    if (customFeatures.length > 0) {
+      features.push(...customFeatures);
+    }
+  }
+
+  if (features.length > 0) {
     console.log("");
     features.forEach(f => success(`${f.id} — ${f.name}`));
   }
@@ -942,14 +1069,19 @@ async function main() {
     console.log("");
   }
 
-  // ── Step 5: Skills ────────────────────────────────────────────────────
+  return { features };
+}
+
+async function stepSkills(state) {
+  const appType = state.appType;
+  const stack = state.stack;
+
   divider();
-  heading(ICONS.shield, "Step 5 — Package Skills");
+  heading(ICONS.shield, `Step 5/${STEPS.length} — Package Skills`);
   info("Skills teach the AI your team's gotchas and patterns for each package.");
   info("We'll auto-detect relevant packages from your stack and suggest them.");
   console.log("");
 
-  // Auto-detect skills based on stack
   const stackStr = JSON.stringify(stack).toLowerCase() + " " + appType;
   const autoDetected = SKILL_CATALOG.filter(s => {
     const n = s.name.toLowerCase();
@@ -978,20 +1110,29 @@ async function main() {
   });
 
   const notDetected = SKILL_CATALOG.filter(s => !autoDetected.find(a => a.id === s.id));
-
-  // Group by category
   const categories = [...new Set(SKILL_CATALOG.map(s => s.cat))];
 
+  const previousSkills = state.skills || [];
   const choices = [];
   if (autoDetected.length > 0) {
     choices.push(new inquirer.Separator(`${C.green} ── Auto-detected from your stack ──${C.reset}`));
-    autoDetected.forEach(s => choices.push({ name: `${s.name} ${C.dim}(${s.cat})${C.reset}`, value: s.id, checked: true, short: s.name }));
+    autoDetected.forEach(s => choices.push({
+      name: `${s.name} ${C.dim}(${s.cat})${C.reset}`,
+      value: s.id,
+      checked: previousSkills.includes(s.id) || (previousSkills.length === 0),
+      short: s.name,
+    }));
   }
   for (const cat of categories) {
     const catSkills = notDetected.filter(s => s.cat === cat);
     if (catSkills.length > 0) {
       choices.push(new inquirer.Separator(`${C.gray} ── ${cat} ──${C.reset}`));
-      catSkills.forEach(s => choices.push({ name: `${s.name}`, value: s.id, short: s.name }));
+      catSkills.forEach(s => choices.push({
+        name: `${s.name}`,
+        value: s.id,
+        checked: previousSkills.includes(s.id),
+        short: s.name,
+      }));
     }
   }
 
@@ -1011,19 +1152,21 @@ async function main() {
     info(`  ${ICONS.dot} ${sk.name} → .arch/skills/${s}.skill`);
   });
 
-  // ── Step 6: Output ────────────────────────────────────────────────────
+  return { skills };
+}
+
+async function stepOutput(state) {
   divider();
-  heading(ICONS.folder, "Step 6 — Output Directory");
+  heading(ICONS.folder, `Step 6/${STEPS.length} — Output & Options`);
 
   const { outDir } = await inquirer.prompt([{
     type: "input",
     name: "outDir",
     message: "Where to generate .arch/ directory:",
-    default: ".arch",
+    default: state.outDir || ".arch",
     prefix: `  ${ICONS.arch}`,
   }]);
 
-  // ── Step 6.5: Claude Code integration ─────────────────────────────────
   const cliHasClaude = process.argv.includes("--claude");
   let claudeMode = cliHasClaude;
 
@@ -1032,7 +1175,7 @@ async function main() {
       type: "confirm",
       name: "wantClaude",
       message: "Also generate Claude Code native files? (CLAUDE.md + .claude/rules/ + .claude/skills/)",
-      default: false,
+      default: state.claudeMode || false,
       prefix: `  ${ICONS.arch}`,
     }]);
     claudeMode = wantClaude;
@@ -1045,9 +1188,15 @@ async function main() {
     info("  Claude Code will auto-load these alongside .arch/ files.");
   }
 
-  // ── Preview ───────────────────────────────────────────────────────────
+  return { outDir, claudeMode };
+}
+
+async function stepPreview(state) {
+  const at = APP_TYPES[state.appType];
+  const { appName, appType, stack, features, skills, outDir, claudeMode } = state;
+
   divider();
-  heading(ICONS.mag, "Preview — What will be generated");
+  heading(ICONS.mag, `Step 7/${STEPS.length} — Preview & Generate`);
   console.log("");
 
   const cfg = { appName, appType, stack, features, skills };
@@ -1059,7 +1208,7 @@ async function main() {
   tree(`${C.bold}README.md${C.reset} ${C.dim}— usage instructions${C.reset}`);
   tree(`${C.bold}clusters/${C.reset}`);
   console.log(`${C.gray}    ${ICONS.tee}── infra.graph ${C.dim}— shared infrastructure + middleware${C.reset}`);
-  features.forEach((f, i) => {
+  features.forEach(f => {
     console.log(`${C.gray}    ${ICONS.tee}── ${f.id}.graph ${C.dim}— ${f.name}${C.reset}`);
   });
   if (at.reservedWords["$bus"]) {
@@ -1085,25 +1234,33 @@ async function main() {
   console.log("");
   const fileCount = 3 + features.length + 1 + (at.reservedWords["$bus"] ? 1 : 0) + skills.length + apiSkills.length;
   info(`Total: ${fileCount} files`);
-
-  // ── Confirm ───────────────────────────────────────────────────────────
   console.log("");
-  const { confirmed } = await inquirer.prompt([{
-    type: "confirm",
-    name: "confirmed",
-    message: `Generate ${fileCount} files in ${outDir}/?`,
-    default: true,
+
+  const { action } = await inquirer.prompt([{
+    type: "list",
+    name: "action",
+    message: "What would you like to do?",
     prefix: `  ${ICONS.arch}`,
+    choices: [
+      { name: `${C.green}${ICONS.rocket}${C.reset} Generate ${fileCount} files in ${outDir}/`, value: "generate", short: "Generate" },
+      { name: `${C.blue}${ICONS.corner}${C.reset} Go back to a previous step`, value: "back", short: "Back" },
+      { name: `${C.yellow}${ICONS.file}${C.reset} Save progress & exit`, value: "save", short: "Save" },
+      { name: `${C.red}${ICONS.cross}${C.reset} Exit without saving`, value: "exit", short: "Exit" },
+    ],
   }]);
 
-  if (!confirmed) {
-    console.log("");
-    info("Cancelled. No files written.");
-    console.log("");
-    return;
-  }
+  return { _previewAction: action };
+}
 
-  // ── Generate ──────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// FILE GENERATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+function generateFiles(state) {
+  const { appName, appType, stack, features, skills, outDir, claudeMode } = state;
+  const at = APP_TYPES[appType];
+  const cfg = { appName, appType, stack, features, skills };
+
   divider();
   heading(ICONS.gear, "Generating...");
 
@@ -1121,7 +1278,6 @@ async function main() {
     console.log(`  ${C.green}${ICONS.check}${C.reset} ${relPath} ${C.dim}(${content.length} bytes)${C.reset}`);
   }
 
-  // Generate all files with visible progress
   const sysContent = genSystemMd(cfg);
   writeFile("SYSTEM.md", sysContent);
 
@@ -1129,7 +1285,6 @@ async function main() {
   writeFile("INDEX.md", idxContent);
 
   writeFile("README.md", genReadme(cfg));
-
   writeFile("clusters/infra.graph", genInfraGraph(cfg));
 
   for (const f of features) {
@@ -1143,6 +1298,7 @@ async function main() {
     writeFile(`skills/${s}.skill`, genSkillFile(s));
   }
 
+  const apiSkills = skills.filter(s => ["stripe","killbill","meilisearch","opensearch","saleor","langfuse","llm_sdk"].includes(s));
   for (const s of apiSkills) {
     const stub = genApiStub(s);
     if (stub) writeFile(`apis/${s}.api`, stub);
@@ -1195,7 +1351,7 @@ async function main() {
 - End with a summary: X errors, Y warnings, Z info items.
 `);
 
-  // ── Claude Code native files (when --claude flag or user opted in) ───
+  // ── Claude Code native files ──────────────────────────────────────────
   if (claudeMode) {
     console.log("");
     console.log(`${C.cyan}${C.bold}  Generating Claude Code native files...${C.reset}`);
@@ -1203,8 +1359,6 @@ async function main() {
 
     const projectRoot = path.resolve(".");
 
-    // 1. CLAUDE.md at project root — concise, under 200 lines
-    // Extract just rules + reserved words + session protocol from SYSTEM.md
     let claudeMd = `# ${cfg.appName}\n\n`;
     claudeMd += `> Generated by archkit. Full context in .arch/ directory.\n\n`;
     claudeMd += `## Stack\n${Object.values(cfg.stack).join(" + ")}\n\n`;
@@ -1240,20 +1394,16 @@ async function main() {
       console.log(`  ${C.green}${ICONS.check}${C.reset} CLAUDE.md ${C.dim}(${claudeMd.length} bytes)${C.reset}`);
     }
 
-    // 2. .claude/rules/ — path-targeted rules from graph clusters
     const claudeRulesDir = path.join(projectRoot, ".claude", "rules");
     fs.mkdirSync(claudeRulesDir, { recursive: true });
 
-    // Architecture rules (always apply)
     let archRule = `---\ndescription: "Architecture rules from archkit"\nalwaysApply: true\n---\n\n`;
     at.rules.forEach(r => archRule += `- ${r}\n`);
     fs.writeFileSync(path.join(claudeRulesDir, "architecture.md"), archRule);
     written.push({ path: ".claude/rules/architecture.md", size: archRule.length });
     console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/rules/architecture.md ${C.dim}(alwaysApply)${C.reset}`);
 
-    // Per-feature rules (path-targeted)
     for (const f of features) {
-      const at2 = APP_TYPES[cfg.appType];
       let featureRule = `---\ndescription: "${f.name} architecture context"\n`;
       if (["saas", "ecommerce", "mobile"].includes(cfg.appType)) {
         featureRule += `globs: ["src/features/${f.id}/**"]\n`;
@@ -1267,7 +1417,6 @@ async function main() {
       featureRule += `alwaysApply: false\n---\n\n`;
       featureRule += `# ${f.name}\n\n`;
       featureRule += `Architecture graph: @.arch/clusters/${f.id}.graph\n\n`;
-      // Inline the graph content so Claude Code has it without reading another file
       const graphContent = genGraph(f, cfg);
       featureRule += `\`\`\`\n${graphContent}\`\`\`\n`;
 
@@ -1276,7 +1425,6 @@ async function main() {
       console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/rules/${f.id}.md ${C.dim}(path-targeted: src/features/${f.id}/**)${C.reset}`);
     }
 
-    // 3. .claude/skills/ — package skills as Claude Code skills
     const claudeSkillsDir = path.join(projectRoot, ".claude", "skills");
     fs.mkdirSync(claudeSkillsDir, { recursive: true });
 
@@ -1286,7 +1434,6 @@ async function main() {
       const skillDir = path.join(claudeSkillsDir, s);
       fs.mkdirSync(skillDir, { recursive: true });
 
-      // Create SKILL.md with proper frontmatter
       let skillMd = `---\nname: ${s}\ndescription: "${sk.name} patterns and gotchas for this project"\ntrigger: "When working with ${sk.name} (keywords: ${sk.keywords})"\n---\n\n`;
       skillMd += `# ${sk.name} Skill\n\n`;
       skillMd += `Full skill file: @.arch/skills/${s}.skill\n\n`;
@@ -1303,7 +1450,7 @@ async function main() {
     }
   }
 
-  // ── Preview key files ─────────────────────────────────────────────────
+  // ── File previews ─────────────────────────────────────────────────────
   divider();
   heading(ICONS.file, "File Previews");
 
@@ -1331,34 +1478,23 @@ async function main() {
     console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/skills/ ${C.dim}— on-demand package knowledge${C.reset}`);
     console.log(`  ${C.green}${ICONS.check}${C.reset} .arch/ ${C.dim}— full context system (graphs, skills, APIs, lenses)${C.reset}`);
     console.log("");
-    subheading("Next steps:");
-    console.log("");
-    console.log(`  ${C.yellow}1.${C.reset} ${C.bold}Fill in .arch/skills/*.skill files with your team's gotchas${C.reset}`);
-    info("     WRONG → RIGHT → WHY. Add them as you discover them.");
-    console.log("");
-    console.log(`  ${C.yellow}2.${C.reset} ${C.bold}Generate .arch/apis/*.api from your API specs${C.reset}`);
-    info("     OpenAPI → .api conversion, or use MCP servers for live contracts.");
-    console.log("");
-    console.log(`  ${C.yellow}3.${C.reset} ${C.bold}Update .arch/INDEX.md cross-refs${C.reset}`);
-    info("     Map which features depend on which other features.");
-    console.log("");
+  }
+
+  subheading("Next steps:");
+  console.log("");
+  console.log(`  ${C.yellow}1.${C.reset} ${C.bold}Fill in .arch/skills/*.skill files with your team's gotchas${C.reset}`);
+  info("     WRONG → RIGHT → WHY. Add them as you discover them.");
+  console.log("");
+  console.log(`  ${C.yellow}2.${C.reset} ${C.bold}Generate .arch/apis/*.api from your API specs${C.reset}`);
+  info("     OpenAPI → .api conversion, or use MCP servers for live contracts.");
+  console.log("");
+  console.log(`  ${C.yellow}3.${C.reset} ${C.bold}Update .arch/INDEX.md cross-refs${C.reset}`);
+  info("     Map which features depend on which other features.");
+  console.log("");
+  if (claudeMode) {
     console.log(`  ${C.yellow}4.${C.reset} ${C.bold}Start Claude Code — it will auto-load CLAUDE.md + rules.${C.reset} ${ICONS.rocket}`);
   } else {
-    subheading("Next steps:");
-    console.log("");
-    console.log(`  ${C.yellow}1.${C.reset} ${C.bold}Copy SYSTEM.md into your AI tool:${C.reset}`);
-    info("     Claude Project instructions, .cursorrules, or CLAUDE.md");
-    console.log("");
-    console.log(`  ${C.yellow}2.${C.reset} ${C.bold}Fill in .skill files with your team's gotchas:${C.reset}`);
-    info("     Each has WRONG → RIGHT → WHY placeholders. Add real ones as you find them.");
-    console.log("");
-    console.log(`  ${C.yellow}3.${C.reset} ${C.bold}Generate .api files from your actual API specs:${C.reset}`);
-    info("     OpenAPI → .api conversion, or use MCP servers for live contracts.");
-    console.log("");
-    console.log(`  ${C.yellow}4.${C.reset} ${C.bold}Update INDEX.md cross-refs:${C.reset}`);
-    info("     Map which features depend on which other features.");
-    console.log("");
-    console.log(`  ${C.yellow}5.${C.reset} ${C.bold}Start coding with full context.${C.reset} ${ICONS.rocket}`);
+    console.log(`  ${C.yellow}4.${C.reset} ${C.bold}Start coding with full context.${C.reset} ${ICONS.rocket}`);
     console.log("");
     tip("Run with --claude flag to also generate Claude Code native files (CLAUDE.md + .claude/rules/ + .claude/skills/)");
   }
@@ -1368,6 +1504,128 @@ async function main() {
   tip("Every time the AI generates wrong code, add a gotcha to the relevant .skill file.");
   tip("The system gets smarter as your team accumulates knowledge.");
   console.log("");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN LOOP
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function main() {
+  banner();
+
+  let state = createInitialState();
+  let currentStep = 0;
+
+  // Check for saved progress
+  const saved = loadProgress();
+  if (saved) {
+    const completedLabels = saved.completedSteps.map(id => STEPS.find(s => s.id === id)?.label).filter(Boolean);
+    console.log(`${C.yellow}  ${ICONS.file} Saved progress found${C.reset} ${C.dim}(${new Date(saved.savedAt).toLocaleString()})${C.reset}`);
+    info(`  Completed: ${completedLabels.join(", ")}`);
+    console.log("");
+
+    const { resumeChoice } = await inquirer.prompt([{
+      type: "list",
+      name: "resumeChoice",
+      message: "Resume or start fresh?",
+      prefix: `  ${ICONS.arch}`,
+      choices: [
+        { name: `${C.green}${ICONS.arrow}${C.reset} Resume from where you left off`, value: "resume", short: "Resume" },
+        { name: `${C.red}${ICONS.cross}${C.reset} Start fresh (discard saved progress)`, value: "fresh", short: "Fresh" },
+      ],
+    }]);
+
+    if (resumeChoice === "resume") {
+      Object.assign(state, saved.state);
+      state._completedSteps = [...saved.completedSteps];
+      // Find first incomplete step
+      currentStep = STEPS.findIndex(s => !state._completedSteps.includes(s.id));
+      if (currentStep === -1) currentStep = STEPS.length - 1; // all done, go to preview
+      console.log("");
+      success(`Resuming at: ${STEPS[currentStep].label}`);
+    } else {
+      deleteProgressFile();
+    }
+    console.log("");
+  }
+
+  // Main wizard loop
+  while (currentStep < STEPS.length) {
+    const step = STEPS[currentStep];
+
+    // Show progress bar
+    const filled = state._completedSteps.length;
+    const total = STEPS.length;
+    progressStep(filled, total, step.label);
+
+    // Run the step
+    const result = await step.run(state);
+    Object.assign(state, result);
+
+    // Preview step handles its own navigation
+    if (step.id === "preview") {
+      const previewAction = state._previewAction;
+      delete state._previewAction;
+
+      if (previewAction === "generate") {
+        state._completedSteps.push(step.id);
+        generateFiles(state);
+        deleteProgressFile();
+        break;
+      } else if (previewAction === "back") {
+        const targetId = await promptGoBack(state._completedSteps);
+        invalidateFrom(targetId, state);
+        state._completedSteps = state._completedSteps.filter(s => s !== targetId);
+        currentStep = STEPS.findIndex(s => s.id === targetId);
+        continue;
+      } else if (previewAction === "save") {
+        saveProgress(state);
+        process.exit(0);
+      } else if (previewAction === "exit") {
+        const { confirmExit } = await inquirer.prompt([{
+          type: "confirm", name: "confirmExit",
+          message: "Are you sure? All progress will be lost.",
+          default: false, prefix: `  ${ICONS.arch}`,
+        }]);
+        if (confirmExit) process.exit(0);
+        continue; // re-show preview
+      }
+    }
+
+    // Mark step complete
+    if (!state._completedSteps.includes(step.id)) {
+      state._completedSteps.push(step.id);
+    }
+
+    // Navigation prompt (not shown for last step — preview handles it)
+    const action = await promptNavigation(currentStep);
+
+    switch (action) {
+      case "continue":
+        currentStep++;
+        break;
+      case "back": {
+        const targetId = await promptGoBack(state._completedSteps);
+        invalidateFrom(targetId, state);
+        state._completedSteps = state._completedSteps.filter(s => s !== targetId);
+        currentStep = STEPS.findIndex(s => s.id === targetId);
+        break;
+      }
+      case "save":
+        saveProgress(state);
+        process.exit(0);
+        break;
+      case "exit": {
+        const { confirmExit } = await inquirer.prompt([{
+          type: "confirm", name: "confirmExit",
+          message: "Are you sure? All progress will be lost.",
+          default: false, prefix: `  ${ICONS.arch}`,
+        }]);
+        if (confirmExit) process.exit(0);
+        break; // stay on same step, re-show nav
+      }
+    }
+  }
 }
 
 main().catch(err => {
