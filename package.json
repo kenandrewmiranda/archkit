@@ -1,0 +1,12 @@
+{
+  "name": "archkit",
+  "version": "1.0.0",
+  "description": "Context Engineering Scaffolder for AI-Assisted Development",
+  "type": "module",
+  "bin": {
+    "archkit": "./index.mjs"
+  },
+  "dependencies": {
+    "inquirer": "^9.2.12"
+  }
+}
