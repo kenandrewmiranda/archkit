@@ -20,12 +20,11 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
+import { commandBanner } from "../lib/banner.mjs";
 
 function banner() {
-  console.log("");
-  console.log(`${C.cyan}${C.bold}  ${I.arch} arch-review${C.reset}`);
-  console.log(`${C.gray}  Check code against your .arch/ rules and skills${C.reset}`);
-  console.log("");
+  commandBanner("arch-review", "Check code against your .arch/ rules and skills");
 }
 
 function findArchDir() {
@@ -34,12 +33,6 @@ function findArchDir() {
 
 // ── Load .arch/ context ─────────────────────────────────────────────────
 
-function loadSystem(archDir) {
-  const fp = path.join(archDir, "SYSTEM.md");
-  if (!fs.existsSync(fp)) return null;
-  return fs.readFileSync(fp, "utf8");
-}
-
 function loadSkills(archDir) {
   const skillsDir = path.join(archDir, "skills");
   if (!fs.existsSync(skillsDir)) return {};
@@ -47,18 +40,7 @@ function loadSkills(archDir) {
   for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
     const id = file.replace(".skill", "");
     const content = fs.readFileSync(path.join(skillsDir, file), "utf8");
-    const gotchas = [];
-    const lines = content.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith("WRONG:")) {
-        const wrong = lines[i].replace("WRONG:", "").trim();
-        const right = (lines[i + 1] || "").replace("RIGHT:", "").trim();
-        const why = (lines[i + 2] || "").replace("WHY:", "").trim();
-        if (wrong && !wrong.startsWith("[")) {
-          gotchas.push({ wrong, right, why });
-        }
-      }
-    }
+    const gotchas = parseGotchas(content);
     skills[id] = { content, gotchas };
   }
   return skills;
@@ -73,37 +55,6 @@ function loadGraphs(archDir) {
     graphs[id] = fs.readFileSync(path.join(clustersDir, file), "utf8");
   }
   return graphs;
-}
-
-function parseRules(systemContent) {
-  if (!systemContent) return [];
-  const rules = [];
-  const lines = systemContent.split("\n");
-  let inRules = false;
-  for (const line of lines) {
-    if (line.startsWith("## Rules")) { inRules = true; continue; }
-    if (line.startsWith("## ") && inRules) { inRules = false; continue; }
-    if (inRules && line.startsWith("- ")) {
-      rules.push(line.replace(/^- /, "").trim());
-    }
-  }
-  return rules;
-}
-
-function parseReservedWords(systemContent) {
-  if (!systemContent) return {};
-  const words = {};
-  const lines = systemContent.split("\n");
-  let inReserved = false;
-  for (const line of lines) {
-    if (line.startsWith("## Reserved Words")) { inReserved = true; continue; }
-    if (line.startsWith("## ") && inReserved) { inReserved = false; continue; }
-    if (inReserved && line.includes(" = ")) {
-      const [key, ...rest] = line.split(" = ");
-      words[key.trim()] = rest.join(" = ").trim();
-    }
-  }
-  return words;
 }
 
 // ── Checks ──────────────────────────────────────────────────────────────
@@ -136,7 +87,7 @@ function checkArchitectureRules(code, filepath, rules, reservedWords) {
   // Check: business logic in controller
   if (filename.includes("controller") || filename.includes("Cont")) {
     // Look for direct DB imports/calls
-    const dbPatterns = [/prisma\./g, /\.query\(/g, /\.findMany\(/g, /\.create\(/g, /pool\./g, /knex\(/g];
+    const dbPatterns = [/prisma\./, /\.query\(/, /\.findMany\(/, /\.create\(/, /pool\./, /knex\(/];
     for (const pat of dbPatterns) {
       if (pat.test(code)) {
         findings.push({
@@ -380,9 +331,8 @@ function main() {
 
   console.log(`${C.gray}  Loading .arch/ context from ${archDir}${C.reset}`);
 
-  const systemContent = loadSystem(archDir);
-  const rules = parseRules(systemContent);
-  const reservedWords = parseReservedWords(systemContent);
+  const systemContent = loadFile(archDir, "SYSTEM.md");
+  const { rules, reservedWords } = parseSystem(systemContent);
   const skills = loadSkills(archDir);
   const graphs = loadGraphs(archDir);
 

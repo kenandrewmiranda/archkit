@@ -20,11 +20,10 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
+import { commandBanner } from "../lib/banner.mjs";
 
 function banner() {
-  console.log("");
-  console.log(`${C.cyan}${C.bold}  ${I.arch} arch-extend${C.reset}`);
-  console.log(`${C.gray}  Self-evolving CLI extension system${C.reset}`);
+  commandBanner("arch-extend", "Self-evolving CLI extension system");
   console.log(`${C.gray}  Build new commands when patterns are worth automating${C.reset}`);
   console.log("");
 }

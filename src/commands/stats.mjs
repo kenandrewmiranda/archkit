@@ -13,12 +13,10 @@
 import fs from "fs";
 import path from "path";
 import { C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
+import { commandBanner } from "../lib/banner.mjs";
 
 function banner() {
-  console.log("");
-  console.log(`${C.cyan}${C.bold}  ${I.arch} arch-stats${C.reset}`);
-  console.log(`${C.gray}  Context engineering health dashboard${C.reset}`);
-  console.log("");
+  commandBanner("arch-stats", "Context engineering health dashboard");
 }
 
 function findArchDir() {

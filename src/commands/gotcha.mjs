@@ -18,11 +18,10 @@ import inquirer from "inquirer";
 import fs from "fs";
 import path from "path";
 import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { commandBanner } from "../lib/banner.mjs";
 
 function banner() {
-  console.log("");
-  console.log(`${C.cyan}${C.bold}  ${I.arch} arch-gotcha${C.reset}`);
-  console.log(`${C.gray}  Capture bad AI patterns into .skill files${C.reset}`);
+  commandBanner("arch-gotcha", "Capture bad AI patterns into .skill files");
   console.log(`${C.gray}  Every fix makes the system permanently smarter${C.reset}`);
   console.log("");
 }

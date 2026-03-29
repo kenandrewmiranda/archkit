@@ -78,8 +78,6 @@ export function findArchDir(opts = {}) {
     const archPath = path.join(dir, ".arch");
     if (opts.requireFile) {
       if (fs.existsSync(path.join(archPath, opts.requireFile))) return archPath;
-      // Also check if the required path exists directly (for gotcha.mjs's "skills" check)
-      if (fs.existsSync(path.join(dir, opts.requireFile))) return dir;
     } else {
       if (fs.existsSync(archPath)) return archPath;
     }
@@ -94,9 +92,3 @@ export function divider() {
   console.log(`${C.gray}  ${"─".repeat(64)}${C.reset}`);
 }
 
-export function banner(name, description) {
-  console.log("");
-  console.log(`${C.cyan}${C.bold}  ${ICONS.arch} ${name}${C.reset}`);
-  console.log(`${C.gray}  ${description}${C.reset}`);
-  console.log("");
-}

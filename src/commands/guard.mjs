@@ -16,13 +16,12 @@
 import fs from "fs";
 import path from "path";
 import { C, ICONS, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
+import { commandBanner } from "../lib/banner.mjs";
 
 const I = { ...ICONS, pass: ICONS.check, fail: ICONS.cross };
 
 function banner() {
-  console.log("");
-  console.log(`${C.cyan}${C.bold}  ${I.arch} arch-guard${C.reset}`);
-  console.log(`${C.gray}  Validation and guardrail system${C.reset}`);
+  commandBanner("arch-guard", "Validation and guardrail system");
   console.log(`${C.gray}  Hard pass/fail gate for extensions and .arch/ integrity${C.reset}`);
   console.log("");
 }
@@ -204,7 +203,7 @@ function runCheck(checkId, code, filename, meta) {
       }).filter(Boolean);
 
       return importPaths.every(p => {
-        if (p.startsWith(".") || p.startsWith("/")) return true; // Relative/absolute local paths OK
+        if (p.startsWith(".")) return true; // Relative local paths OK
         const baseModule = p.split("/")[0].replace("@", "");
         return ALLOWED_IMPORTS.some(a => p === a || p.startsWith(a + "/"));
       });
