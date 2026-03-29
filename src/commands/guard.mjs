@@ -15,7 +15,7 @@
 
 import fs from "fs";
 import path from "path";
-import { C, ICONS, findArchDir as _findArchDir, divider } from "./lib/shared.mjs";
+import { C, ICONS, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
 
 const I = { ...ICONS, pass: ICONS.check, fail: ICONS.cross };
 

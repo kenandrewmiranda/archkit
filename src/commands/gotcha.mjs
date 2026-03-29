@@ -17,7 +17,7 @@
 import inquirer from "inquirer";
 import fs from "fs";
 import path from "path";
-import { C, ICONS as I, findArchDir as _findArchDir } from "./lib/shared.mjs";
+import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 
 function banner() {
   console.log("");

@@ -18,7 +18,7 @@
 
 import fs from "fs";
 import path from "path";
-import { findArchDir as _findArchDir } from "./lib/shared.mjs";
+import { findArchDir as _findArchDir } from "../lib/shared.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS

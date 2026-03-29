@@ -4,7 +4,17 @@
   "description": "Context Engineering Scaffolder for AI-Assisted Development",
   "type": "module",
   "bin": {
-    "archkit": "./index.mjs"
+    "archkit": "./bin/archkit.mjs"
+  },
+  "scripts": {
+    "start": "node bin/archkit.mjs",
+    "scaffold": "node bin/archkit.mjs",
+    "resolve": "node bin/archkit.mjs resolve",
+    "guard": "node bin/archkit.mjs guard",
+    "extend": "node bin/archkit.mjs extend",
+    "gotcha": "node bin/archkit.mjs gotcha",
+    "review": "node bin/archkit.mjs review",
+    "stats": "node bin/archkit.mjs stats"
   },
   "dependencies": {
     "inquirer": "^9.2.12"

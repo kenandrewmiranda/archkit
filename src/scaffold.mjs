@@ -1,21 +1,15 @@
-#!/usr/bin/env node
-
 import inquirer from "inquirer";
 import fs from "fs";
 import path from "path";
 import { C, ICONS, divider } from "./lib/shared.mjs";
+import { showBanner } from "./lib/banner.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VISUAL HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
 function banner() {
-  console.log("");
-  console.log(`${C.cyan}${C.bold}  ${ICONS.arch} archkit${C.reset}`);
-  console.log(`${C.gray}  Context Engineering Scaffolder for AI-Assisted Development${C.reset}`);
-  console.log(`${C.gray}  ${C.dim}Generates .arch/ directory with SYSTEM.md, INDEX.md, .graph, .skill, .api files${C.reset}`);
-  console.log("");
-  divider();
+  showBanner();
 }
 
 function heading(icon, text) {
