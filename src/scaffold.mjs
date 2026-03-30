@@ -16,7 +16,7 @@ const STEPS = [
   { id: "appName",  label: "Project Identity",  stateKeys: ["appName"],               dependsOn: [],                       run: stepAppName },
   { id: "appType",  label: "Application Type",   stateKeys: ["appType"],               dependsOn: [],                       run: stepAppType },
   { id: "stack",    label: "Technology Stack",    stateKeys: ["stack"],                 dependsOn: ["appType"],              run: stepStack },
-  { id: "features", label: "Define Features",    stateKeys: ["features"],              dependsOn: ["appType"],              run: stepFeatures },
+  { id: "features", label: "Define Features",    stateKeys: ["features", "crossRefs"], dependsOn: ["appType"],              run: stepFeatures },
   { id: "skills",   label: "Package Skills",     stateKeys: ["skills"],                dependsOn: ["appType", "stack"],     run: stepSkills },
   { id: "output",   label: "Output & Options",   stateKeys: ["outDir", "claudeMode"],  dependsOn: [],                       run: stepOutput },
   { id: "preview",  label: "Preview & Generate",  stateKeys: [],                        dependsOn: ["appName","appType","stack","features","skills","output"], run: stepPreview },

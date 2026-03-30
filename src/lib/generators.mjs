@@ -1,5 +1,7 @@
 import { ICONS } from "./shared.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
+import { genBoundariesMd } from "../data/boundaries.mjs";
+import { GOTCHA_DB } from "../data/gotcha-db.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GENERATORS
@@ -19,6 +21,7 @@ export function genSystemMd(cfg) {
   o += `\n## Naming\n`;
   o += `Files: kebab-case | Types: PascalCase | Funcs: camelCase | Tables: snake_case | Env: SCREAMING_SNAKE\n`;
   o += `\n## On Generate\n`;
+  o += `0. BEFORE writing any file: verify the path matches the convention. State: "Target: <file path>"\n`;
   o += `1. State which layer this code belongs to and the file path\n`;
   o += `2. Reference $symbols for all dependencies\n`;
   if (at.reservedWords["$tenant"]) o += `3. Include $tenant in all DB operations\n`;
@@ -32,26 +35,28 @@ export function genSystemMd(cfg) {
   o += `- BEFORE generating code for an existing feature: run \`archkit resolve preflight <feature> <layer>\`\n`;
   o += `- When the prompt is ambiguous: run \`archkit resolve context "<prompt>"\` to resolve to specific nodes and files.\n`;
   o += `- AT SESSION END: suggest running \`archkit gotcha --debrief\` to capture learnings.\n`;
-  o += `\n## Delegation Principle\n`;
-  o += `Delegate everything deterministic to sub-agents and CLI tools first. The main agent finalizes with judgment.\n\n`;
-  o += `### Sub-agent first (70-80% of the work, cheap tokens):\n`;
-  o += `- Scaffolding files and boilerplate: \`resolve.mjs scaffold\` + sub-agent generates from checklist\n`;
-  o += `- Resolving context and dependencies: \`resolve.mjs context\` + \`resolve.mjs preflight\`\n`;
-  o += `- Checking code against rules: \`review.mjs --agent\` (sub-agent reads JSON, reports findings)\n`;
-  o += `- Looking up patterns and gotchas: \`resolve.mjs lookup\` (sub-agent applies, not re-derives)\n`;
-  o += `- Repetitive CRUD: sub-agent clones patterns from existing features, doesn't reason from scratch\n\n`;
-  o += `### Main agent finalizes (20-30% of the work, expensive tokens):\n`;
-  o += `- Review sub-agent output with TDD approach: write failing test FIRST, then verify the generated code passes\n`;
-  o += `- Handle edge cases, error paths, and security concerns that require judgment\n`;
-  o += `- Make architectural decisions (should this be a new feature or extend an existing one?)\n`;
-  o += `- Resolve ambiguity in requirements\n`;
-  o += `- Final code review: does this fit the system, not just work in isolation?\n\n`;
-  o += `### The TDD finalization loop:\n`;
-  o += `1. Sub-agent generates implementation from scaffold/checklist\n`;
-  o += `2. Main agent writes a failing test that captures the REAL requirement\n`;
-  o += `3. Main agent verifies sub-agent code passes (or fixes the delta)\n`;
-  o += `4. Main agent runs \`review.mjs --agent\` as final gate\n`;
-  o += `5. If review passes: done. If not: fix findings, re-run.\n`;
+  if (cfg.includeDelegation !== false) {
+    o += `\n## Delegation Principle\n`;
+    o += `Delegate everything deterministic to sub-agents and CLI tools first. The main agent finalizes with judgment.\n\n`;
+    o += `### Sub-agent first (70-80% of the work, cheap tokens):\n`;
+    o += `- Scaffolding files and boilerplate: \`archkit resolve scaffold\` + sub-agent generates from checklist\n`;
+    o += `- Resolving context and dependencies: \`archkit resolve context\` + \`archkit resolve preflight\`\n`;
+    o += `- Checking code against rules: \`archkit review --agent\` (sub-agent reads JSON, reports findings)\n`;
+    o += `- Looking up patterns and gotchas: \`archkit resolve lookup\` (sub-agent applies, not re-derives)\n`;
+    o += `- Repetitive CRUD: sub-agent clones patterns from existing features, doesn't reason from scratch\n\n`;
+    o += `### Main agent finalizes (20-30% of the work, expensive tokens):\n`;
+    o += `- Review sub-agent output with TDD approach: write failing test FIRST, then verify the generated code passes\n`;
+    o += `- Handle edge cases, error paths, and security concerns that require judgment\n`;
+    o += `- Make architectural decisions (should this be a new feature or extend an existing one?)\n`;
+    o += `- Resolve ambiguity in requirements\n`;
+    o += `- Final code review: does this fit the system, not just work in isolation?\n\n`;
+    o += `### The TDD finalization loop:\n`;
+    o += `1. Sub-agent generates implementation from scaffold/checklist\n`;
+    o += `2. Main agent writes a failing test that captures the REAL requirement\n`;
+    o += `3. Main agent verifies sub-agent code passes (or fixes the delta)\n`;
+    o += `4. Main agent runs \`archkit review --agent\` as final gate\n`;
+    o += `5. If review passes: done. If not: fix findings, re-run.\n`;
+  }
   return o;
 }
 
@@ -89,10 +94,14 @@ export function genIndexMd(cfg) {
     o += `\n`;
   }
   o += `## Cross-Refs\n`;
-  o += `# TODO: Map which features depend on which other features\n`;
-  cfg.features.forEach((f, i) => {
-    if (i < cfg.features.length - 1) o += `# @${f.id} → @${cfg.features[i+1].id} (describe relationship)\n`;
-  });
+  if (cfg.crossRefs && cfg.crossRefs.length > 0) {
+    cfg.crossRefs.forEach(ref => o += `@${ref.from} → @${ref.to} (${ref.reason})\n`);
+  } else {
+    o += `# TODO: Map which features depend on which other features\n`;
+    cfg.features.forEach((f, i) => {
+      if (i < cfg.features.length - 1) o += `# @${f.id} → @${cfg.features[i+1].id} (describe relationship)\n`;
+    });
+  }
   return o;
 }
 
@@ -183,36 +192,23 @@ export function genEventsGraph(cfg) {
 export function genSkillFile(skillId) {
   const sk = SKILL_CATALOG.find(s => s.id === skillId);
   if (!sk) return "";
-  return `# ${sk.name}.skill
-
-## Meta
-pkg: [PACKAGE_NAME]@[VERSION]
-docs: [OFFICIAL_DOCS_URL]
-updated: [YYYY-MM-DD]
-
-## Use
-[How YOUR project uses ${sk.name}. 2-3 lines max.]
-[Not what it does generally — how YOUR app uses it specifically.]
-
-## Patterns
-[The specific import paths, function signatures, and conventions you follow.]
-[List the 5-10 methods/endpoints your app actually calls.]
-
-## Gotchas
-WRONG: [the code the AI will generate by default]
-RIGHT: [the code it should generate instead]
-WHY: [one-line explanation of the failure mode]
-
-[Add more WRONG/RIGHT/WHY blocks as you discover them.]
-
-## Boundaries
-[What ${sk.name} does NOT do in your project.]
-[Prevents the AI from overreaching with this package.]
-
-## Snippets
-[2-3 code blocks showing the correct pattern in YOUR project.]
-[These are the patterns the AI will clone.]
-`;
+  let o = `# ${sk.name}.skill\n\n`;
+  o += `## Meta\npkg: [PACKAGE_NAME]@[VERSION]\ndocs: [OFFICIAL_DOCS_URL]\nupdated: [YYYY-MM-DD]\n\n`;
+  o += `## Use\n[How YOUR project uses ${sk.name}. 2-3 lines max.]\n[Not what it does generally — how YOUR app uses it specifically.]\n\n`;
+  o += `## Patterns\n[The specific import paths, function signatures, and conventions you follow.]\n[List the 5-10 methods/endpoints your app actually calls.]\n\n`;
+  o += `## Gotchas\n`;
+  const builtinGotchas = GOTCHA_DB[skillId] || [];
+  if (builtinGotchas.length > 0) {
+    builtinGotchas.forEach(g => {
+      o += `WRONG: ${g.wrong}\nRIGHT: ${g.right}\nWHY: ${g.why}\n\n`;
+    });
+    o += `[Add more WRONG/RIGHT/WHY blocks as you discover them.]\n`;
+  } else {
+    o += `WRONG: [the code the AI will generate by default]\nRIGHT: [the code it should generate instead]\nWHY: [one-line explanation of the failure mode]\n\n[Add more WRONG/RIGHT/WHY blocks as you discover them.]\n`;
+  }
+  o += `\n## Boundaries\n[What ${sk.name} does NOT do in your project.]\n[Prevents the AI from overreaching with this package.]\n\n`;
+  o += `## Snippets\n[2-3 code blocks showing the correct pattern in YOUR project.]\n[These are the patterns the AI will clone.]\n`;
+  return o;
 }
 
 export function genApiStub(skillId) {
@@ -282,3 +278,5 @@ follows your patterns, avoids known gotchas, and calls APIs correctly.
 - **Per deploy**: Regenerate .api files from your latest API specs.
 `;
 }
+
+export { genBoundariesMd } from "../data/boundaries.mjs";

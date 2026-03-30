@@ -6,7 +6,7 @@ import { success, info } from "./helpers.mjs";
 const PROGRESS_FILE = ".archkit-progress.json";
 
 function createInitialState() {
-  return { appName: null, appType: null, stack: null, features: null, skills: null, outDir: null, claudeMode: null, _completedSteps: [] };
+  return { appName: null, appType: null, stack: null, features: null, crossRefs: null, skills: null, outDir: null, claudeMode: null, _completedSteps: [] };
 }
 
 // ── Save / Load ─────────────────────────────────────────────────────────

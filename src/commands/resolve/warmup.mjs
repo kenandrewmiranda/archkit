@@ -109,7 +109,8 @@ export function cmdWarmup(archDir, deep) {
 
   if (emptySkills.length > 0) {
     checks.push({ id: "W007", check: "Empty/skeleton skills", status: "warn", detail: `${emptySkills.length}: ${emptySkills.slice(0, 5).join(", ")}${emptySkills.length > 5 ? "..." : ""}` });
-    warnings.push(`${emptySkills.length} skill(s) are still skeletons with no real content: ${emptySkills.slice(0, 3).join(", ")}. Fill these before coding against those packages.`);
+    warnings.push(`${emptySkills.length} skill(s) are still skeletons. Fill with WRONG/RIGHT/WHY as you discover gotchas: ${emptySkills.slice(0, 3).join(", ")}`);
+    actions.push(`Fill empty skills: archkit gotcha --interactive`);
   }
 
   if (staleSkills.length > 0) {

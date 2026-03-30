@@ -2,13 +2,13 @@ import fs from "fs";
 import path from "path";
 import { C, ICONS, divider } from "../lib/shared.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
-import { genSystemMd, genIndexMd, genGraph, genInfraGraph, genEventsGraph, genSkillFile, genApiStub, genReadme } from "../lib/generators.mjs";
+import { genSystemMd, genIndexMd, genGraph, genInfraGraph, genEventsGraph, genSkillFile, genApiStub, genReadme, genBoundariesMd } from "../lib/generators.mjs";
 import { heading, subheading, info, success, tip, tree, filePreview } from "./helpers.mjs";
 
 function generateFiles(state) {
-  const { appName, appType, stack, features, skills, outDir, claudeMode } = state;
+  const { appName, appType, stack, features, skills, crossRefs, outDir, claudeMode } = state;
   const at = APP_TYPES[appType];
-  const cfg = { appName, appType, stack, features, skills };
+  const cfg = { appName, appType, stack, features, skills, crossRefs: crossRefs || [] };
 
   divider();
   heading(ICONS.gear, "Generating...");
@@ -34,6 +34,7 @@ function generateFiles(state) {
   writeFile("INDEX.md", idxContent);
 
   writeFile("README.md", genReadme(cfg));
+  writeFile("BOUNDARIES.md", genBoundariesMd(cfg.appType));
   writeFile("clusters/infra.graph", genInfraGraph(cfg));
 
   for (const f of features) {

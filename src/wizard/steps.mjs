@@ -203,7 +203,55 @@ async function stepFeatures(state) {
     console.log("");
   }
 
-  return { features };
+  // Cross-references
+  if (features.length > 1) {
+    console.log("");
+    info("Define relationships between features (helps AI understand dependencies).");
+    info("Type 'done' when finished.");
+    console.log("");
+
+    const crossRefs = [];
+    let addingRefs = true;
+    while (addingRefs) {
+      const { refChoice } = await inquirer.prompt([{
+        type: "list",
+        name: "refChoice",
+        message: "Add a dependency?",
+        prefix: `  ${ICONS.arch}`,
+        choices: [
+          ...features.map(f => ({ name: `${f.id} depends on...`, value: f.id })),
+          { name: `${C.dim}Done — no more dependencies${C.reset}`, value: "__done" },
+        ],
+        pageSize: 12,
+      }]);
+
+      if (refChoice === "__done") { addingRefs = false; continue; }
+
+      const targets = features.filter(f => f.id !== refChoice);
+      const { refTarget } = await inquirer.prompt([{
+        type: "list",
+        name: "refTarget",
+        message: `  ${refChoice} depends on:`,
+        prefix: `  ${ICONS.pipe}`,
+        choices: targets.map(f => ({ name: f.id, value: f.id })),
+      }]);
+
+      const { refReason } = await inquirer.prompt([{
+        type: "input",
+        name: "refReason",
+        message: "  Why?",
+        default: `${refChoice} uses ${refTarget} services`,
+        prefix: `  ${ICONS.corner}`,
+      }]);
+
+      crossRefs.push({ from: refChoice, to: refTarget, reason: refReason });
+      success(`${refChoice} → ${refTarget} (${refReason})`);
+    }
+
+    return { features, crossRefs };
+  }
+
+  return { features, crossRefs: [] };
 }
 
 async function stepSkills(state) {
@@ -218,29 +266,9 @@ async function stepSkills(state) {
 
   const stackStr = JSON.stringify(stack).toLowerCase() + " " + appType;
   const autoDetected = SKILL_CATALOG.filter(s => {
-    const n = s.name.toLowerCase();
-    if (n.includes("postgres") && stackStr.includes("postgres")) return true;
-    if (n.includes("valkey") && (stackStr.includes("valkey") || stackStr.includes("redis"))) return true;
-    if (n.includes("keycloak") && stackStr.includes("keycloak")) return true;
-    if (n.includes("stripe") && stackStr.includes("stripe")) return true;
-    if (n.includes("kill bill") && stackStr.includes("kill bill")) return true;
-    if (n.includes("meilisearch") && stackStr.includes("meilisearch")) return true;
-    if (n.includes("clickhouse") && stackStr.includes("clickhouse")) return true;
-    if (n.includes("docker")) return true;
-    if (n.includes("caddy") && stackStr.includes("caddy")) return true;
-    if (n.includes("k3s") && stackStr.includes("k3s")) return true;
-    if (n.includes("bullmq") && stackStr.includes("bullmq")) return true;
-    if (n.includes("saleor") && stackStr.includes("saleor")) return true;
-    if (n.includes("dagster") && stackStr.includes("dagster")) return true;
-    if (n.includes("dbt") && stackStr.includes("dbt")) return true;
-    if (n.includes("cube") && stackStr.includes("cube")) return true;
-    if (n.includes("langfuse") && stackStr.includes("langfuse")) return true;
-    if (n.includes("pgvector") && stackStr.includes("pgvector")) return true;
-    if (n.includes("websocket") && appType === "realtime") return true;
-    if (n.includes("yjs") && appType === "realtime") return true;
-    if (n.includes("llm") && appType === "ai") return true;
-    if (n.includes("opentofu") && stackStr.includes("opentofu")) return true;
-    return false;
+    // Match skill keywords against stack + appType
+    const terms = s.keywords.split(",").map(k => k.trim().toLowerCase());
+    return terms.some(term => stackStr.includes(term)) || s.id === "docker";
   });
 
   const notDetected = SKILL_CATALOG.filter(s => !autoDetected.find(a => a.id === s.id));
@@ -340,6 +368,7 @@ async function stepPreview(state) {
   tree(`${C.bold}SYSTEM.md${C.reset} ${C.dim}— rules + ${Object.keys(at.reservedWords).length} reserved words${C.reset}`);
   tree(`${C.bold}INDEX.md${C.reset} ${C.dim}— ${features.length} features + ${skills.length} skills routing${C.reset}`);
   tree(`${C.bold}README.md${C.reset} ${C.dim}— usage instructions${C.reset}`);
+  tree(`${C.bold}BOUNDARIES.md${C.reset} ${C.dim}— hard prohibitions (NEVER rules)${C.reset}`);
   tree(`${C.bold}clusters/${C.reset}`);
   console.log(`${C.gray}    ${ICONS.tee}── infra.graph ${C.dim}— shared infrastructure + middleware${C.reset}`);
   features.forEach(f => {
@@ -366,7 +395,7 @@ async function stepPreview(state) {
   }
 
   console.log("");
-  const fileCount = 3 + features.length + 1 + (at.reservedWords["$bus"] ? 1 : 0) + skills.length + apiSkills.length;
+  const fileCount = 4 + features.length + 1 + (at.reservedWords["$bus"] ? 1 : 0) + skills.length + apiSkills.length;
   info(`Total: ${fileCount} files`);
   console.log("");
 

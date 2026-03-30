@@ -21,6 +21,8 @@ import path from "path";
 import { findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseIndex, loadGraphCluster, loadSkillGotchas, loadApiDigest } from "../lib/parsers.mjs";
 import { cmdWarmup } from "./resolve/warmup.mjs";
+import { cmdPlan } from "./resolve/plan.mjs";
+import { expandWithSynonyms } from "../data/synonyms.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -40,8 +42,9 @@ function cmdContext(archDir, promptText) {
   const index = parseIndex(indexContent);
   const system = parseSystem(systemContent);
 
-  // Tokenize prompt into words
-  const words = promptText.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+  // Tokenize prompt into words, then expand with synonyms
+  const rawWords = promptText.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+  const words = expandWithSynonyms(rawWords);
 
   // Match keywords to nodes and skills
   const matchedNodes = new Set();
@@ -300,15 +303,33 @@ function cmdScaffold(archDir, featureId) {
       keywordEntry: `${featureId} → @${featureId}`,
       clusterEntry: `@${featureId} = [${featureId}] → ${files[0].path.split(featureId)[0]}`,
     },
-    eventEntry: `Evt${displayName}Changed [E~] : {${featureId}Id,...} | @${featureId} ⇒ THIS ⇒ [subscribers]`,
+    eventEntry: system.pattern.toLowerCase().includes("event") || system.reservedWords["$bus"]
+      ? `Evt${displayName}Changed [E~] : {${featureId}Id,...} | @${featureId} ⇒ THIS ⇒ [subscribers]`
+      : null,
     steps: [
       `Create ${files.length} files: ${files.map(f => f.path).join(", ")}`,
       `Create .arch/clusters/${featureId}.graph with ${graphNodes.length} nodes`,
       `Add @${featureId} keyword routing to INDEX.md`,
-      `Add Evt${displayName}Changed to events.graph`,
+      ...(system.pattern.toLowerCase().includes("event") || system.reservedWords["$bus"]
+        ? [`Add Evt${displayName}Changed to events.graph`]
+        : []),
       `Implement ${files[0].layer} layer first (${files[0].path})`,
       `Write tests in parallel`,
     ],
+    relevantGotchas: (() => {
+      const allGotchas = {};
+      const skillsDir = path.join(archDir, "skills");
+      if (fs.existsSync(skillsDir)) {
+        for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
+          const skillId = file.replace(".skill", "");
+          const skill = loadSkillGotchas(archDir, skillId);
+          if (skill && skill.gotchas.length > 0) {
+            allGotchas[skillId] = skill.gotchas;
+          }
+        }
+      }
+      return allGotchas;
+    })(),
   };
 }
 
@@ -407,6 +428,12 @@ function main() {
       output(cmdLookup(archDir, id), pretty);
       break;
     }
+    case "plan": {
+      const prompt = cleanArgs.slice(1).join(" ");
+      if (!prompt) { output({ error: "Usage: archkit resolve plan \"<prompt text>\"" }, pretty); process.exit(1); }
+      output(cmdPlan(archDir, prompt), pretty);
+      break;
+    }
     case "warmup": {
       const deep = cleanArgs.includes("--deep");
       output(cmdWarmup(archDir, deep), pretty);
@@ -421,6 +448,7 @@ function main() {
           preflight: "resolve.mjs preflight <feature> <layer> — Verify target before generating code",
           scaffold: "resolve.mjs scaffold <featureId> — Get checklist for new feature",
           lookup: "resolve.mjs lookup <id> — Look up a node, skill, or cluster",
+          plan: "archkit resolve plan \"<prompt>\" — Get structured implementation plan",
         },
         flags: { "--pretty": "Pretty-print JSON output", "--deep": "Full validation (warmup only)" },
       }, pretty);

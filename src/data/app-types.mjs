@@ -28,6 +28,8 @@ export const APP_TYPES = {
       "Errors: throw $err types (NotFound, Validation, Forbidden). Centralized handler formats response.",
       "Validation: $zod schemas shared between frontend and API.",
       "Events: async via $bus. All subscribers must be idempotent.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
+      "Every service method must have a corresponding test. No exceptions.",
     ],
     reservedWords: {
       "$tenant": "tenant context — ID from JWT, injected by middleware, scopes all DB operations",
@@ -75,6 +77,8 @@ export const APP_TYPES = {
       "Product pages use ISR (Incremental Static Regeneration). Invalidate on price/stock change.",
       "Payment processing is idempotent. Every charge operation has an idempotency key.",
       "Side effects go through $bus. OrderPlaced → email, inventory, analytics. Never direct calls.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
+      "Every service method must have a corresponding test. No exceptions.",
     ],
     reservedWords: {
       "$money": "MoneyInCents type + arithmetic helpers (add, subtract, multiply). Never floating point.",
@@ -122,6 +126,8 @@ export const APP_TYPES = {
       "Cross-server communication ONLY through Valkey pub/sub. Never assume single-server.",
       "All messages: { type, payload, timestamp, senderId }. Defined in shared/protocol/.",
       "Presence (online/offline/typing) is ephemeral: Valkey TTL keys only. Never persisted.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
+      "Message handlers must complete within 100ms. Offload heavy work to async jobs.",
     ],
     reservedWords: {
       "$ws": "WebSocket connection instance",
@@ -169,6 +175,7 @@ export const APP_TYPES = {
       "Pipeline transforms are pure functions: data in → data out. No side effects. Independently testable.",
       "Every pipeline asset in Dagster has a data quality check (freshness, row count, schema, statistical).",
       "Access control: OPA policies inject row-level filters based on user role/region. Never filter in frontend.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
     ],
     reservedWords: {
       "$ch": "ClickHouse OLAP engine — columnar storage for analytical queries",
@@ -218,6 +225,8 @@ export const APP_TYPES = {
       "RAG retrieval returns sources with relevance scores. Chains pass sources for citation in response.",
       "Streaming responses via Server-Sent Events. Frontend renders tokens progressively as they arrive.",
       "Semantic caching: check Valkey for semantically similar prior queries before calling LLM.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
+      "Every chain must have at least 3 eval test cases in its Promptfoo suite.",
     ],
     reservedWords: {
       "$llm": "LLM port interface — adapters: OpenAI, vLLM, Ollama, Anthropic. Swap via LLM_PROVIDER env var.",
@@ -264,6 +273,7 @@ export const APP_TYPES = {
       "Images: upload via presigned URL to $store. Never send base64 through the API.",
       "Navigation params are typed. No magic strings for route names.",
       "All list rendering uses FlashList. Never FlatList. Performance is non-negotiable.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
     ],
     reservedWords: {
       "$sync": "WatermelonDB offline sync — push on foreground, pull on app open",
@@ -303,6 +313,7 @@ export const APP_TYPES = {
       "Role-based visibility: different roles see different data and actions.",
       "No sensitive data (PII) displayed in full. Mask by default. Reveal on click + audit log.",
       "Tool is NOT accessible from public internet. VPN/Tailscale required.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
     ],
     reservedWords: {
       "$replica": "PostgreSQL read replica — all display queries go here",
@@ -344,6 +355,7 @@ export const APP_TYPES = {
       "SEO metadata (title, description, OG image) is MANDATORY on every content type.",
       "Search index updates via webhook on publish. Not on every draft save.",
       "RSS feed auto-generated from content. Newsletter sends triggered by publish event.",
+      "Max complexity: controllers ≤ 5 conditional branches, services ≤ 200 lines, functions ≤ 50 lines.",
     ],
     reservedWords: {
       "$cms": "Strapi/Payload headless CMS — content authoring, editorial workflows",

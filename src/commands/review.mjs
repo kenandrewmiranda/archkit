@@ -7,6 +7,7 @@
  *   archkit review <file>                   Review a single file
  *   archkit review <file1> <file2> ...      Review multiple files
  *   archkit review --staged                 Review git staged files
+ *   archkit review --diff                   Review modified (unstaged) files
  *   archkit review --dir src/features/      Review all files in a directory
  * 
  * What it checks:
@@ -61,18 +62,24 @@ function loadGraphs(archDir) {
 
 function checkGotchas(code, skills) {
   const findings = [];
+  const lines = code.split("\n");
   for (const [skillId, skill] of Object.entries(skills)) {
     for (const gotcha of skill.gotchas) {
-      if (code.includes(gotcha.wrong)) {
-        findings.push({
-          severity: "error",
-          type: "gotcha",
-          skill: skillId,
-          message: `Known bad pattern: ${gotcha.wrong}`,
-          fix: `Replace with: ${gotcha.right}`,
-          reason: gotcha.why,
-          pattern: gotcha.wrong,
-        });
+      for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+        if (lines[lineNum].includes(gotcha.wrong)) {
+          findings.push({
+            severity: "error",
+            type: "gotcha",
+            skill: skillId,
+            line: lineNum + 1,
+            message: `Known bad pattern: ${gotcha.wrong}`,
+            fix: `Replace with: ${gotcha.right}`,
+            autofix: { old: gotcha.wrong, new: gotcha.right },
+            reason: gotcha.why,
+            pattern: gotcha.wrong,
+          });
+          break; // report first occurrence
+        }
       }
     }
   }
@@ -104,9 +111,18 @@ function checkArchitectureRules(code, filepath, rules, reservedWords) {
     // Look for complex business logic (many if/else, switch)
     const ifCount = (code.match(/\bif\s*\(/g) || []).length;
     if (ifCount > 5) {
+      const codeLines = code.split("\n");
+      let firstIfLine = undefined;
+      for (let i = 0; i < codeLines.length; i++) {
+        if (/\bif\s*\(/.test(codeLines[i])) {
+          firstIfLine = i + 1;
+          break;
+        }
+      }
       findings.push({
         severity: "warning",
         type: "architecture",
+        line: firstIfLine,
         message: `Controller has ${ifCount} conditional branches — possible business logic leak`,
         fix: "Extract complex logic to the service layer. Controller should validate, delegate, respond.",
         reason: "Rule: Controllers thin.",
@@ -237,6 +253,16 @@ function getFiles(args) {
     return files;
   }
 
+  if (args.includes("--diff")) {
+    try {
+      const diff = execSync("git diff --name-only --diff-filter=ACM", { encoding: "utf8" });
+      files.push(...diff.trim().split("\n").filter(f => f && /\.(ts|tsx|js|mjs|py)$/.test(f)));
+    } catch {
+      console.log(`${C.red}  ${I.warn} Not a git repository or no changes.${C.reset}`);
+    }
+    return files;
+  }
+
   if (args.includes("--dir")) {
     const dirIdx = args.indexOf("--dir");
     const dir = args[dirIdx + 1];
@@ -289,7 +315,8 @@ function displayFindings(filepath, findings) {
     const color = f.severity === "error" ? C.red : f.severity === "warning" ? C.yellow : C.blue;
     const icon = f.severity === "error" ? I.cross : f.severity === "warning" ? I.warn : I.dot;
 
-    console.log(`  ${color}${icon} ${f.severity.toUpperCase()}${C.reset} ${C.dim}[${f.type}]${C.reset}`);
+    const lineInfo = f.line ? `${C.dim}:${f.line}${C.reset} ` : "";
+    console.log(`  ${color}${icon} ${f.severity.toUpperCase()}${C.reset} ${lineInfo}${C.dim}[${f.type}]${C.reset}`);
     console.log(`    ${f.message}`);
     console.log(`    ${C.green}Fix: ${f.fix}${C.reset}`);
     if (f.reason) console.log(`    ${C.dim}${f.reason}${C.reset}`);
@@ -308,6 +335,8 @@ function main() {
     console.log(`${C.gray}    archkit review <file>                   Review a single file${C.reset}`);
     console.log(`${C.gray}    archkit review <file1> <file2>          Review multiple files${C.reset}`);
     console.log(`${C.gray}    archkit review --staged                 Review git staged files${C.reset}`);
+    console.log(`${C.dim}    Tip: Add to .git/hooks/pre-commit: archkit review --staged${C.reset}`);
+    console.log(`${C.gray}    archkit review --diff                   Review modified (unstaged) files${C.reset}`);
     console.log(`${C.gray}    archkit review --dir src/features/      Review a directory${C.reset}`);
     console.log("");
     console.log(`${C.yellow}  What it checks:${C.reset}`);
