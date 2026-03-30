@@ -23,6 +23,7 @@ import { execSync } from "child_process";
 import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
 import { commandBanner } from "../lib/banner.mjs";
+import { checkImportHierarchy } from "./review/import-checks.mjs";
 
 function banner() {
   commandBanner("arch-review", "Check code against your .arch/ rules and skills");
@@ -390,6 +391,7 @@ function main() {
       ...checkGotchas(code, skills),
       ...checkArchitectureRules(code, filepath, rules, reservedWords),
       ...checkFileLocation(filepath, graphs),
+      ...checkImportHierarchy(code, filepath),
     ];
 
     if (agentMode) {

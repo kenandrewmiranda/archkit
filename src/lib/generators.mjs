@@ -1,7 +1,9 @@
+import fs from "fs";
 import { ICONS } from "./shared.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
 import { genBoundariesMd } from "../data/boundaries.mjs";
 import { GOTCHA_DB } from "../data/gotcha-db.mjs";
+import { PACKAGE_DOCS } from "../data/package-docs.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GENERATORS
@@ -193,7 +195,22 @@ export function genSkillFile(skillId) {
   const sk = SKILL_CATALOG.find(s => s.id === skillId);
   if (!sk) return "";
   let o = `# ${sk.name}.skill\n\n`;
-  o += `## Meta\npkg: [PACKAGE_NAME]@[VERSION]\ndocs: [OFFICIAL_DOCS_URL]\nupdated: [YYYY-MM-DD]\n\n`;
+
+  // Auto-populate Meta from package-docs map and local package.json
+  const pkgInfo = PACKAGE_DOCS[skillId] || {};
+  let version = null;
+  if (pkgInfo.npm) {
+    try {
+      const pkgJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+      const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
+      version = allDeps[pkgInfo.npm] || null;
+    } catch {}
+  }
+
+  o += `## Meta\n`;
+  o += `pkg: ${pkgInfo.npm || skillId}@${version || "[VERSION]"}\n`;
+  o += `docs: ${pkgInfo.docs || "[DOCS_URL]"}\n`;
+  o += `updated: ${new Date().toISOString().split("T")[0]}\n\n`;
   o += `## Use\n[How YOUR project uses ${sk.name}. 2-3 lines max.]\n[Not what it does generally — how YOUR app uses it specifically.]\n\n`;
   o += `## Patterns\n[The specific import paths, function signatures, and conventions you follow.]\n[List the 5-10 methods/endpoints your app actually calls.]\n\n`;
   o += `## Gotchas\n`;

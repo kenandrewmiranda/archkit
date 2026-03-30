@@ -101,9 +101,6 @@ function cmdContext(archDir, promptText) {
     if (info) filePaths[node] = info.basePath;
   }
 
-  // Relevant rules (from SYSTEM.md)
-  const relevantRules = system.rules;
-
   // Relevant reserved words
   const relevantReserved = system.reservedWords;
 
@@ -124,7 +121,26 @@ function cmdContext(archDir, promptText) {
     apis: Object.fromEntries(
       Object.entries(apis).map(([k, v]) => [k, { endpoints: v.endpoints }])
     ),
-    rules: relevantRules,
+    rules: (() => {
+      // Always include rules containing $reserved word references or universal patterns
+      const always = system.rules.filter(r =>
+        /\$\w+/.test(r) ||
+        /naming|convention|file|import|test|max complexity|controller|service|repo/i.test(r)
+      );
+      // Include contextual rules only if they mention matched features or skills
+      const contextual = system.rules.filter(r => {
+        if (always.includes(r)) return false;
+        const rl = r.toLowerCase();
+        for (const node of matchedNodes) { if (rl.includes(node)) return true; }
+        for (const skill of matchedSkills) { if (rl.includes(skill)) return true; }
+        return false;
+      });
+      // If nothing matched (broad query), return all rules
+      return matchedNodes.size === 0 && matchedSkills.size === 0
+        ? system.rules
+        : [...new Set([...always, ...contextual])];
+    })(),
+    totalRules: system.rules.length,
     reservedWords: relevantReserved,
     suggestedLens: promptText.match(/review|check|audit|find issues/i) ? "review"
       : promptText.match(/plan|research|explore|evaluate|compare/i) ? "research"
