@@ -4,10 +4,10 @@
  * arch-review — Check code against your .arch/ rules and skills
  * 
  * Usage:
- *   node review.mjs <file>                   Review a single file
- *   node review.mjs <file1> <file2> ...      Review multiple files
- *   node review.mjs --staged                 Review git staged files
- *   node review.mjs --dir src/features/      Review all files in a directory
+ *   archkit review <file>                   Review a single file
+ *   archkit review <file1> <file2> ...      Review multiple files
+ *   archkit review --staged                 Review git staged files
+ *   archkit review --dir src/features/      Review all files in a directory
  * 
  * What it checks:
  *   - SYSTEM.md rules (architecture violations)
@@ -305,10 +305,10 @@ function main() {
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     banner();
     console.log(`${C.yellow}  Usage:${C.reset}`);
-    console.log(`${C.gray}    node review.mjs <file>                   Review a single file${C.reset}`);
-    console.log(`${C.gray}    node review.mjs <file1> <file2>          Review multiple files${C.reset}`);
-    console.log(`${C.gray}    node review.mjs --staged                 Review git staged files${C.reset}`);
-    console.log(`${C.gray}    node review.mjs --dir src/features/      Review a directory${C.reset}`);
+    console.log(`${C.gray}    archkit review <file>                   Review a single file${C.reset}`);
+    console.log(`${C.gray}    archkit review <file1> <file2>          Review multiple files${C.reset}`);
+    console.log(`${C.gray}    archkit review --staged                 Review git staged files${C.reset}`);
+    console.log(`${C.gray}    archkit review --dir src/features/      Review a directory${C.reset}`);
     console.log("");
     console.log(`${C.yellow}  What it checks:${C.reset}`);
     console.log(`${C.gray}    ${I.dot} .skill gotchas — known bad patterns from your team's experience${C.reset}`);
@@ -406,7 +406,7 @@ function main() {
   console.log("");
 
   if (totalErrors > 0) {
-    console.log(`  ${C.dim}Tip: Run ${C.reset}${C.cyan}node gotcha.mjs --interactive${C.reset}${C.dim} to add new gotchas you discover.${C.reset}`);
+    console.log(`  ${C.dim}Tip: Run ${C.reset}${C.cyan}archkit gotcha --interactive${C.reset}${C.dim} to add new gotchas you discover.${C.reset}`);
     console.log("");
     process.exit(1);
   }
@@ -415,5 +415,10 @@ function main() {
 export { main };
 
 if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
-  main();
+  try {
+    main();
+  } catch (err) {
+    console.error(`\x1b[31m  Error: ${err.message}\x1b[0m`);
+    process.exit(1);
+  }
 }

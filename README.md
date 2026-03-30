@@ -8,33 +8,33 @@ A context engineering system that makes AI coding agents dramatically more effec
 
 ```bash
 npm install
-node index.mjs            # Interactive wizard
-node index.mjs --claude    # Also generates Claude Code native files
+archkit            # Interactive wizard
+archkit --claude    # Also generates Claude Code native files
 ```
 
 ## Commands
 
 | Command | Purpose | Output |
 |---------|---------|--------|
-| `node index.mjs` | Scaffold `.arch/` directory | Interactive wizard |
-| `node index.mjs --claude` | + Generate CLAUDE.md, .claude/rules/, .claude/skills/ | Claude Code native |
-| `node gotcha.mjs` | Capture bad AI patterns into .skill files | Interactive |
-| `node gotcha.mjs -d` | Session debrief (4 guided questions) | Interactive |
-| `node review.mjs` | Check code against rules and skills | Colored terminal |
-| `node review.mjs --agent` | Same checks, machine-readable | JSON |
-| `node stats.mjs` | Health dashboard with scores | Full dashboard |
-| `node stats.mjs --compact` | One-line health summary | One line |
-| `node extend.mjs` | Self-evolving extension system | Interactive / registry |
-| `node guard.mjs` | Guardrails: validate, audit, enforce | Pass/fail |
-| `node resolve.mjs warmup` | Pre-session readiness gate (NON-NEGOTIABLE) | JSON |
-| `node resolve.mjs context "..."` | Resolve prompt → nodes + skills + files | JSON |
-| `node resolve.mjs preflight <f> <l>` | Verify target before generating code | JSON |
-| `node resolve.mjs scaffold <f>` | Deterministic checklist for new feature | JSON |
-| `node resolve.mjs lookup <id>` | Look up any node, skill, or cluster | JSON |
+| `archkit` | Scaffold `.arch/` directory | Interactive wizard |
+| `archkit --claude` | + Generate CLAUDE.md, .claude/rules/, .claude/skills/ | Claude Code native |
+| `archkit gotcha` | Capture bad AI patterns into .skill files | Interactive |
+| `archkit gotcha -d` | Session debrief (4 guided questions) | Interactive |
+| `archkit review` | Check code against rules and skills | Colored terminal |
+| `archkit review --agent` | Same checks, machine-readable | JSON |
+| `archkit stats` | Health dashboard with scores | Full dashboard |
+| `archkit stats --compact` | One-line health summary | One line |
+| `archkit extend` | Self-evolving extension system | Interactive / registry |
+| `archkit guard` | Guardrails: validate, audit, enforce | Pass/fail |
+| `archkit resolve warmup` | Pre-session readiness gate (NON-NEGOTIABLE) | JSON |
+| `archkit resolve context "..."` | Resolve prompt → nodes + skills + files | JSON |
+| `archkit resolve preflight <f> <l>` | Verify target before generating code | JSON |
+| `archkit resolve scaffold <f>` | Deterministic checklist for new feature | JSON |
+| `archkit resolve lookup <id>` | Look up any node, skill, or cluster | JSON |
 
 ## Claude Code Integration (`--claude`)
 
-When you run `node index.mjs --claude`, archkit generates Claude Code native files alongside `.arch/`:
+When you run `archkit --claude`, archkit generates Claude Code native files alongside `.arch/`:
 
 ```
 project-root/
@@ -77,19 +77,19 @@ Claude Code auto-loads `CLAUDE.md` and `.claude/rules/` every session. Path-targ
 
 **Self-improving.** Every session debrief, every gotcha captured, every stale skill flagged by warmup makes the system permanently smarter.
 
-**Non-negotiable warmup.** `resolve.mjs warmup` runs before any code generation. Blockers = stop. Warnings = proceed with awareness.
+**Non-negotiable warmup.** `archkit resolve warmup` runs before any code generation. Blockers = stop. Warnings = proceed with awareness.
 
 ## Session Protocol
 
 ```
-1. Warmup    → node resolve.mjs warmup           (hard gate)
-2. Context   → node resolve.mjs context "..."     (resolve prompt)
-3. Scaffold  → node resolve.mjs scaffold <feat>   (if new feature)
-4. Preflight → node resolve.mjs preflight <f> <l> (if existing)
+1. Warmup    → archkit resolve warmup           (hard gate)
+2. Context   → archkit resolve context "..."     (resolve prompt)
+3. Scaffold  → archkit resolve scaffold <feat>   (if new feature)
+4. Preflight → archkit resolve preflight <f> <l> (if existing)
 5. Generate  → sub-agent implements from checklist
 6. Test      → main agent writes failing test first (TDD)
-7. Review    → node review.mjs --agent             (final gate)
-8. Debrief   → node gotcha.mjs -d                  (capture learnings)
+7. Review    → archkit review --agent             (final gate)
+8. Debrief   → archkit gotcha -d                  (capture learnings)
 ```
 
 ## Supported App Types

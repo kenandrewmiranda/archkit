@@ -49,16 +49,6 @@ function tree(label, isLast = false) {
   console.log(`${C.gray}    ${prefix}── ${C.reset}${label}`);
 }
 
-function codeBlock(lines, label) {
-  if (label) console.log(`${C.gray}  ${label}:${C.reset}`);
-  console.log(`${C.gray}  ┌${"─".repeat(62)}┐${C.reset}`);
-  for (const line of lines) {
-    const padded = line.padEnd(60);
-    console.log(`${C.gray}  │ ${C.reset}${C.dim}${padded}${C.reset}${C.gray} │${C.reset}`);
-  }
-  console.log(`${C.gray}  └${"─".repeat(62)}┘${C.reset}`);
-}
-
 function filePreview(filepath, content) {
   const allLines = content.split("\n");
   const preview = allLines.slice(0, 8);
@@ -691,13 +681,13 @@ function generateFiles(state) {
     for (const [k, v] of Object.entries(at.reservedWords)) claudeMd += `- ${k} = ${v}\n`;
     claudeMd += `\n## Naming\nFiles: kebab-case | Types: PascalCase | Funcs: camelCase | Tables: snake_case | Env: SCREAMING_SNAKE\n`;
     claudeMd += `\n## Session Protocol (NON-NEGOTIABLE)\n`;
-    claudeMd += `- BEFORE any code generation: run \`node resolve.mjs warmup\` in .arch-tools/\n`;
+    claudeMd += `- BEFORE any code generation: run \`archkit resolve warmup\`\n`;
     claudeMd += `- If warmup returns blockers: FIX THEM. No exceptions.\n`;
-    claudeMd += `- BEFORE new feature: run \`node resolve.mjs scaffold <featureId>\`\n`;
-    claudeMd += `- BEFORE editing existing feature: run \`node resolve.mjs preflight <feature> <layer>\`\n`;
-    claudeMd += `- AT SESSION END: suggest \`node gotcha.mjs --debrief\`\n`;
+    claudeMd += `- BEFORE new feature: run \`archkit resolve scaffold <featureId>\`\n`;
+    claudeMd += `- BEFORE editing existing feature: run \`archkit resolve preflight <feature> <layer>\`\n`;
+    claudeMd += `- AT SESSION END: suggest \`archkit gotcha --debrief\`\n`;
     claudeMd += `\n## Delegation\nDelegate deterministic work to sub-agents + CLI tools first (70-80%).\n`;
-    claudeMd += `Main agent finalizes with TDD: write failing test → verify generated code passes → review.mjs --agent as gate.\n`;
+    claudeMd += `Main agent finalizes with TDD: write failing test → verify generated code passes → archkit review --agent as gate.\n`;
     claudeMd += `\n## Context Files\n`;
     claudeMd += `- Architecture graphs: @.arch/clusters/ (Key-Rel-Dep v2 notation)\n`;
     claudeMd += `- Package skills: @.arch/skills/ (WRONG/RIGHT/WHY gotchas)\n`;

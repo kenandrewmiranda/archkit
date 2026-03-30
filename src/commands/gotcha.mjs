@@ -4,14 +4,14 @@
  * arch-gotcha — Capture bad AI-generated patterns into .skill files
  * 
  * Usage:
- *   node gotcha.mjs <skill> "<wrong>" "<right>" "<why>"
- *   node gotcha.mjs --interactive
- *   node gotcha.mjs --from-diff <file>
+ *   archkit gotcha <skill> "<wrong>" "<right>" "<why>"
+ *   archkit gotcha --interactive
+ *   archkit gotcha --from-diff <file>
  * 
  * Examples:
- *   node gotcha.mjs stripe "req.body" "req.rawBody" "Express parses JSON. Stripe needs raw bytes."
- *   node gotcha.mjs prisma "new PrismaClient()" "globalThis.prisma ??= new PrismaClient()" "Serverless creates new instance per request. Exhausts connections."
- *   node gotcha.mjs --interactive
+ *   archkit gotcha stripe "req.body" "req.rawBody" "Express parses JSON. Stripe needs raw bytes."
+ *   archkit gotcha prisma "new PrismaClient()" "globalThis.prisma ??= new PrismaClient()" "Serverless creates new instance per request. Exhausts connections."
+ *   archkit gotcha --interactive
  */
 
 import inquirer from "inquirer";
@@ -370,7 +370,7 @@ async function debriefMode(archDir) {
   console.log("");
   console.log(`${C.gray}  ${"─".repeat(50)}${C.reset}`);
   console.log(`${C.green}  ${I.check} Debrief complete.${C.reset}`);
-  console.log(`${C.dim}  Run ${C.cyan}node stats.mjs${C.dim} to see updated health score.${C.reset}`);
+  console.log(`${C.dim}  Run ${C.cyan}archkit stats${C.dim} to see updated health score.${C.reset}`);
   console.log("");
 }
 
@@ -403,12 +403,12 @@ async function cliMode(args) {
   if (!skillId || !wrong || !right || !why) {
     banner();
     console.log(`${C.yellow}  Usage:${C.reset}`);
-    console.log(`${C.gray}    node gotcha.mjs <skill> "<wrong>" "<right>" "<why>"${C.reset}`);
-    console.log(`${C.gray}    node gotcha.mjs --interactive${C.reset}`);
+    console.log(`${C.gray}    archkit gotcha <skill> "<wrong>" "<right>" "<why>"${C.reset}`);
+    console.log(`${C.gray}    archkit gotcha --interactive${C.reset}`);
     console.log("");
     console.log(`${C.yellow}  Examples:${C.reset}`);
-    console.log(`${C.gray}    node gotcha.mjs stripe "req.body" "req.rawBody" "Express parses. Stripe needs raw."${C.reset}`);
-    console.log(`${C.gray}    node gotcha.mjs prisma "new PrismaClient()" "globalThis.prisma ??= new PrismaClient()" "Serverless connection exhaustion"${C.reset}`);
+    console.log(`${C.gray}    archkit gotcha stripe "req.body" "req.rawBody" "Express parses. Stripe needs raw."${C.reset}`);
+    console.log(`${C.gray}    archkit gotcha prisma "new PrismaClient()" "globalThis.prisma ??= new PrismaClient()" "Serverless connection exhaustion"${C.reset}`);
     console.log("");
     process.exit(1);
   }

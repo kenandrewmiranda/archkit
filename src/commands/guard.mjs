@@ -6,11 +6,11 @@
  * Hard pass/fail gate. No extension registers without passing all checks.
  * 
  * Usage:
- *   node guard.mjs validate <extension.mjs>     Validate a single extension
- *   node guard.mjs validate-all                  Validate all registered extensions
- *   node guard.mjs audit                         Full security audit of .arch/ system
- *   node guard.mjs policy                        Show current policy rules
- *   node guard.mjs enforce                       Re-validate all extensions, remove failures
+ *   archkit guard validate <extension.mjs>     Validate a single extension
+ *   archkit guard validate-all                  Validate all registered extensions
+ *   archkit guard audit                         Full security audit of .arch/ system
+ *   archkit guard policy                        Show current policy rules
+ *   archkit guard enforce                       Re-validate all extensions, remove failures
  */
 
 import fs from "fs";
@@ -604,7 +604,7 @@ async function cmdEnforce(archDir) {
     removed.forEach(r => console.log(`    ${C.red}${I.fail}${C.reset} ${r.name} (${r.reason})`));
     console.log("");
     console.log(`  ${C.gray}Extension files are kept on disk but deregistered.${C.reset}`);
-    console.log(`  ${C.gray}Fix the violations and re-register with: node extend.mjs create${C.reset}`);
+    console.log(`  ${C.gray}Fix the violations and re-register with: archkit extend create${C.reset}`);
   } else {
     console.log(`  ${C.green}${I.shield} All ${surviving.length} extensions are compliant. No changes.${C.reset}`);
   }
@@ -662,7 +662,7 @@ async function main() {
 
   switch (cmd) {
     case "validate": {
-      if (!args[1]) { console.log(`${C.red}  Provide a file path: node guard.mjs validate <file.mjs>${C.reset}\n`); return; }
+      if (!args[1]) { console.log(`${C.red}  Provide a file path: archkit guard validate <file.mjs>${C.reset}\n`); return; }
       banner();
       const passed = await cmdValidate(archDir, args[1]);
       console.log("");
@@ -697,7 +697,7 @@ async function main() {
     default:
       banner();
       console.log(`${C.red}  Unknown command: ${cmd}${C.reset}`);
-      console.log(`${C.gray}  Run: node guard.mjs --help${C.reset}\n`);
+      console.log(`${C.gray}  Run: archkit guard --help${C.reset}\n`);
   }
 }
 

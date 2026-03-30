@@ -8,10 +8,10 @@
  * or next steps it can look up deterministically.
  * 
  * Commands:
- *   node resolve.mjs context "<prompt text>"     Resolve keywords → nodes + skills + files
- *   node resolve.mjs preflight <feature> <layer>  Verify target before generating code
- *   node resolve.mjs scaffold <featureId>         Return checklist for new feature scaffolding
- *   node resolve.mjs lookup <nodeOrSkillId>       Look up a single node or skill details
+ *   archkit resolve context "<prompt text>"     Resolve keywords → nodes + skills + files
+ *   archkit resolve preflight <feature> <layer>  Verify target before generating code
+ *   archkit resolve scaffold <featureId>         Return checklist for new feature scaffolding
+ *   archkit resolve lookup <nodeOrSkillId>       Look up a single node or skill details
  * 
  * All commands output JSON to stdout. Human-readable with --pretty flag.
  */
@@ -139,7 +139,7 @@ function cmdPreflight(archDir, featureId, layer) {
   if (nodeInfo) {
     checks.push({ check: "Feature exists in INDEX.md", status: "pass", detail: `@${featureId} → [${nodeInfo.cluster}]` });
   } else {
-    checks.push({ check: "Feature exists in INDEX.md", status: "fail", detail: `@${featureId} not found. Run: node extend.mjs run scaffold-feature ${featureId}` });
+    checks.push({ check: "Feature exists in INDEX.md", status: "fail", detail: `@${featureId} not found. Run: archkit extend run scaffold-feature ${featureId}` });
     pass = false;
   }
 
@@ -368,8 +368,8 @@ function cmdWarmup(archDir, deep) {
   if (systemContent) {
     checks.push({ id: "W001", check: "SYSTEM.md exists", status: "pass" });
   } else {
-    checks.push({ id: "W001", check: "SYSTEM.md exists", status: "fail", detail: "Run node index.mjs to scaffold" });
-    blockers.push("SYSTEM.md missing — no rules loaded. Run node index.mjs");
+    checks.push({ id: "W001", check: "SYSTEM.md exists", status: "fail", detail: "Run archkit to scaffold" });
+    blockers.push("SYSTEM.md missing — no rules loaded. Run archkit");
     pass = false;
   }
 
@@ -377,8 +377,8 @@ function cmdWarmup(archDir, deep) {
   if (indexContent) {
     checks.push({ id: "W002", check: "INDEX.md exists", status: "pass" });
   } else {
-    checks.push({ id: "W002", check: "INDEX.md exists", status: "fail", detail: "Run node index.mjs to scaffold" });
-    blockers.push("INDEX.md missing — no context routing. Run node index.mjs");
+    checks.push({ id: "W002", check: "INDEX.md exists", status: "fail", detail: "Run archkit to scaffold" });
+    blockers.push("INDEX.md missing — no context routing. Run archkit");
     pass = false;
   }
 
@@ -391,7 +391,7 @@ function cmdWarmup(archDir, deep) {
     checks.push({ id: "W003", check: "Graph clusters exist", status: "pass", detail: `${graphFiles.length} clusters` });
   } else {
     checks.push({ id: "W003", check: "Graph clusters exist", status: "fail", detail: "No .graph files. Architecture unknown." });
-    blockers.push("No graph clusters — architecture context missing. Run node index.mjs");
+    blockers.push("No graph clusters — architecture context missing. Run archkit");
     pass = false;
   }
 
@@ -456,7 +456,7 @@ function cmdWarmup(archDir, deep) {
     checks.push({ id: "W006", check: "Skills present", status: "pass", detail: `${skillFiles.length} skills, ${totalGotchas} gotchas` });
   } else {
     checks.push({ id: "W006", check: "Skills present", status: "warn", detail: "No skill files — AI will use training data defaults" });
-    warnings.push("No skills loaded. AI will guess at package patterns. Run node index.mjs to generate skill skeletons.");
+    warnings.push("No skills loaded. AI will guess at package patterns. Run archkit to generate skill skeletons.");
   }
 
   if (emptySkills.length > 0) {
@@ -473,7 +473,7 @@ function cmdWarmup(archDir, deep) {
   if (pendingGotchas.length > 0) {
     checks.push({ id: "W009", check: "Pending TODO-GOTCHAs", status: "warn", detail: pendingGotchas.map(p => `${p.id}(${p.count})`).join(", ") });
     warnings.push(`${pendingGotchas.reduce((s, p) => s + p.count, 0)} unresolved TODO-GOTCHA(s) in: ${pendingGotchas.map(p => p.id).join(", ")}. Convert to WRONG/RIGHT/WHY format.`);
-    actions.push("Run node gotcha.mjs -i to convert TODO-GOTCHAs to real gotchas");
+    actions.push("Run archkit gotcha -i to convert TODO-GOTCHAs to real gotchas");
   }
 
   // 5. INDEX.md cross-references
@@ -514,7 +514,7 @@ function cmdWarmup(archDir, deep) {
         if (uncoveredPkgs.length > 0) {
           checks.push({ id: "W011", check: "Dependencies without skills", status: "warn", detail: uncoveredPkgs.join(", ") });
           warnings.push(`${uncoveredPkgs.length} important package(s) have no .skill file: ${uncoveredPkgs.join(", ")}`);
-          actions.push(`Create skills for: ${uncoveredPkgs.join(", ")} using node extend.mjs run add-skill <name>`);
+          actions.push(`Create skills for: ${uncoveredPkgs.join(", ")} using archkit extend run add-skill <name>`);
         } else {
           checks.push({ id: "W011", check: "Dependencies covered by skills", status: "pass", detail: `${importantPkgs.length} major deps all have skills` });
         }
@@ -553,7 +553,7 @@ function cmdWarmup(archDir, deep) {
           const orphaned = registry.filter(e => !fs.existsSync(path.join(extDir, e.file)));
           if (orphaned.length > 0) {
             checks.push({ id: "W013", check: "Extension registry integrity", status: "warn", detail: `${orphaned.length} orphaned entries` });
-            warnings.push(`${orphaned.length} extension(s) registered but file missing. Run node guard.mjs enforce`);
+            warnings.push(`${orphaned.length} extension(s) registered but file missing. Run archkit guard enforce`);
           } else {
             checks.push({ id: "W013", check: "Extension registry integrity", status: "pass", detail: `${registry.length} extensions valid` });
           }

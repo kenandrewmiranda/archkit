@@ -7,12 +7,12 @@
  * Extensions live in .arch/extensions/ and are discoverable by both humans and AI.
  * 
  * Usage:
- *   node extend.mjs create            Interactive extension builder
- *   node extend.mjs list              List all extensions with descriptions
- *   node extend.mjs run <name> [args] Run an extension
- *   node extend.mjs describe <name>   Show full extension details
- *   node extend.mjs remove <name>     Remove an extension
- *   node extend.mjs registry          Output the registry for AI context injection
+ *   archkit extend create            Interactive extension builder
+ *   archkit extend list              List all extensions with descriptions
+ *   archkit extend run <name> [args] Run an extension
+ *   archkit extend describe <name>   Show full extension details
+ *   archkit extend remove <name>     Remove an extension
+ *   archkit extend registry          Output the registry for AI context injection
  */
 
 import inquirer from "inquirer";
@@ -67,7 +67,7 @@ function generateExtension(meta) {
  * Created: ${new Date().toISOString().split("T")[0]}
  * 
  * Usage:
- *   node extend.mjs run ${name} [args...]
+ *   archkit extend run ${name} [args...]
  */
 
 export const meta = {
@@ -278,7 +278,7 @@ updated: \${new Date().toISOString().split("T")[0]}
 
 ## Gotchas
 [Add WRONG/RIGHT/WHY entries as you discover them.]
-[Run: node gotcha.mjs \${skillId} "wrong" "right" "why"]
+[Run: archkit gotcha \${skillId} "wrong" "right" "why"]
 
 ## Boundaries
 [What \${skillId} does NOT do in your project.]
@@ -306,7 +306,7 @@ updated: \${new Date().toISOString().split("T")[0]}
   }
   
   console.log(\`\\n  Now fill in the skill with your team's knowledge.\`);
-  console.log(\`  Add gotchas as you find them: node gotcha.mjs \${skillId} "wrong" "right" "why"\`);`,
+  console.log(\`  Add gotchas as you find them: archkit gotcha \${skillId} "wrong" "right" "why"\`);`,
   },
 
   "gen-types": {
@@ -582,7 +582,7 @@ async function cmdCreate(archDir) {
   console.log(`${C.gray}  Registry updated: ${registry.length} extension${registry.length > 1 ? "s" : ""} total${C.reset}`);
   console.log("");
   console.log(`${C.yellow}  Run it:${C.reset}`);
-  console.log(`${C.gray}    node extend.mjs run ${meta.name} ${meta.args.map(a => a.required ? `<${a.name}>` : `[${a.name}]`).join(" ")}${C.reset}`);
+  console.log(`${C.gray}    archkit extend run ${meta.name} ${meta.args.map(a => a.required ? `<${a.name}>` : `[${a.name}]`).join(" ")}${C.reset}`);
   console.log("");
 
   if (source === "__custom") {
@@ -595,7 +595,7 @@ function cmdList(archDir) {
   const registry = loadRegistry(archDir);
   if (registry.length === 0) {
     console.log(`${C.gray}  No extensions installed.${C.reset}`);
-    console.log(`${C.gray}  Run: node extend.mjs create${C.reset}`);
+    console.log(`${C.gray}  Run: archkit extend create${C.reset}`);
     console.log("");
     return;
   }
@@ -650,7 +650,7 @@ function cmdDescribe(archDir, name) {
     console.log("");
   }
 
-  console.log(`  ${C.yellow}Run:${C.reset} node extend.mjs run ${ext.name} ${ext.args.map(a => a.required ? `<${a.name}>` : `[${a.name}]`).join(" ")}`);
+  console.log(`  ${C.yellow}Run:${C.reset} archkit extend run ${ext.name} ${ext.args.map(a => a.required ? `<${a.name}>` : `[${a.name}]`).join(" ")}`);
   console.log("");
 }
 
@@ -660,7 +660,7 @@ async function cmdRun(archDir, name, args) {
 
   if (!fs.existsSync(extPath)) {
     console.log(`${C.red}  Extension "${name}" not found at ${extPath}${C.reset}`);
-    console.log(`${C.gray}  Run: node extend.mjs list${C.reset}\n`);
+    console.log(`${C.gray}  Run: archkit extend list${C.reset}\n`);
     return;
   }
 
@@ -794,7 +794,7 @@ async function main() {
     default:
       banner();
       console.log(`${C.red}  Unknown command: ${cmd}${C.reset}`);
-      console.log(`${C.gray}  Run: node extend.mjs --help${C.reset}\n`);
+      console.log(`${C.gray}  Run: archkit extend --help${C.reset}\n`);
   }
 }
 

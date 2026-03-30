@@ -4,10 +4,10 @@
  * arch-stats — Show coverage and health of your .arch/ context system
  * 
  * Usage:
- *   node stats.mjs              Full dashboard
- *   node stats.mjs --skills     Skills coverage only
- *   node stats.mjs --graphs     Graph coverage only  
- *   node stats.mjs --stale      Show stale/empty files that need attention
+ *   archkit stats              Full dashboard
+ *   archkit stats --skills     Skills coverage only
+ *   archkit stats --graphs     Graph coverage only  
+ *   archkit stats --stale      Show stale/empty files that need attention
  */
 
 import fs from "fs";
@@ -39,7 +39,7 @@ function analyzeSystem(archDir) {
   if (!fs.existsSync(fp)) return { exists: false };
   const content = fs.readFileSync(fp, "utf8");
   const rules = (content.match(/^- .+/gm) || []).length;
-  const reserved = (content.match(/^\$.+=/gm) || []).length;
+  const reserved = (content.match(/^\$.+ =/gm) || []).length;
   const hasNaming = content.includes("## Naming");
   const hasOnGenerate = content.includes("## On Generate");
   return { exists: true, rules, reserved, hasNaming, hasOnGenerate, size: content.length };
@@ -165,7 +165,7 @@ function displaySkillsHealth(skills) {
     console.log(`  ${C.yellow}${I.warn} ${empty.length} skill${empty.length > 1 ? "s are" : " is"} still skeleton${empty.length > 1 ? "s" : ""}:${C.reset}`);
     console.log(`  ${C.gray}  ${empty.map(s => s.id).join(", ")}${C.reset}`);
     console.log(`  ${C.dim}  Fill these in as you encounter gotchas, or run:${C.reset}`);
-    console.log(`  ${C.cyan}  node gotcha.mjs --interactive${C.reset}`);
+    console.log(`  ${C.cyan}  archkit gotcha --interactive${C.reset}`);
   }
 }
 
@@ -295,7 +295,7 @@ function displayOverallScore(sys, idx, skills, graphs, apis) {
     const empty = skills.filter(s => s.completeness === 0);
     if (empty.length > 0) recs.push(`Fill in ${empty.length} skeleton skill${empty.length > 1 ? "s" : ""}: ${empty.slice(0, 3).map(s => s.id).join(", ")}${empty.length > 3 ? "..." : ""}`);
     const noGotchas = skills.filter(s => s.gotchas === 0 && s.completeness > 0);
-    if (noGotchas.length > 0) recs.push(`Add gotchas to: ${noGotchas.slice(0, 3).map(s => s.id).join(", ")} — run: node gotcha.mjs -i`);
+    if (noGotchas.length > 0) recs.push(`Add gotchas to: ${noGotchas.slice(0, 3).map(s => s.id).join(", ")} — run: archkit gotcha -i`);
   }
   if (apis.length > 0) {
     const stubs = apis.filter(a => a.isStub);
