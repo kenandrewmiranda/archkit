@@ -6,6 +6,9 @@ import path from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Signal to command modules that they should self-execute
+process.env.ARCHKIT_RUN = "1";
+
 // Route to the correct command
 const command = process.argv[2];
 

@@ -950,7 +950,11 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error(`\n${C.red}  Error: ${err.message}${C.reset}\n`);
-  process.exit(1);
-});
+export { main };
+
+if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+  main().catch(err => {
+    console.error(`\n${C.red}  Error: ${err.message}${C.reset}\n`);
+    process.exit(1);
+  });
+}

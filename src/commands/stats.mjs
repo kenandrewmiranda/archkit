@@ -380,4 +380,8 @@ function main() {
   }
 }
 
-main();
+export { main };
+
+if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+  main();
+}

@@ -420,8 +420,12 @@ async function cliMode(args) {
   }
 }
 
-const args = process.argv.slice(2);
-cliMode(args).catch(err => {
-  console.error(`${C.red}  Error: ${err.message}${C.reset}`);
-  process.exit(1);
-});
+export { cliMode as main };
+
+if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+  const args = process.argv.slice(2);
+  cliMode(args).catch(err => {
+    console.error(`${C.red}  Error: ${err.message}${C.reset}`);
+    process.exit(1);
+  });
+}

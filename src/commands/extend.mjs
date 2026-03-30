@@ -798,7 +798,11 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error(`${C.red}  Error: ${err.message}${C.reset}`);
-  process.exit(1);
-});
+export { main };
+
+if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+  main().catch(err => {
+    console.error(`${C.red}  Error: ${err.message}${C.reset}`);
+    process.exit(1);
+  });
+}
