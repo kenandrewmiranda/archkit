@@ -1,0 +1,29 @@
+# WebSocket.skill
+
+## Meta
+pkg: ws@[VERSION]
+docs: https://github.com/websockets/ws
+updated: 2026-03-31
+
+## Use
+[How YOUR project uses WebSocket. 2-3 lines max.]
+[Not what it does generally — how YOUR app uses it specifically.]
+
+## Patterns
+[The specific import paths, function signatures, and conventions you follow.]
+[List the 5-10 methods/endpoints your app actually calls.]
+
+## Gotchas
+WRONG: [the code the AI will generate by default]
+RIGHT: [the code it should generate instead]
+WHY: [one-line explanation of the failure mode]
+
+[Add more WRONG/RIGHT/WHY blocks as you discover them.]
+
+## Boundaries
+[What WebSocket does NOT do in your project.]
+[Prevents the AI from overreaching with this package.]
+
+## Snippets
+[2-3 code blocks showing the correct pattern in YOUR project.]
+[These are the patterns the AI will clone.]

@@ -1,0 +1,37 @@
+# Docker.skill
+
+## Meta
+pkg: docker@[VERSION]
+docs: https://docs.docker.com
+updated: 2026-03-31
+
+## Use
+[How YOUR project uses Docker. 2-3 lines max.]
+[Not what it does generally — how YOUR app uses it specifically.]
+
+## Patterns
+[The specific import paths, function signatures, and conventions you follow.]
+[List the 5-10 methods/endpoints your app actually calls.]
+
+## Gotchas
+WRONG: FROM node:latest
+RIGHT: FROM node:20-alpine
+WHY: latest tag is unpredictable, full image is 1GB+. Pin version, use alpine for smaller images.
+
+WRONG: COPY . .
+RIGHT: COPY package*.json ./ && RUN npm ci && COPY . .
+WHY: Copying everything first invalidates the npm install cache on every code change. Copy package.json first.
+
+WRONG: RUN npm install
+RIGHT: RUN npm ci --omit=dev
+WHY: npm install uses fuzzy versions and includes devDependencies. npm ci is deterministic and faster.
+
+[Add more WRONG/RIGHT/WHY blocks as you discover them.]
+
+## Boundaries
+[What Docker does NOT do in your project.]
+[Prevents the AI from overreaching with this package.]
+
+## Snippets
+[2-3 code blocks showing the correct pattern in YOUR project.]
+[These are the patterns the AI will clone.]

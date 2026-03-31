@@ -1,0 +1,37 @@
+# Prisma ORM.skill
+
+## Meta
+pkg: @prisma/client@[VERSION]
+docs: https://www.prisma.io/docs
+updated: 2026-03-31
+
+## Use
+[How YOUR project uses Prisma ORM. 2-3 lines max.]
+[Not what it does generally — how YOUR app uses it specifically.]
+
+## Patterns
+[The specific import paths, function signatures, and conventions you follow.]
+[List the 5-10 methods/endpoints your app actually calls.]
+
+## Gotchas
+WRONG: new PrismaClient()
+RIGHT: globalThis.prisma ??= new PrismaClient()
+WHY: Serverless/dev hot-reload creates new instance per request. Exhausts connection pool.
+
+WRONG: prisma.user.findMany()
+RIGHT: prisma.user.findMany({ select: { id: true, name: true } })
+WHY: Without select/include, Prisma returns all scalar fields. Over-fetching wastes bandwidth.
+
+WRONG: await prisma.user.create(); await prisma.profile.create();
+RIGHT: await prisma.$transaction([prisma.user.create(...), prisma.profile.create(...)])
+WHY: Multiple writes without a transaction can leave data in an inconsistent state on failure.
+
+[Add more WRONG/RIGHT/WHY blocks as you discover them.]
+
+## Boundaries
+[What Prisma ORM does NOT do in your project.]
+[Prevents the AI from overreaching with this package.]
+
+## Snippets
+[2-3 code blocks showing the correct pattern in YOUR project.]
+[These are the patterns the AI will clone.]

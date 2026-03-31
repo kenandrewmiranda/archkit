@@ -1,0 +1,5 @@
+--- events ---
+EvtTasksChanged [E~] : {tasksId,...} | @tasks ⇒ THIS ⇒ [subscribers]
+EvtAuthChanged [E~] : {authId,...} | @auth ⇒ THIS ⇒ [subscribers]
+EvtTeamsChanged [E~] : {teamsId,...} | @teams ⇒ THIS ⇒ [subscribers]
+---

@@ -1,0 +1,5 @@
+--- rag [feature] ---
+ChainRag [L]    : RAG (document Q&A) chain | API ← THIS → $llm,$vec,$guard
+PromptRagSys [T] : RAG (document Q&A) system prompt | ChainRag ← THIS
+EvalRag  [X]    : RAG (document Q&A) eval suite | ChainRag ← THIS
+---

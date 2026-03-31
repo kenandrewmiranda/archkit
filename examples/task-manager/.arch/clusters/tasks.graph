@@ -1,0 +1,8 @@
+--- tasks [feature] ---
+TasksCont  [C]    : Task management routes | $auth → THIS → TasksSer
+TasksSer   [S]    : Task management business logic | TasksCont ← THIS → TasksRepo ⇒ EvtTasksChanged
+TasksRepo  [R]    : tasks tables, RLS $tenant | TasksSer ← THIS → $db
+TasksType  [T]    : Tasks, CreateTasksDto, UpdateTasksDto
+TasksVal   [V]    : Zod schemas for tasks input | TasksCont ← THIS
+TasksTest  [X]    : unit + integration tests
+---

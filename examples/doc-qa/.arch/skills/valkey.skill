@@ -1,0 +1,37 @@
+# Valkey / Redis.skill
+
+## Meta
+pkg: ioredis@[VERSION]
+docs: https://redis.github.io/ioredis/
+updated: 2026-03-31
+
+## Use
+[How YOUR project uses Valkey / Redis. 2-3 lines max.]
+[Not what it does generally — how YOUR app uses it specifically.]
+
+## Patterns
+[The specific import paths, function signatures, and conventions you follow.]
+[List the 5-10 methods/endpoints your app actually calls.]
+
+## Gotchas
+WRONG: JSON.stringify for all cache values
+RIGHT: Use msgpack or store primitives directly
+WHY: JSON.stringify is slow for large objects. For simple values (counters, flags), store directly.
+
+WRONG: no TTL on cache keys
+RIGHT: SET key value EX 3600
+WHY: Keys without TTL accumulate forever. Memory grows until OOM. Always set expiration.
+
+WRONG: DEL key (synchronous delete)
+RIGHT: UNLINK key (async delete)
+WHY: DEL blocks Redis for large keys. UNLINK frees memory in the background.
+
+[Add more WRONG/RIGHT/WHY blocks as you discover them.]
+
+## Boundaries
+[What Valkey / Redis does NOT do in your project.]
+[Prevents the AI from overreaching with this package.]
+
+## Snippets
+[2-3 code blocks showing the correct pattern in YOUR project.]
+[These are the patterns the AI will clone.]

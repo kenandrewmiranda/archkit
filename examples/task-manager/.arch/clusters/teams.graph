@@ -1,0 +1,8 @@
+--- teams [feature] ---
+TeamsCont  [C]    : Team management routes | $auth → THIS → TeamsSer
+TeamsSer   [S]    : Team management business logic | TeamsCont ← THIS → TeamsRepo ⇒ EvtTeamsChanged
+TeamsRepo  [R]    : teams tables, RLS $tenant | TeamsSer ← THIS → $db
+TeamsType  [T]    : Teams, CreateTeamsDto, UpdateTeamsDto
+TeamsVal   [V]    : Zod schemas for teams input | TeamsCont ← THIS
+TeamsTest  [X]    : unit + integration tests
+---

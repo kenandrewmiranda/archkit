@@ -1,0 +1,10 @@
+--- infra [shared,critical] ---
+DB        [R#*]  : PostgreSQL for persistent data (messages, channels, users) | AllRepos → THIS
+Cache     [R#*]  : Valkey for ephemeral state (presence, typing, recent messages) | Sers → THIS
+---
+
+--- gateway [connection-lifecycle] ---
+GateConn     [G#!$] : WS handshake, JWT auth, heartbeat | Clients ↔ THIS
+GateRooms    [G#]   : Join/leave, member tracking, broadcast | GateConn ← THIS ↔ $pubsub
+GatePresence [G#~]  : Online/offline/typing (ephemeral) | GateConn ← THIS ↔ $cache
+---

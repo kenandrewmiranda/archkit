@@ -1,0 +1,5 @@
+--- summarize [feature] ---
+ChainSummarize [L]    : Summarization chain | API ← THIS → $llm,$vec,$guard
+PromptSummarizeSys [T] : Summarization system prompt | ChainSummarize ← THIS
+EvalSummarize  [X]    : Summarization eval suite | ChainSummarize ← THIS
+---

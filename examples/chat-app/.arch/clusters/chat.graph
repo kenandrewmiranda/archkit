@@ -1,0 +1,5 @@
+--- chat [feature] ---
+HndChat   [H]    : Chat messaging message handler | GateConn ← THIS → DomChat,PersChat
+DomChat   [D]    : Chat messaging pure logic (no I/O) | HndChat ← THIS
+PersChat  [R~]   : Chat messaging async persistence | HndChat ← THIS → $db
+---

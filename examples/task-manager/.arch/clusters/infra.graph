@@ -1,0 +1,12 @@
+--- infra [shared,critical] ---
+DB        [R#*]  : PostgreSQL | AllRepos → THIS
+Cache     [R#*]  : Valkey cache layer | Sers → THIS
+Err       [U*]   : typed error classes | AllSers ← THIS
+EvtBus    [U*~]  : domain event bus | AllSers ↔ THIS
+---
+
+--- middleware [shared] ---
+MidAuth   [M*$]  : JWT validate, attach user+perms | AllConts → THIS
+MidTen    [M*$]  : Extract tenant_id, set RLS var | AllConts → THIS → MidAuth
+MidErr    [M*]   : Catch typed errors, return JSON | App → THIS → Err
+---

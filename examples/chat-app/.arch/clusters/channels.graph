@@ -1,0 +1,5 @@
+--- channels [feature] ---
+HndChannels   [H]    : Channels & rooms message handler | GateConn ← THIS → DomChannels,PersChannels
+DomChannels   [D]    : Channels & rooms pure logic (no I/O) | HndChannels ← THIS
+PersChannels  [R~]   : Channels & rooms async persistence | HndChannels ← THIS → $db
+---

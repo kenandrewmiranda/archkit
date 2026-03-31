@@ -1,0 +1,37 @@
+# PostgreSQL.skill
+
+## Meta
+pkg: pg@[VERSION]
+docs: https://node-postgres.com
+updated: 2026-03-31
+
+## Use
+[How YOUR project uses PostgreSQL. 2-3 lines max.]
+[Not what it does generally — how YOUR app uses it specifically.]
+
+## Patterns
+[The specific import paths, function signatures, and conventions you follow.]
+[List the 5-10 methods/endpoints your app actually calls.]
+
+## Gotchas
+WRONG: new Pool() per request
+RIGHT: const pool = new Pool(); // module-level singleton
+WHY: Creates a new connection pool per request. Exhausts max_connections within minutes under load.
+
+WRONG: SELECT * FROM users
+RIGHT: SELECT id, name, email FROM users
+WHY: SELECT * fetches all columns including large text/blob fields. Wastes bandwidth and memory.
+
+WRONG: string concatenation in queries: `WHERE id = ${id}`
+RIGHT: pool.query('WHERE id = $1', [id])
+WHY: SQL injection. Always use parameterized queries.
+
+[Add more WRONG/RIGHT/WHY blocks as you discover them.]
+
+## Boundaries
+[What PostgreSQL does NOT do in your project.]
+[Prevents the AI from overreaching with this package.]
+
+## Snippets
+[2-3 code blocks showing the correct pattern in YOUR project.]
+[These are the patterns the AI will clone.]

@@ -1,0 +1,8 @@
+--- auth [feature] ---
+AuthCont  [C]    : Authentication routes | $auth → THIS → AuthSer
+AuthSer   [S]    : Authentication business logic | AuthCont ← THIS → AuthRepo ⇒ EvtAuthChanged
+AuthRepo  [R]    : auth tables, RLS $tenant | AuthSer ← THIS → $db
+AuthType  [T]    : Auth, CreateAuthDto, UpdateAuthDto
+AuthVal   [V]    : Zod schemas for auth input | AuthCont ← THIS
+AuthTest  [X]    : unit + integration tests
+---

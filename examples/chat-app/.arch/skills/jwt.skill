@@ -1,0 +1,33 @@
+# JWT Patterns.skill
+
+## Meta
+pkg: jwt@[VERSION]
+docs: [DOCS_URL]
+updated: 2026-03-31
+
+## Use
+[How YOUR project uses JWT Patterns. 2-3 lines max.]
+[Not what it does generally — how YOUR app uses it specifically.]
+
+## Patterns
+[The specific import paths, function signatures, and conventions you follow.]
+[List the 5-10 methods/endpoints your app actually calls.]
+
+## Gotchas
+WRONG: storing JWT in localStorage
+RIGHT: store in httpOnly cookie with Secure + SameSite flags
+WHY: localStorage is accessible via XSS. httpOnly cookies are not readable by JavaScript.
+
+WRONG: long-lived access tokens (24h+)
+RIGHT: short access token (15min) + refresh token rotation
+WHY: Long-lived tokens can't be revoked. Short + refresh allows rotation and revocation.
+
+[Add more WRONG/RIGHT/WHY blocks as you discover them.]
+
+## Boundaries
+[What JWT Patterns does NOT do in your project.]
+[Prevents the AI from overreaching with this package.]
+
+## Snippets
+[2-3 code blocks showing the correct pattern in YOUR project.]
+[These are the patterns the AI will clone.]

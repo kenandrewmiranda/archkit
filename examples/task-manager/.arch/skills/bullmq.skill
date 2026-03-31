@@ -1,0 +1,33 @@
+# BullMQ.skill
+
+## Meta
+pkg: bullmq@[VERSION]
+docs: https://docs.bullmq.io
+updated: 2026-03-31
+
+## Use
+[How YOUR project uses BullMQ. 2-3 lines max.]
+[Not what it does generally — how YOUR app uses it specifically.]
+
+## Patterns
+[The specific import paths, function signatures, and conventions you follow.]
+[List the 5-10 methods/endpoints your app actually calls.]
+
+## Gotchas
+WRONG: new Queue('name') in every file that enqueues
+RIGHT: export const myQueue = new Queue('name', { connection }); // shared singleton
+WHY: Each Queue instance creates a Redis connection. Shared instance reuses the connection.
+
+WRONG: job.data without validation
+RIGHT: const data = schema.parse(job.data)
+WHY: Jobs can be enqueued from anywhere. Validate data shape at the worker to catch stale/malformed jobs.
+
+[Add more WRONG/RIGHT/WHY blocks as you discover them.]
+
+## Boundaries
+[What BullMQ does NOT do in your project.]
+[Prevents the AI from overreaching with this package.]
+
+## Snippets
+[2-3 code blocks showing the correct pattern in YOUR project.]
+[These are the patterns the AI will clone.]
