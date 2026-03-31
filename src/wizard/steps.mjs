@@ -350,7 +350,33 @@ async function stepOutput(state) {
     info("  Claude Code will auto-load these alongside .arch/ files.");
   }
 
-  return { outDir, claudeMode };
+  // Issue reporting opt-in
+  let reportIssues = state.reportIssues || false;
+  console.log("");
+  info("Help improve archkit: opt in to report gotchas and session findings");
+  info("as GitHub issues on the archkit repo. Requires gh CLI.");
+
+  const { wantReporting } = await inquirer.prompt([{
+    type: "confirm",
+    name: "wantReporting",
+    message: "Report gotchas/findings as GitHub issues?",
+    default: reportIssues,
+    prefix: `  ${ICONS.arch}`,
+  }]);
+  reportIssues = wantReporting;
+
+  if (reportIssues) {
+    const { isGhAvailable, saveConfig } = await import("../lib/issue-reporter.mjs");
+    if (isGhAvailable()) {
+      saveConfig({ reportIssues: true });
+      success("Issue reporting enabled. Gotchas and debrief findings will be offered as GitHub issues.");
+    } else {
+      warn("gh CLI not found or not authenticated. Install with: brew install gh && gh auth login");
+      reportIssues = false;
+    }
+  }
+
+  return { outDir, claudeMode, reportIssues };
 }
 
 async function stepPreview(state) {
@@ -369,6 +395,7 @@ async function stepPreview(state) {
   tree(`${C.bold}INDEX.md${C.reset} ${C.dim}— ${features.length} features + ${skills.length} skills routing${C.reset}`);
   tree(`${C.bold}README.md${C.reset} ${C.dim}— usage instructions${C.reset}`);
   tree(`${C.bold}BOUNDARIES.md${C.reset} ${C.dim}— hard prohibitions (NEVER rules)${C.reset}`);
+  tree(`${C.bold}CONTEXT.compact.md${C.reset} ${C.dim}— ~500 token summary for cheap-model calls${C.reset}`);
   tree(`${C.bold}clusters/${C.reset}`);
   console.log(`${C.gray}    ${ICONS.tee}── infra.graph ${C.dim}— shared infrastructure + middleware${C.reset}`);
   features.forEach(f => {
@@ -395,7 +422,7 @@ async function stepPreview(state) {
   }
 
   console.log("");
-  const fileCount = 4 + features.length + 1 + (at.reservedWords["$bus"] ? 1 : 0) + skills.length + apiSkills.length;
+  const fileCount = 5 + features.length + 1 + (at.reservedWords["$bus"] ? 1 : 0) + skills.length + apiSkills.length;
   info(`Total: ${fileCount} files`);
   console.log("");
 

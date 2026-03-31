@@ -4,6 +4,7 @@ import { loadFile, parseSystem, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 
 export function cmdWarmup(archDir, deep) {
+  log.resolve("Running warmup checks...");
   const checks = [];
   let pass = true;
   const blockers = [];
@@ -12,6 +13,7 @@ export function cmdWarmup(archDir, deep) {
 
   // ── HARD GATES (fail = cannot proceed) ────────────────────────────────
 
+  log.resolve("Checking core files...");
   // 1. Core files exist
   const systemContent = loadFile(archDir, "SYSTEM.md");
   if (systemContent) {
@@ -65,6 +67,7 @@ export function cmdWarmup(archDir, deep) {
 
   // ── QUALITY CHECKS (warn = proceed with caution) ──────────────────────
 
+  log.resolve("Checking skill freshness...");
   // 4. Skill freshness
   const skillsDir = path.join(archDir, "skills");
   const skillFiles = fs.existsSync(skillsDir)
@@ -140,6 +143,7 @@ export function cmdWarmup(archDir, deep) {
   // ── DEEP MODE CHECKS (--deep flag) ────────────────────────────────────
 
   if (deep) {
+    log.resolve("Running deep validation...");
     // 6. Check package.json deps against skills
     const pkgJsonPath = path.join(process.cwd(), "package.json");
     if (fs.existsSync(pkgJsonPath)) {
@@ -222,6 +226,12 @@ export function cmdWarmup(archDir, deep) {
     const content = fs.readFileSync(path.join(clustersDir, f), "utf8");
     return sum + (content.match(/\[.+\]\s+:/g) || []).length;
   }, 0);
+
+  if (pass) {
+    log.ok("Warmup passed — ready for code generation");
+  } else {
+    log.error("Warmup FAILED — fix blockers before proceeding");
+  }
 
   return {
     pass,

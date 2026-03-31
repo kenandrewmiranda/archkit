@@ -14,6 +14,7 @@ import fs from "fs";
 import path from "path";
 import { C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
+import * as log from "../lib/logger.mjs";
 
 function banner() {
   commandBanner("arch-stats", "Context engineering health dashboard");
@@ -314,6 +315,7 @@ function displayOverallScore(sys, idx, skills, graphs, apis) {
 
 function main() {
   const args = process.argv.slice(2);
+  log.stats("Analyzing .arch/ health...");
 
   const archDir = findArchDir();
   if (!archDir) {
@@ -328,6 +330,11 @@ function main() {
   const skills = analyzeSkills(archDir);
   const graphs = analyzeGraphs(archDir);
   const apis = analyzeApis(archDir);
+
+  log.stats(`Found ${skills.length} skills, ${graphs.length} graphs`);
+
+  const { pct: healthPct } = calculateHealthScore(sys, idx, skills, graphs, apis);
+  log.stats(`Health score: ${healthPct}%`);
 
   // Compact mode: one-line summary for git hooks and session start
   if (args.includes("--compact")) {

@@ -19,6 +19,7 @@ import fs from "fs";
 import path from "path";
 import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
+import * as log from "../lib/logger.mjs";
 
 function banner() {
   commandBanner("arch-gotcha", "Capture bad AI patterns into .skill files");
@@ -169,13 +170,30 @@ async function interactiveMode(archDir) {
     return;
   }
 
+  log.gotcha(`Adding gotcha to ${skillId}.skill`);
   const ok = appendGotcha(archDir, skillId, wrong, right, why);
   if (ok) {
+    log.ok(`Gotcha saved to ${skillId}.skill`);
     const total = countGotchas(archDir, skillId);
     console.log("");
     console.log(`${C.green}  ${I.check} Gotcha added to ${skillId}.skill${C.reset}`);
     console.log(`${C.gray}  ${skillId} now has ${total} gotcha${total !== 1 ? "s" : ""}. The AI will avoid this pattern on next generation.${C.reset}`);
     console.log("");
+
+    // Offer to report as GitHub issue
+    const { isReportingEnabled, createGotchaIssue } = await import("../lib/issue-reporter.mjs");
+    if (isReportingEnabled()) {
+      const { report } = await inquirer.prompt([{
+        type: "confirm",
+        name: "report",
+        message: "Report this gotcha as a GitHub issue on archkit?",
+        default: true,
+        prefix: `  ${I.arch}`,
+      }]);
+      if (report) {
+        createGotchaIssue({ skillId, wrong, right, why });
+      }
+    }
 
     // Offer to add another
     const { another } = await inquirer.prompt([{
@@ -194,6 +212,7 @@ async function interactiveMode(archDir) {
 }
 
 async function debriefMode(archDir) {
+  log.gotcha("Starting session debrief...");
   const skills = listSkills(archDir);
   if (skills.length === 0) {
     console.log(`${C.red}  ${I.warn} No .skill files found.${C.reset}`);
@@ -232,6 +251,7 @@ async function debriefMode(archDir) {
         const { why } = await inquirer.prompt([{ type: "input", name: "why", message: `${C.yellow}WHY:${C.reset}`, prefix: `  ${I.arch}` }]);
         if (right && why) {
           appendGotcha(archDir, skillId, wrong, right, why);
+          log.ok(`Gotcha saved to ${skillId}.skill`);
           console.log(`${C.green}  ${I.check} Gotcha saved to ${skillId}.skill${C.reset}`);
         }
       }
@@ -363,6 +383,27 @@ async function debriefMode(archDir) {
           console.log(`${C.green}  ${I.check} Pattern noted in ${patternSkill}.skill${C.reset}`);
         }
       }
+    }
+  }
+
+  // Offer to report debrief as GitHub issue
+  const { isReportingEnabled, createDebriefIssue } = await import("../lib/issue-reporter.mjs");
+  if (isReportingEnabled()) {
+    const findings = [];
+    if (hadBadCode) findings.push({ type: "bad-pattern", detail: "Bad code pattern captured as gotcha" });
+    if (hadPlacement) findings.push({ type: "architecture", detail: "Code placement issue noted in SYSTEM.md" });
+    if (hadApiSurprise) findings.push({ type: "api-surprise", detail: "Unexpected API/SDK behavior noted" });
+    if (hadGoodPattern) findings.push({ type: "positive-pattern", detail: "Good pattern captured for preservation" });
+
+    if (findings.length > 0) {
+      const { report } = await inquirer.prompt([{
+        type: "confirm",
+        name: "report",
+        message: "Report this debrief as a GitHub issue on archkit?",
+        default: false,
+        prefix: `  ${I.arch}`,
+      }]);
+      if (report) createDebriefIssue({ findings });
     }
   }
 
