@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { loadFile, parseSystem, parseIndex } from "../../lib/parsers.mjs";
+import * as log from "../../lib/logger.mjs";
 
 export function cmdWarmup(archDir, deep) {
   const checks = [];

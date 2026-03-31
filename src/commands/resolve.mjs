@@ -23,6 +23,7 @@ import { loadFile, parseSystem, parseIndex, loadGraphCluster, loadSkillGotchas, 
 import { cmdWarmup } from "./resolve/warmup.mjs";
 import { cmdPlan } from "./resolve/plan.mjs";
 import { expandWithSynonyms } from "../data/synonyms.mjs";
+import * as log from "../lib/logger.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -37,6 +38,7 @@ function findArchDir() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function cmdContext(archDir, promptText) {
+  log.resolve(`Resolving context for: "${promptText}"`);
   const indexContent = loadFile(archDir, "INDEX.md");
   const systemContent = loadFile(archDir, "SYSTEM.md");
   const index = parseIndex(indexContent);
@@ -61,6 +63,8 @@ function cmdContext(archDir, promptText) {
     if (index.keywordNodes[bigram]) matchedNodes.add(index.keywordNodes[bigram].replace("@", ""));
     if (index.keywordSkills[bigram]) matchedSkills.add(index.keywordSkills[bigram].replace("$", ""));
   }
+
+  log.resolve(`Matched ${matchedNodes.size} nodes, ${matchedSkills.size} skills`);
 
   // Resolve cross-references
   const crossRefNodes = new Set();
@@ -149,6 +153,7 @@ function cmdContext(archDir, promptText) {
 }
 
 function cmdPreflight(archDir, featureId, layer) {
+  log.resolve(`Preflight check: ${featureId}.${layer}`);
   const indexContent = loadFile(archDir, "INDEX.md");
   const index = parseIndex(indexContent);
   const checks = [];
@@ -233,6 +238,7 @@ function cmdPreflight(archDir, featureId, layer) {
 }
 
 function cmdScaffold(archDir, featureId) {
+  log.resolve(`Scaffolding feature: ${featureId}`);
   const displayName = featureId.charAt(0).toUpperCase() + featureId.slice(1);
   const systemContent = loadFile(archDir, "SYSTEM.md");
   const system = parseSystem(systemContent);
@@ -350,6 +356,7 @@ function cmdScaffold(archDir, featureId) {
 }
 
 function cmdLookup(archDir, id) {
+  log.resolve(`Looking up: ${id}`);
   // Try as node (from graph)
   const indexContent = loadFile(archDir, "INDEX.md");
   const index = parseIndex(indexContent);
@@ -409,6 +416,7 @@ function main() {
   const pretty = args.includes("--pretty");
   const cleanArgs = args.filter(a => a !== "--pretty");
   const cmd = cleanArgs[0];
+  log.resolve(`Command: ${cmd}`);
 
   const archDir = findArchDir();
   if (!archDir) {

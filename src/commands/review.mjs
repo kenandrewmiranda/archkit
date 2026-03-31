@@ -24,6 +24,8 @@ import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { checkImportHierarchy } from "./review/import-checks.mjs";
+import { checkRealtimeRules, checkAIRules, getAppType } from "./review/app-checks.mjs";
+import * as log from "../lib/logger.mjs";
 
 function banner() {
   commandBanner("arch-review", "Check code against your .arch/ rules and skills");
@@ -359,15 +361,18 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`${C.gray}  Loading .arch/ context from ${archDir}${C.reset}`);
+  log.review("Loading .arch/ context...");
 
   const systemContent = loadFile(archDir, "SYSTEM.md");
   const { rules, reservedWords } = parseSystem(systemContent);
   const skills = loadSkills(archDir);
   const graphs = loadGraphs(archDir);
 
-  const gotchaCount = Object.values(skills).reduce((s, sk) => s + sk.gotchas.length, 0);
-  console.log(`${C.gray}  ${rules.length} rules | ${Object.keys(skills).length} skills (${gotchaCount} gotchas) | ${Object.keys(graphs).length} graphs${C.reset}`);
+  log.review(`Loaded ${rules.length} rules | ${Object.keys(skills).length} skills | ${Object.keys(graphs).length} graphs`);
+
+  log.review("Detecting app type from SYSTEM.md...");
+  const appType = getAppType(systemContent);
+  if (appType) log.review(`App type: ${appType}`);
   console.log("");
 
   const files = getFiles(args);
@@ -376,7 +381,8 @@ function main() {
     process.exit(0);
   }
 
-  console.log(`${C.cyan}  Reviewing ${files.length} file${files.length > 1 ? "s" : ""}...${C.reset}`);
+  log.review(`Reviewing ${files.length} file${files.length > 1 ? "s" : ""}...`);
+  log.review(`Matching against ${Object.values(skills).reduce((s, sk) => s + sk.gotchas.length, 0)} gotcha patterns`);
 
   const agentMode = args.includes("--agent");
   const allFindings = {};
@@ -384,8 +390,11 @@ function main() {
   let totalWarnings = 0;
   let totalInfos = 0;
   let cleanFiles = 0;
+  let firstFile = true;
 
   for (const filepath of files) {
+    log.review(`Checking ${filepath}`);
+    if (firstFile) log.review("Validating import hierarchy...");
     const code = fs.readFileSync(filepath, "utf8");
     const findings = [
       ...checkGotchas(code, skills),
@@ -393,6 +402,9 @@ function main() {
       ...checkFileLocation(filepath, graphs),
       ...checkImportHierarchy(code, filepath),
     ];
+    if (appType === "realtime") findings.push(...checkRealtimeRules(code, filepath));
+    if (appType === "ai") findings.push(...checkAIRules(code, filepath));
+    firstFile = false;
 
     if (agentMode) {
       allFindings[filepath] = findings;
@@ -426,8 +438,10 @@ function main() {
   console.log(`  ${C.gray}${files.length} file${files.length > 1 ? "s" : ""} reviewed${C.reset}`);
 
   if (totalErrors === 0 && totalWarnings === 0 && totalInfos === 0) {
+    log.ok("All files clean");
     console.log(`  ${C.green}${C.bold}${I.check} All clean! No issues found.${C.reset}`);
   } else {
+    log.ok(`Review complete: ${totalErrors} errors, ${totalWarnings} warnings`);
     if (totalErrors > 0) console.log(`  ${C.red}${I.cross} ${totalErrors} error${totalErrors > 1 ? "s" : ""}${C.reset} ${C.dim}(must fix)${C.reset}`);
     if (totalWarnings > 0) console.log(`  ${C.yellow}${I.warn} ${totalWarnings} warning${totalWarnings > 1 ? "s" : ""}${C.reset} ${C.dim}(should fix)${C.reset}`);
     if (totalInfos > 0) console.log(`  ${C.blue}${I.dot} ${totalInfos} info${C.reset} ${C.dim}(consider)${C.reset}`);

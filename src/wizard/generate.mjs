@@ -2,8 +2,10 @@ import fs from "fs";
 import path from "path";
 import { C, ICONS, divider } from "../lib/shared.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
-import { genSystemMd, genIndexMd, genGraph, genInfraGraph, genEventsGraph, genSkillFile, genApiStub, genReadme, genBoundariesMd } from "../lib/generators.mjs";
+import { genSystemMd, genIndexMd, genGraph, genInfraGraph, genEventsGraph, genSkillFile, genApiStub, genReadme, genBoundariesMd, genCompactContext } from "../lib/generators.mjs";
 import { heading, subheading, info, success, tip, tree, filePreview } from "./helpers.mjs";
+import * as log from "../lib/logger.mjs";
+import { estimateTokens, tokenBudgetWarning } from "../lib/tokens.mjs";
 
 function generateFiles(state) {
   const { appName, appType, stack, features, skills, crossRefs, outDir, claudeMode } = state;
@@ -12,6 +14,8 @@ function generateFiles(state) {
 
   divider();
   heading(ICONS.gear, "Generating...");
+
+  log.generate("Creating directory structure...");
 
   const base = path.resolve(outDir);
   fs.mkdirSync(path.join(base, "clusters"), { recursive: true });
@@ -24,6 +28,7 @@ function generateFiles(state) {
     const fullPath = path.join(base, relPath);
     fs.writeFileSync(fullPath, content);
     written.push({ path: relPath, size: content.length });
+    log.generate(`Writing ${relPath}`);
     console.log(`  ${C.green}${ICONS.check}${C.reset} ${relPath} ${C.dim}(${content.length} bytes)${C.reset}`);
   }
 
@@ -35,8 +40,14 @@ function generateFiles(state) {
 
   writeFile("README.md", genReadme(cfg));
   writeFile("BOUNDARIES.md", genBoundariesMd(cfg.appType));
+
+  const compactContent = genCompactContext(cfg);
+  writeFile("CONTEXT.compact.md", compactContent);
+  log.generate(`CONTEXT.compact.md: ~${Math.ceil(compactContent.length / 4)} tokens (for lightweight/cheap-model calls)`);
+
   writeFile("clusters/infra.graph", genInfraGraph(cfg));
 
+  log.generate("Generating cluster graphs...");
   for (const f of features) {
     writeFile(`clusters/${f.id}.graph`, genGraph(f, cfg));
   }
@@ -44,6 +55,7 @@ function generateFiles(state) {
   const evtContent = genEventsGraph(cfg);
   if (evtContent) writeFile("clusters/events.graph", evtContent);
 
+  log.generate("Generating skill files...");
   for (const s of skills) {
     writeFile(`skills/${s}.skill`, genSkillFile(s));
   }
@@ -55,6 +67,7 @@ function generateFiles(state) {
   }
 
   // Generate lenses
+  log.generate("Generating lens overlays...");
   fs.mkdirSync(path.join(base, "lenses"), { recursive: true });
 
   writeFile("lenses/lens-research.md", `# Lens: Research
@@ -103,6 +116,7 @@ function generateFiles(state) {
 
   // ── Claude Code native files ──────────────────────────────────────────
   if (claudeMode) {
+    log.generate("Generating Claude Code native files...");
     console.log("");
     console.log(`${C.cyan}${C.bold}  Generating Claude Code native files...${C.reset}`);
     console.log("");
@@ -211,6 +225,31 @@ function generateFiles(state) {
     const firstGraph = genGraph(features[0], cfg);
     filePreview(`clusters/${features[0].id}.graph`, firstGraph);
   }
+
+  // ── Token Budget Report ─────────────────────────────────────────────
+  divider();
+  heading(ICONS.chart || "📊", "Token Budget");
+
+  const alwaysLoaded = [
+    { name: "SYSTEM.md", content: sysContent },
+    { name: "BOUNDARIES.md", content: genBoundariesMd(cfg.appType) },
+  ];
+
+  let totalAlways = 0;
+  for (const { name, content } of alwaysLoaded) {
+    const tokens = estimateTokens(content);
+    totalAlways += tokens;
+    log.system(`${name}: ~${tokens} tokens`);
+  }
+
+  log.system(`Always-loaded total: ~${totalAlways} tokens`);
+  const warning = tokenBudgetWarning(totalAlways);
+  if (totalAlways > 2000) {
+    log.warn(`Token budget: ${warning}`);
+  } else {
+    log.ok(`Token budget: ${warning}`);
+  }
+  console.log("");
 
   // ── Summary ───────────────────────────────────────────────────────────
   divider();

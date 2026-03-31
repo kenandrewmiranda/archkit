@@ -23,20 +23,41 @@ export function genSystemMd(cfg) {
   o += `\n## Naming\n`;
   o += `Files: kebab-case | Types: PascalCase | Funcs: camelCase | Tables: snake_case | Env: SCREAMING_SNAKE\n`;
   o += `\n## On Generate\n`;
-  o += `0. BEFORE writing any file: verify the path matches the convention. State: "Target: <file path>"\n`;
-  o += `1. State which layer this code belongs to and the file path\n`;
-  o += `2. Reference $symbols for all dependencies\n`;
-  if (at.reservedWords["$tenant"]) o += `3. Include $tenant in all DB operations\n`;
-  o += `${at.reservedWords["$tenant"] ? "4" : "3"}. Throw $err on failure paths\n`;
-  o += `${at.reservedWords["$tenant"] ? "5" : "4"}. Write the corresponding test\n`;
-  o += `\n## Session Protocol (NON-NEGOTIABLE)\n`;
-  o += `- BEFORE any code generation in a new session: run \`archkit resolve warmup\`\n`;
-  o += `- If warmup returns blockers: FIX THEM before writing any code. No exceptions.\n`;
-  o += `- If warmup returns warnings: ACKNOWLEDGE them and proceed with awareness.\n`;
-  o += `- BEFORE generating a new feature: run \`archkit resolve scaffold <featureId>\` for the checklist.\n`;
-  o += `- BEFORE generating code for an existing feature: run \`archkit resolve preflight <feature> <layer>\`\n`;
-  o += `- When the prompt is ambiguous: run \`archkit resolve context "<prompt>"\` to resolve to specific nodes and files.\n`;
-  o += `- AT SESSION END: suggest running \`archkit gotcha --debrief\` to capture learnings.\n`;
+  o += `\`\`\`\n`;
+  o += `IF creating a new file:\n`;
+  o += `  1. Verify path matches convention in INDEX.md\n`;
+  o += `  2. State: "Target: <file path> | Layer: <layer>"\n`;
+  o += `  3. Run: archkit resolve preflight <feature> <layer>\n`;
+  o += `\n`;
+  o += `IF modifying an existing file:\n`;
+  o += `  1. Read the file first — understand before changing\n`;
+  o += `  2. Check .skill gotchas for packages used in this file\n`;
+  o += `  3. Verify changes respect layer boundaries\n`;
+  o += `\n`;
+  o += `IF touching multiple features:\n`;
+  o += `  1. Check INDEX.md cross-refs for dependencies\n`;
+  o += `  2. Modify features in dependency order (depended-on first)\n`;
+  o += `\n`;
+  o += `ALWAYS:\n`;
+  o += `  - Reference $symbols for all dependencies\n`;
+  if (at.reservedWords["$tenant"]) o += `  - Include $tenant in all DB operations\n`;
+  o += `  - Throw $err on failure paths\n`;
+  o += `  - Write or update the corresponding test\n`;
+  o += `\`\`\`\n`;
+  o += `\n## Session Management\n`;
+  o += `Maintain a running task list. Before starting work:\n`;
+  o += `1. Run \`archkit resolve warmup\` — check system health (blockers = stop, warnings = note and proceed)\n`;
+  o += `2. Break the task into steps. Write them down.\n`;
+  o += `3. Check off each step as you complete it.\n\n`;
+  o += `Available tools (use when relevant, not as a mandatory sequence):\n`;
+  o += `| Tool | When to Use |\n`;
+  o += `|------|-------------|\n`;
+  o += `| \`archkit resolve context "<prompt>"\` | Unsure which files/features are involved |\n`;
+  o += `| \`archkit resolve preflight <feature> <layer>\` | Before modifying an existing feature |\n`;
+  o += `| \`archkit resolve scaffold <feature>\` | Creating a new feature from scratch |\n`;
+  o += `| \`archkit resolve plan "<prompt>"\` | Need a structured implementation plan |\n`;
+  o += `| \`archkit review --staged\` | Before committing — final quality gate |\n`;
+  o += `| \`archkit gotcha --debrief\` | End of session — capture what you learned |\n`;
   if (cfg.includeDelegation !== false) {
     o += `\n## Delegation Principle\n`;
     o += `Delegate everything deterministic to sub-agents and CLI tools first. The main agent finalizes with judgment.\n\n`;
@@ -294,6 +315,31 @@ follows your patterns, avoids known gotchas, and calls APIs correctly.
 - **Per gotcha**: When AI-generated code needs a fix, add WRONG/RIGHT/WHY to the .skill.
 - **Per deploy**: Regenerate .api files from your latest API specs.
 `;
+}
+
+export function genCompactContext(cfg) {
+  const at = APP_TYPES[cfg.appType];
+  let o = `# ${cfg.appName} — Compact Context (~500 tokens)\n\n`;
+  o += `## Rules\n`;
+  at.rules.forEach(r => o += `- ${r}\n`);
+  o += `\n## NEVER\n`;
+  // Import boundaries inline
+  const UNIVERSAL = [
+    "Commit secrets/credentials to code",
+    "Use \`any\` type in TypeScript",
+    "Catch errors silently",
+    "Use string concatenation for SQL",
+    "Trust client-side input without validation",
+  ];
+  UNIVERSAL.forEach(b => o += `- ${b}\n`);
+  o += `\n## Reserved Words\n`;
+  for (const [k, v] of Object.entries(at.reservedWords)) {
+    o += `${k} = ${v.split("—")[0].trim()}\n`;
+  }
+  o += `\n## Convention\n`;
+  o += `${at.folderConv}\n`;
+  o += `Files: kebab-case | Types: PascalCase | Funcs: camelCase\n`;
+  return o;
 }
 
 export { genBoundariesMd } from "../data/boundaries.mjs";
