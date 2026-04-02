@@ -1,0 +1,30 @@
+{
+  "appName": "mcp-marketplace",
+  "appType": "saas",
+  "stack": {
+    "Frontend": "Next.js + Tailwind + shadcn/ui",
+    "API Framework": "Hono",
+    "Auth": "GitHub OAuth",
+    "Database": "PostgreSQL",
+    "Cache": "Valkey",
+    "Search": "Meilisearch",
+    "Object Storage": "MinIO",
+    "Job Queue": "BullMQ",
+    "Observability": "Grafana + Prometheus + Loki",
+    "Infrastructure": "Docker + Caddy",
+    "Billing": "None"
+  },
+  "features": [
+    { "id": "auth", "name": "GitHub OAuth authentication", "keywords": "login,logout,github,oauth,session,JWT,token" },
+    { "id": "registry", "name": "Server registry & metadata", "keywords": "registry,server,metadata,versions,compatibility,manifest" },
+    { "id": "search", "name": "Search & discovery", "keywords": "search,discover,filter,capability,client,faceted" },
+    { "id": "publishing", "name": "Server publishing", "keywords": "publish,upload,package,version,release,CLI" },
+    { "id": "verification", "name": "Security verification", "keywords": "verify,scan,security,permissions,audit,trust" },
+    { "id": "reviews", "name": "Ratings & reviews", "keywords": "review,rating,stars,feedback,report,usage" }
+  ],
+  "crossRefs": "ai",
+  "skills": ["postgres", "meilisearch", "bullmq", "docker", "valkey", "caddy", "jwt"],
+  "outDir": ".arch",
+  "claudeMode": true,
+  "reportIssues": false
+}

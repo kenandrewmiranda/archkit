@@ -9,6 +9,13 @@ const __dirname = path.dirname(__filename);
 // Signal to command modules that they should self-execute
 process.env.ARCHKIT_RUN = "1";
 
+// Handle --preset flag: extract preset path before routing
+const presetIdx = process.argv.indexOf("--preset");
+if (presetIdx !== -1 && process.argv[presetIdx + 1]) {
+  process.env.ARCHKIT_PRESET = process.argv[presetIdx + 1];
+  process.argv.splice(presetIdx, 2);
+}
+
 // Route to the correct command
 const command = process.argv[2];
 

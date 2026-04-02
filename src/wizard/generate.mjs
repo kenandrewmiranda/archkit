@@ -6,11 +6,104 @@ import { genSystemMd, genIndexMd, genGraph, genInfraGraph, genEventsGraph, genSk
 import { heading, subheading, info, success, tip, tree, filePreview } from "./helpers.mjs";
 import * as log from "../lib/logger.mjs";
 import { estimateTokens, tokenBudgetWarning } from "../lib/tokens.mjs";
+import inquirer from "inquirer";
+import { execFileSync } from "child_process";
 
-function generateFiles(state) {
+function copyToClipboard(text) {
+  try {
+    if (process.platform === "darwin") {
+      execFileSync("pbcopy", [], { input: text });
+    } else if (process.platform === "linux") {
+      execFileSync("xclip", ["-selection", "clipboard"], { input: text });
+    } else if (process.platform === "win32") {
+      execFileSync("clip", [], { input: text });
+    }
+    return true;
+  } catch { return false; }
+}
+
+async function promptLaunchCommand(state) {
+  const cwd = path.resolve(".");
+
+  const cliOptions = [
+    { name: `${C.cyan}claude${C.reset} --dangerously-skip-permissions`, value: `cd "${cwd}" && claude --dangerously-skip-permissions`, short: "Claude (skip perms)" },
+    { name: `${C.cyan}claude${C.reset}`, value: `cd "${cwd}" && claude`, short: "Claude" },
+    { name: `${C.cyan}claude${C.reset} with prompt`, value: `cd "${cwd}" && claude "Read CLAUDE.md and .arch/SYSTEM.md, then run archkit resolve warmup"`, short: "Claude + warmup" },
+    new inquirer.Separator(`${C.gray} ── Other tools ──${C.reset}`),
+    { name: `${C.cyan}cursor${C.reset} .`, value: `cd "${cwd}" && cursor .`, short: "Cursor" },
+    { name: `${C.cyan}code${C.reset} .`, value: `cd "${cwd}" && code .`, short: "VS Code" },
+    { name: `${C.cyan}windsurf${C.reset} .`, value: `cd "${cwd}" && windsurf .`, short: "Windsurf" },
+    new inquirer.Separator(`${C.gray} ──────────────────${C.reset}`),
+    { name: `${C.dim}Skip — I'll launch manually${C.reset}`, value: "__skip", short: "Skip" },
+  ];
+
+  console.log("");
+  const { cliChoice } = await inquirer.prompt([{
+    type: "list",
+    name: "cliChoice",
+    message: "Copy a launch command to clipboard?",
+    prefix: `  ${ICONS.rocket}`,
+    choices: cliOptions,
+    pageSize: 12,
+  }]);
+
+  if (cliChoice === "__skip") return;
+
+  if (copyToClipboard(cliChoice)) {
+    success("Copied to clipboard! Paste in your terminal to launch.");
+    console.log(`  ${C.dim}${cliChoice}${C.reset}`);
+  } else {
+    info("Couldn't access clipboard. Here's the command:");
+    console.log("");
+    console.log(`  ${C.bold}${cliChoice}${C.reset}`);
+  }
+  console.log("");
+}
+
+async function promptCleanup() {
+  // Detect if we're running from a cloned archkit directory inside a parent project
+  const archkitDir = path.resolve(".");
+  const archkitPkg = path.join(archkitDir, "package.json");
+
+  if (!fs.existsSync(archkitPkg)) return;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(archkitPkg, "utf8"));
+    if (pkg.name !== "archkit") return;
+  } catch { return; }
+
+  // We're inside the archkit folder — check if parent has the generated files
+  const parentDir = path.dirname(archkitDir);
+  const hasArchDir = fs.existsSync(path.join(parentDir, ".arch")) || fs.existsSync(path.join(archkitDir, ".arch"));
+
+  if (!hasArchDir) return;
+
+  console.log("");
+  const { cleanup } = await inquirer.prompt([{
+    type: "confirm",
+    name: "cleanup",
+    message: `Remove the archkit CLI folder? (${path.basename(archkitDir)}/) — it's no longer needed after scaffolding.`,
+    default: true,
+    prefix: `  ${ICONS.arch}`,
+  }]);
+
+  if (cleanup) {
+    // Schedule self-deletion after process exits
+    const folderToRemove = archkitDir;
+    process.on("exit", () => {
+      try {
+        fs.rmSync(folderToRemove, { recursive: true, force: true });
+      } catch {}
+    });
+    success(`archkit folder will be removed on exit.`);
+    info(`  Generated files in .arch/ and .claude/ are safe — they live in the parent project.`);
+  }
+}
+
+async function generateFiles(state) {
   const { appName, appType, stack, features, skills, crossRefs, outDir, claudeMode } = state;
   const at = APP_TYPES[appType];
-  const cfg = { appName, appType, stack, features, skills, crossRefs: crossRefs || [] };
+  const cfg = { appName, appType, stack, features, skills, crossRefs: crossRefs || [] }; // "ai" string or array
 
   divider();
   heading(ICONS.gear, "Generating...");
@@ -293,6 +386,12 @@ function generateFiles(state) {
   tip("Every time the AI generates wrong code, add a gotcha to the relevant .skill file.");
   tip("The system gets smarter as your team accumulates knowledge.");
   console.log("");
+
+  // Clean up archkit CLI folder if it was cloned into the project
+  await promptCleanup();
+
+  // Launch command prompt
+  await promptLaunchCommand(state);
 }
 
 export { generateFiles };

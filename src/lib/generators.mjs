@@ -117,7 +117,12 @@ export function genIndexMd(cfg) {
     o += `\n`;
   }
   o += `## Cross-Refs\n`;
-  if (cfg.crossRefs && cfg.crossRefs.length > 0) {
+  if (cfg.crossRefs === "ai") {
+    o += `# AI-INFERRED: Analyze the features below and determine dependencies during code generation.\n`;
+    o += `# The AI agent should map relationships between these features based on their capabilities:\n`;
+    cfg.features.forEach(f => o += `# @${f.id} — ${f.name} (${f.keywords})\n`);
+    o += `# Output format: @feature_a → @feature_b (reason)\n`;
+  } else if (cfg.crossRefs && cfg.crossRefs.length > 0) {
     cfg.crossRefs.forEach(ref => o += `@${ref.from} → @${ref.to} (${ref.reason})\n`);
   } else {
     o += `# TODO: Map which features depend on which other features\n`;

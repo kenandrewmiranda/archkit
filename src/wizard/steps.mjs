@@ -1,12 +1,63 @@
+import fs from "fs";
+import path from "path";
 import inquirer from "inquirer";
 import { C, ICONS, divider } from "../lib/shared.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
 import { heading, subheading, info, success, warn, tip, tree } from "./helpers.mjs";
+import { loadPreset, findPresets } from "./preset.mjs";
 
 async function stepAppName(state) {
   heading(ICONS.rocket, `Step 1/7 — Project Identity`);
   info("What are we building? This name appears in generated files.");
   console.log("");
+
+  // Offer preset loading option
+  const presets = findPresets();
+  const choices = [
+    { name: `${C.green}${ICONS.arrow}${C.reset} Enter project name manually`, value: "__manual", short: "Manual" },
+  ];
+
+  if (presets.length > 0) {
+    choices.push(new inquirer.Separator(`${C.gray} ── Load from preset ──${C.reset}`));
+    presets.forEach(p => {
+      choices.push({ name: `${C.cyan}${ICONS.file}${C.reset} ${p.name}`, value: p.path, short: p.name });
+    });
+  }
+
+  choices.push({ name: `${C.dim}${ICONS.folder} Load from custom path...${C.reset}`, value: "__custom", short: "Custom path" });
+
+  const { startChoice } = await inquirer.prompt([{
+    type: "list",
+    name: "startChoice",
+    message: "How would you like to start?",
+    prefix: `  ${ICONS.arch}`,
+    choices,
+  }]);
+
+  // Load preset from file
+  if (startChoice !== "__manual") {
+    let presetPath = startChoice;
+
+    if (startChoice === "__custom") {
+      const { customPath } = await inquirer.prompt([{
+        type: "input",
+        name: "customPath",
+        message: "Path to preset JSON:",
+        prefix: `  ${ICONS.arch}`,
+      }]);
+      presetPath = customPath;
+    }
+
+    const preset = loadPreset(presetPath);
+    if (preset) {
+      success(`Preset loaded: ${path.basename(presetPath)}`);
+      return { _preset: preset, _presetPath: presetPath, appName: preset.appName };
+    }
+    // If preset failed, fall through to manual entry
+    console.log("");
+    info("Falling back to manual entry.");
+    console.log("");
+  }
 
   const { appName } = await inquirer.prompt([{
     type: "input",
@@ -207,6 +258,33 @@ async function stepFeatures(state) {
   if (features.length > 1) {
     console.log("");
     info("Define relationships between features (helps AI understand dependencies).");
+    console.log("");
+
+    const { refMode } = await inquirer.prompt([{
+      type: "list",
+      name: "refMode",
+      message: "How do you want to define dependencies?",
+      prefix: `  ${ICONS.arch}`,
+      choices: [
+        { name: `${C.cyan}${ICONS.gear}${C.reset} Let AI decide during code generation`, value: "ai", short: "AI decides" },
+        { name: `${C.green}${ICONS.arrow}${C.reset} Define them manually now`, value: "manual", short: "Manual" },
+        { name: `${C.dim}Skip — no dependencies${C.reset}`, value: "skip", short: "Skip" },
+      ],
+    }]);
+
+    if (refMode === "ai") {
+      console.log("");
+      success("Dependencies will be inferred by AI during code generation.");
+      info("  The AI agent will analyze your features and determine relationships.");
+      return { features, crossRefs: "ai" };
+    }
+
+    if (refMode === "skip") {
+      return { features, crossRefs: [] };
+    }
+
+    // Manual mode
+    console.log("");
     info("Type 'done' when finished.");
     console.log("");
 
@@ -419,6 +497,16 @@ async function stepPreview(state) {
       const isLast = i === apiSkills.length - 1;
       console.log(`${C.gray}    ${isLast ? ICONS.corner : ICONS.tee}── ${s}.api ${C.dim}— ${sk.name} contract stub${C.reset}`);
     });
+  }
+
+  // Show cross-refs status
+  console.log("");
+  if (state.crossRefs === "ai") {
+    info(`${C.cyan}${ICONS.gear}${C.reset} Cross-refs: AI-inferred during code generation`);
+  } else if (state.crossRefs && state.crossRefs.length > 0) {
+    info(`Cross-refs: ${state.crossRefs.length} dependencies defined`);
+  } else {
+    info(`${C.dim}Cross-refs: none${C.reset}`);
   }
 
   console.log("");

@@ -1,10 +1,13 @@
+import fs from "fs";
+import path from "path";
 import inquirer from "inquirer";
 import { C, ICONS, divider } from "./lib/shared.mjs";
 import { showBanner } from "./lib/banner.mjs";
 import { stepAppName, stepAppType, stepStack, stepFeatures, stepSkills, stepOutput, stepPreview } from "./wizard/steps.mjs";
 import { generateFiles } from "./wizard/generate.mjs";
 import { createInitialState, saveProgress, loadProgress, deleteProgressFile, invalidateFrom, promptNavigation, promptGoBack } from "./wizard/navigation.mjs";
-import { success, progressStep, info } from "./wizard/helpers.mjs";
+import { success, progressStep, info, warn } from "./wizard/helpers.mjs";
+import { loadPreset } from "./wizard/preset.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -32,8 +35,42 @@ async function main() {
   let state = createInitialState();
   let currentStep = 0;
 
+  // Check for preset file
+  const presetPath = process.env.ARCHKIT_PRESET;
+  if (presetPath) {
+    const preset = loadPreset(presetPath);
+    if (preset) {
+      // Apply preset values to state
+      const presetKeys = ["appName", "appType", "stack", "features", "crossRefs", "skills", "outDir", "claudeMode", "reportIssues"];
+      for (const key of presetKeys) {
+        if (preset[key] !== undefined) {
+          state[key] = preset[key];
+        }
+      }
+
+      // Mark fully-answered steps as completed
+      for (const step of STEPS) {
+        const allFilled = step.stateKeys.every(k => state[k] !== null && state[k] !== undefined);
+        if (allFilled && step.id !== "preview") {
+          state._completedSteps.push(step.id);
+        }
+      }
+
+      const skipped = state._completedSteps.length;
+      if (skipped > 0) {
+        success(`Preset loaded: ${path.basename(presetPath)}`);
+        info(`  ${skipped} of ${STEPS.length - 1} steps pre-filled. Remaining steps will prompt for input.`);
+        console.log("");
+
+        // Jump to first incomplete step (or preview if all filled)
+        currentStep = STEPS.findIndex(s => !state._completedSteps.includes(s.id));
+        if (currentStep === -1) currentStep = STEPS.length - 1;
+      }
+    }
+  }
+
   // Check for saved progress
-  const saved = loadProgress();
+  const saved = !presetPath ? loadProgress() : null;
   if (saved) {
     const completedLabels = saved.completedSteps.map(id => STEPS.find(s => s.id === id)?.label).filter(Boolean);
     console.log(`${C.yellow}  ${ICONS.file} Saved progress found${C.reset} ${C.dim}(${new Date(saved.savedAt).toLocaleString()})${C.reset}`);
@@ -78,6 +115,37 @@ async function main() {
     const result = await step.run(state);
     Object.assign(state, result);
 
+    // Handle preset loaded from within wizard step
+    if (result._preset) {
+      const preset = result._preset;
+      delete state._preset;
+      delete state._presetPath;
+
+      const presetKeys = ["appName", "appType", "stack", "features", "crossRefs", "skills", "outDir", "claudeMode", "reportIssues"];
+      for (const key of presetKeys) {
+        if (preset[key] !== undefined) {
+          state[key] = preset[key];
+        }
+      }
+
+      // Mark fully-answered steps as completed
+      for (const s of STEPS) {
+        const allFilled = s.stateKeys.every(k => state[k] !== null && state[k] !== undefined);
+        if (allFilled && s.id !== "preview" && !state._completedSteps.includes(s.id)) {
+          state._completedSteps.push(s.id);
+        }
+      }
+
+      const skipped = state._completedSteps.length;
+      info(`  ${skipped} of ${STEPS.length - 1} steps pre-filled. Remaining steps will prompt for input.`);
+      console.log("");
+
+      // Jump to first incomplete step (or preview)
+      currentStep = STEPS.findIndex(s => !state._completedSteps.includes(s.id));
+      if (currentStep === -1) currentStep = STEPS.length - 1;
+      continue;
+    }
+
     // Preview step handles its own navigation
     if (step.id === "preview") {
       const previewAction = state._previewAction;
@@ -85,7 +153,7 @@ async function main() {
 
       if (previewAction === "generate") {
         state._completedSteps.push(step.id);
-        generateFiles(state);
+        await generateFiles(state);
         deleteProgressFile();
         break;
       } else if (previewAction === "back") {
