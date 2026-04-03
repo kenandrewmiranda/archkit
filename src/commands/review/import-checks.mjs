@@ -1,6 +1,9 @@
 // Validates that import statements respect the architecture layer hierarchy.
 // Uses regex-based import extraction — no AST parser needed.
 
+// Directories that are shared by design — never flag as cross-feature imports
+const SHARED_DIRS = new Set(["shared", "common", "lib", "utils", "helpers", "packages", "types", "config", "middleware", "infrastructure", "core"]);
+
 const LAYER_PATTERNS = {
   controller: /\.(controller|cont|route|router)\./,
   service: /\.(service|svc|use-case)\./,
@@ -66,7 +69,7 @@ export function checkImportHierarchy(code, filepath) {
       return m ? m[1] : null;
     })();
 
-    if (importFeature && sourceFeature && importFeature !== sourceFeature) {
+    if (importFeature && sourceFeature && importFeature !== sourceFeature && !SHARED_DIRS.has(importFeature)) {
       // Find line number
       const lines = code.split("\n");
       let line = undefined;

@@ -341,6 +341,7 @@ function main() {
     console.log(`${C.dim}    Tip: Add to .git/hooks/pre-commit: archkit review --staged${C.reset}`);
     console.log(`${C.gray}    archkit review --diff                   Review modified (unstaged) files${C.reset}`);
     console.log(`${C.gray}    archkit review --dir src/features/      Review a directory${C.reset}`);
+    console.log(`${C.gray}    archkit review --verify                 Re-check only previously flagged files${C.reset}`);
     console.log("");
     console.log(`${C.yellow}  What it checks:${C.reset}`);
     console.log(`${C.gray}    ${I.dot} .skill gotchas — known bad patterns from your team's experience${C.reset}`);
@@ -384,6 +385,29 @@ function main() {
   log.review(`Reviewing ${files.length} file${files.length > 1 ? "s" : ""}...`);
   log.review(`Matching against ${Object.values(skills).reduce((s, sk) => s + sk.gotchas.length, 0)} gotcha patterns`);
 
+  // --verify mode: re-check only files from last review that had findings
+  if (args.includes("--verify")) {
+    const lastReviewPath = path.join(archDir, ".last-review.json");
+    if (fs.existsSync(lastReviewPath)) {
+      try {
+        const lastReview = JSON.parse(fs.readFileSync(lastReviewPath, "utf8"));
+        const failedFiles = Object.entries(lastReview.findings || {})
+          .filter(([, findings]) => findings.length > 0)
+          .map(([filepath]) => filepath);
+        if (failedFiles.length > 0) {
+          log.review(`Re-checking ${failedFiles.length} previously flagged file${failedFiles.length > 1 ? "s" : ""}...`);
+          args.push(...failedFiles);
+        } else {
+          log.ok("No files to verify — last review was clean.");
+          process.exit(0);
+        }
+      } catch {}
+    } else {
+      log.warn("No previous review found. Run archkit review first.");
+      process.exit(1);
+    }
+  }
+
   const agentMode = args.includes("--agent");
   const allFindings = {};
   let totalErrors = 0;
@@ -422,7 +446,29 @@ function main() {
     if (findings.length === 0) cleanFiles++;
   }
 
+  // Save results for --verify mode
+  const reviewResults = {
+    timestamp: new Date().toISOString(),
+    files: files.length,
+    errors: totalErrors,
+    warnings: totalWarnings,
+    findings: agentMode ? allFindings : Object.fromEntries(files.map(f => [f, []])),
+  };
+  try { fs.writeFileSync(path.join(archDir, ".last-review.json"), JSON.stringify(reviewResults)); } catch {}
+
   if (agentMode) {
+    // Collect gotcha suggestions — packages used in flagged files that have empty skills
+    const gotchaSuggestions = [];
+    for (const [filepath, findings] of Object.entries(allFindings)) {
+      if (findings.length === 0) continue;
+      const code = fs.readFileSync(filepath, "utf8");
+      for (const [skillId, skill] of Object.entries(skills)) {
+        if (skill.gotchas.length === 0 && code.toLowerCase().includes(skillId)) {
+          gotchaSuggestions.push({ skill: skillId, file: filepath, hint: `${skillId}.skill has 0 gotchas but ${skillId} is used in this file` });
+        }
+      }
+    }
+
     console.log(JSON.stringify({
       files: files.length,
       errors: totalErrors,
@@ -431,6 +477,7 @@ function main() {
       clean: cleanFiles,
       pass: totalErrors === 0,
       findings: allFindings,
+      gotchaSuggestions: gotchaSuggestions.length > 0 ? gotchaSuggestions : undefined,
     }));
     process.exit(totalErrors > 0 ? 1 : 0);
   }
