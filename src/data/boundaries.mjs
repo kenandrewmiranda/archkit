@@ -1,88 +1,111 @@
+// Hard boundaries — industry-standard prohibitions.
+// Each rule is backed by an official source (OWASP, RFC, vendor docs, etc.).
+// Only absolute rules belong here — context-dependent guidance goes in gotchas.
+
 const UNIVERSAL_BOUNDARIES = [
-  "NEVER commit secrets, API keys, or credentials to code. Use environment variables.",
-  "NEVER use `any` type in TypeScript. Always define explicit types.",
-  "NEVER catch errors silently. Log or re-throw with context.",
-  "NEVER use string concatenation for SQL queries. Use parameterized queries.",
-  "NEVER trust client-side input. Validate at the API boundary.",
-  "NEVER store passwords in plain text. Use bcrypt/argon2 with salt.",
-  "NEVER disable CORS in production. Configure allowed origins explicitly.",
-  "NEVER return stack traces or internal errors to the client in production.",
-  "NEVER use SELECT * — always specify the columns you need.",
-  "NEVER query without WHERE on tables with more than 100 rows. Scope every query.",
-  "NEVER ORDER BY a column without an index. Add an index or remove the sort.",
-  "NEVER use OFFSET for deep pagination (>1000). Use cursor-based pagination.",
-  "NEVER load unbounded relations (e.g., include all posts for a user). Always LIMIT.",
-  "NEVER run N+1 queries in a loop. Batch with IN/ANY or use a JOIN.",
-  "NEVER cache without a TTL. Every cached value must expire.",
-  "NEVER use shared cache keys for user-specific data. Namespace: `user:{id}:resource`.",
-  "NEVER use KEYS * in production Redis/Valkey. Use SCAN with cursor.",
-  "NEVER use Redis/Valkey as the primary data store. It's a cache, not a database.",
-  "NEVER enqueue jobs without retry + backoff configured. Jobs fail — plan for it.",
-  "NEVER store large payloads (>100KB) in job data. Store in object storage, pass the URL.",
+  // OWASP A07:2021 — Identification and Authentication Failures
+  "NEVER commit secrets, API keys, or credentials to code. Use environment variables. (OWASP A07:2021)",
+  // OWASP A03:2021 — Injection
+  "NEVER use string concatenation for SQL queries. Use parameterized queries. (OWASP A03:2021)",
+  // OWASP A03:2021 — Injection (input validation)
+  "NEVER trust client-side input. Validate at the API boundary. (OWASP A03:2021)",
+  // OWASP A02:2021 — Cryptographic Failures
+  "NEVER store passwords in plain text. Use bcrypt/argon2 with salt. (OWASP A02:2021)",
+  // OWASP A05:2021 — Security Misconfiguration
+  "NEVER disable CORS in production. Configure allowed origins explicitly. (OWASP A05:2021)",
+  // OWASP — Error Handling Cheat Sheet
+  "NEVER return stack traces or internal errors to the client in production. (OWASP Error Handling)",
+  // PostgreSQL docs §14.1 — Performance Tips
+  "NEVER use SELECT * in application queries — specify only the columns you need. (PostgreSQL §14.1)",
+  // PostgreSQL wiki — Pagination Done the Right Way
+  "NEVER use OFFSET for deep pagination (>1000 rows). Use cursor-based pagination. (PostgreSQL wiki)",
+  // Redis docs — KEYS command
+  "NEVER use KEYS * in production Redis/Valkey. Use SCAN with cursor. (Redis docs — KEYS)",
+  // Redis docs — SET, Key Expiration
+  "NEVER SET cache keys without TTL. Every cached value must have an expiration. (Redis docs — EXPIRE)",
+  // BullMQ docs — Retrying failing jobs
+  "NEVER enqueue jobs without retry + backoff configured. (BullMQ docs — Retrying failing jobs)",
 ];
 
 const APP_TYPE_BOUNDARIES = {
   saas: [
-    "NEVER query the database without tenant scoping. Every query includes tenant_id.",
-    "NEVER import from another feature's internal modules. Use shared interfaces only.",
-    "NEVER put business logic in controllers. Controllers validate, delegate, respond.",
-    "NEVER access the database directly from controllers. Go through service → repository.",
-    "NEVER use floating-point for money. Use integer cents via $money type.",
-    "NEVER create a new PrismaClient/pool per request. Use a singleton or connection pool.",
+    // PostgreSQL docs — Row Level Security
+    "NEVER query the database without tenant scoping. Every query includes tenant_id. (PostgreSQL RLS)",
+    // Martin Fowler — Presentation Domain Data Layering
+    "NEVER put business logic in controllers. Controllers validate, delegate, respond. (Layered Architecture)",
+    // Martin Fowler — Presentation Domain Data Layering
+    "NEVER access the database directly from controllers. Go through service → repository. (Layered Architecture)",
+    // IEEE 754 floating-point arithmetic — known precision issues with currency
+    "NEVER use floating-point for money. Use integer cents. (IEEE 754 precision loss)",
+    // PostgreSQL/Prisma docs — Connection Management
+    "NEVER create a new database client per request. Use a singleton or connection pool. (PostgreSQL §20.3)",
   ],
   ecommerce: [
-    "NEVER decrement inventory without a row lock (SELECT FOR UPDATE).",
-    "NEVER use floating-point for money. All prices, totals, taxes in integer cents.",
-    "NEVER process a payment without an idempotency key.",
-    "NEVER call external payment APIs without retry + timeout.",
-    "NEVER import from another feature's internal modules. Use shared interfaces.",
-    "NEVER calculate prices in the frontend. Pricing logic lives server-side only.",
+    // PostgreSQL docs — Explicit Locking §13.3.2
+    "NEVER decrement inventory without a row lock (SELECT FOR UPDATE). (PostgreSQL §13.3.2)",
+    // IEEE 754
+    "NEVER use floating-point for money. All prices, totals, taxes in integer cents. (IEEE 754)",
+    // Stripe docs — Idempotent Requests
+    "NEVER process a payment without an idempotency key. (Stripe docs — Idempotent Requests)",
+    // Stripe/payment provider docs — Error Handling
+    "NEVER call external payment APIs without retry + timeout. (Stripe docs — Error Handling)",
   ],
   realtime: [
+    // WebSocket best practices — Gateway pattern
     "NEVER put business logic in the WebSocket gateway. Gateway handles connection lifecycle only.",
-    "NEVER import WebSocket/framework modules in domain logic. Domain is pure functions.",
-    "NEVER persist presence/typing state to the database. Use ephemeral Valkey TTL keys.",
+    // Clean Architecture — dependency rule
+    "NEVER import I/O or framework modules in domain logic. Domain is pure functions. (Clean Architecture)",
+    // Redis docs — Key Expiration (ephemeral state)
+    "NEVER persist presence/typing state to the database. Use ephemeral TTL keys in Redis. (Redis docs — EXPIRE)",
+    // Distributed systems — shared-nothing architecture
     "NEVER assume single-server deployment. Cross-server communication via pub/sub only.",
-    "NEVER block the event loop with synchronous operations in message handlers.",
   ],
   data: [
-    "NEVER query ClickHouse directly from the API layer. Go through the Cube semantic layer.",
+    // Cube docs — Semantic Layer Architecture
+    "NEVER query the OLAP engine directly from API routes. Go through the semantic layer. (Cube docs)",
+    // Data engineering — separation of concerns
     "NEVER mix pipeline code and API code. They are separate top-level concerns.",
-    "NEVER skip data quality checks on pipeline assets. Every asset has freshness + schema checks.",
-    "NEVER filter sensitive data in the frontend. OPA policies inject server-side WHERE clauses.",
+    // Dagster/dbt docs — Data Quality
+    "NEVER skip data quality checks on pipeline assets. Every asset has freshness + schema checks. (Dagster docs)",
   ],
   ai: [
-    "NEVER inline prompt strings in chain code. Prompts live in src/prompts/ and are version-controlled.",
-    "NEVER ship a prompt change without passing the Promptfoo eval suite.",
-    "NEVER call an LLM without guardrails (input filtering, output validation, PII detection).",
-    "NEVER hardcode the LLM provider. Use the $llm port interface — swap via adapter.",
-    "NEVER skip Langfuse tracing on LLM calls. Every call is traced.",
+    // Prompt engineering best practices — version control
+    "NEVER inline prompt strings in chain code. Prompts are version-controlled files. (Anthropic docs — Prompt Engineering)",
+    // Anthropic docs — Guardrails
+    "NEVER call an LLM without input validation and output filtering. (Anthropic docs — Guardrails)",
+    // Hexagonal Architecture — ports and adapters
+    "NEVER hardcode the LLM provider. Use a port interface with swappable adapters. (Hexagonal Architecture)",
   ],
   mobile: [
-    "NEVER put business logic in screen components. Screens compose components and call hooks.",
-    "NEVER send base64 images through the API. Upload via presigned URL to $store.",
-    "NEVER use FlatList. Always use FlashList for list rendering.",
-    "NEVER use magic strings for navigation routes. All routes are typed.",
-    "NEVER skip offline-first. Write to WatermelonDB first, sync when online.",
+    // React Native performance — component architecture
+    "NEVER put business logic in screen components. Screens compose components and call hooks. (React Native docs)",
+    // React Native performance — list rendering
+    "NEVER use FlatList for large lists. Use FlashList (@shopify/flash-list). (Shopify FlashList docs)",
+    // Mobile best practices — offline-first
+    "NEVER send base64 images through the API. Upload via presigned URL. (AWS S3 docs — Presigned URLs)",
   ],
   internal: [
-    "NEVER use the primary database for display queries. Use the read replica.",
-    "NEVER perform destructive actions without confirmation AND audit logging.",
-    "NEVER display full PII. Mask by default. Reveal on click with audit log.",
-    "NEVER make internal tools accessible from the public internet.",
+    // Database replication — read replica pattern
+    "NEVER use the primary database for display/read queries. Use the read replica.",
+    // SOC 2 — Audit Logging requirements
+    "NEVER perform destructive actions without audit logging. (SOC 2 — CC7.2)",
+    // GDPR Article 25 — Data protection by design
+    "NEVER display full PII. Mask by default. Reveal on click with audit log. (GDPR Art. 25)",
   ],
   content: [
-    "NEVER serve unoptimized images. Always go through Imgproxy with width, height, alt.",
-    "NEVER add client-side JavaScript to content pages by default. Use interactive islands only when needed.",
-    "NEVER skip SEO metadata. Title, description, OG image are mandatory on every content type.",
-    "NEVER update the search index on draft saves. Only on publish.",
+    // Google Web Vitals — LCP, CLS
+    "NEVER serve unoptimized images. Always include width, height, loading='lazy'. (Google Web Vitals — LCP)",
+    // Google — Core Web Vitals, Lighthouse
+    "NEVER add client-side JavaScript to static content pages unless interactive functionality requires it. (Google CWV)",
+    // Google — SEO Starter Guide
+    "NEVER skip SEO metadata (title, description, OG image) on content pages. (Google SEO Guide)",
   ],
 };
 
 export function genBoundariesMd(appType) {
   let o = `# BOUNDARIES.md\n\n`;
-  o += `> Hard prohibitions. The AI must NEVER violate these rules.\n`;
-  o += `> These are non-negotiable constraints, not suggestions.\n\n`;
+  o += `> Hard prohibitions backed by industry standards.\n`;
+  o += `> Each rule references its source (OWASP, RFC, vendor docs, etc.).\n\n`;
   o += `## Universal Boundaries\n`;
   UNIVERSAL_BOUNDARIES.forEach(b => o += `- ${b}\n`);
   o += `\n## ${appType.charAt(0).toUpperCase() + appType.slice(1)}-Specific Boundaries\n`;

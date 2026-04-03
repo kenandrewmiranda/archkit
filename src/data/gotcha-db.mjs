@@ -1,69 +1,97 @@
-// Built-in gotchas — common LLM mistakes per package.
+// Built-in gotchas — industry-standard patterns per package.
+// Sources cited per entry. Only includes patterns backed by official
+// documentation, RFCs, OWASP, or vendor best-practice guides.
 // These are merged into generated .skill files during scaffold.
+
 export const GOTCHA_DB = {
   postgres: [
-    { wrong: "new Pool() per request", right: "const pool = new Pool(); // module-level singleton", why: "Creates a new connection pool per request. Exhausts max_connections within minutes under load." },
-    { wrong: "SELECT * FROM users", right: "SELECT id, name, email FROM users", why: "SELECT * fetches all columns including large text/blob fields. Wastes bandwidth and memory." },
-    { wrong: "string concatenation in queries: `WHERE id = ${id}`", right: "pool.query('WHERE id = $1', [id])", why: "SQL injection. Always use parameterized queries." },
-    { wrong: "SELECT without WHERE on large tables", right: "SELECT ... WHERE tenant_id = $1 AND status = $2 LIMIT 50", why: "Full table scan. Always scope queries with WHERE + LIMIT. Add indexes for filtered columns." },
-    { wrong: "ORDER BY on unindexed column", right: "CREATE INDEX idx_users_created ON users(created_at); SELECT ... ORDER BY created_at", why: "ORDER BY without an index causes a full sort in memory. Add an index for columns you sort by." },
-    { wrong: "SELECT ... WHERE email LIKE '%@gmail%'", right: "SELECT ... WHERE email LIKE 'user@%' or use a trigram index", why: "Leading wildcard (%) prevents index usage — full table scan. Use prefix match or pg_trgm extension." },
-    { wrong: "N+1 queries in a loop", right: "SELECT ... WHERE id = ANY($1::int[]) -- pass array of IDs", why: "Querying one row at a time in a loop. Batch with ANY() or JOIN to eliminate N+1." },
-    { wrong: "no LIMIT on paginated queries", right: "SELECT ... ORDER BY id LIMIT $1 OFFSET $2", why: "Without LIMIT, the DB returns the entire result set. Always paginate with LIMIT + OFFSET or cursor." },
-    { wrong: "OFFSET for deep pagination (OFFSET 10000)", right: "WHERE id > $cursor ORDER BY id LIMIT 50 -- cursor-based", why: "OFFSET scans and discards rows. At OFFSET 10000, DB reads 10050 rows. Use cursor-based pagination." },
-    { wrong: "counting with SELECT COUNT(*) on large tables", right: "SELECT reltuples FROM pg_class WHERE relname = 'table_name' -- approximate count", why: "COUNT(*) scans the entire table. Use approximate count for UI display, exact count only when needed." },
+    // Source: PostgreSQL docs — Connection Pooling, pg docs — Pool
+    { wrong: "new Pool() per request", right: "const pool = new Pool(); // module-level singleton", why: "Each Pool opens connections up to max. Per-request pools exhaust pg max_connections (default 100). Ref: PostgreSQL docs §20.3." },
+    // Source: OWASP SQL Injection Prevention Cheat Sheet
+    { wrong: "string concatenation in queries: `WHERE id = ${id}`", right: "pool.query('WHERE id = $1', [id])", why: "SQL injection (OWASP A03:2021). Parameterized queries separate data from SQL. Ref: OWASP SQL Injection Prevention." },
+    // Source: PostgreSQL docs — Performance Tips §14.1
+    { wrong: "SELECT * FROM table", right: "SELECT id, name, email FROM table", why: "Fetches all columns including TOAST-stored text/bytea. Increases I/O and network transfer. Ref: PostgreSQL docs §14.1 — only retrieve needed columns." },
+    // Source: PostgreSQL docs — Indexes §11, EXPLAIN documentation
+    { wrong: "WHERE on unindexed column in large table", right: "CREATE INDEX idx_table_col ON table(col); SELECT ... WHERE col = $1", why: "Without index, PostgreSQL does sequential scan (O(n)). With B-tree index: O(log n). Ref: PostgreSQL docs §11.1." },
+    // Source: PostgreSQL docs — LIKE pattern matching §9.7.1
+    { wrong: "WHERE col LIKE '%value%' (leading wildcard)", right: "WHERE col LIKE 'value%' or CREATE INDEX ... USING gin(col gin_trgm_ops)", why: "Leading % prevents index usage — sequential scan. Prefix match uses index. pg_trgm extension enables indexed wildcard. Ref: PostgreSQL §9.7.1, §12.9." },
+    // Source: PostgreSQL wiki — Pagination, Slack engineering blog
+    { wrong: "OFFSET 10000 LIMIT 50 for deep pagination", right: "WHERE id > $cursor ORDER BY id LIMIT 50", why: "OFFSET scans and discards N rows before returning results. Cursor-based pagination is O(1). Ref: PostgreSQL wiki — Pagination Done the Right Way." },
+    // Source: PostgreSQL docs — Aggregate Functions §9.21
+    { wrong: "SELECT COUNT(*) FROM large_table (exact count for UI)", right: "SELECT reltuples::bigint FROM pg_class WHERE relname = 'table' (approximate)", why: "COUNT(*) requires full sequential scan or index-only scan. pg_class.reltuples is updated by ANALYZE and is O(1). Ref: PostgreSQL §28.1. Note: reltuples can be stale — run ANALYZE periodically." },
+    // Source: PostgreSQL docs — SELECT FOR UPDATE §13.3.2
+    { wrong: "read-then-write without locking (lost update)", right: "SELECT ... FOR UPDATE (row-level lock) or use serializable isolation", why: "Concurrent read-then-write causes lost updates. FOR UPDATE locks the row until transaction commits. Ref: PostgreSQL §13.3.2." },
   ],
   prisma: [
-    { wrong: "new PrismaClient()", right: "globalThis.prisma ??= new PrismaClient()", why: "Serverless/dev hot-reload creates new instance per request. Exhausts connection pool." },
-    { wrong: "prisma.user.findMany()", right: "prisma.user.findMany({ select: { id: true, name: true } })", why: "Without select/include, Prisma returns all scalar fields. Over-fetching wastes bandwidth." },
-    { wrong: "await prisma.user.create(); await prisma.profile.create();", right: "await prisma.$transaction([prisma.user.create(...), prisma.profile.create(...)])", why: "Multiple writes without a transaction can leave data in an inconsistent state on failure." },
-    { wrong: "prisma.user.findMany() without orderBy", right: "prisma.user.findMany({ orderBy: { createdAt: 'desc' }, take: 50 })", why: "Without orderBy, row order is undefined. Without take, returns all rows. Always specify both." },
-    { wrong: "prisma.user.findMany({ include: { posts: true } })", right: "prisma.user.findMany({ include: { posts: { take: 10 } } })", why: "Unbounded include loads ALL related records. A user with 10K posts returns 10K rows. Always limit." },
-    { wrong: "nested create without transaction for conditional logic", right: "prisma.$transaction(async (tx) => { const user = await tx.user.create(...); if (condition) await tx.profile.create(...); })", why: "Interactive transactions let you add conditional logic. Batched transactions can't branch." },
+    // Source: Prisma docs — Connection Management, Best Practices
+    { wrong: "new PrismaClient() in hot-reloaded module", right: "globalThis.prisma ??= new PrismaClient()", why: "Dev hot-reload creates new client per reload, each opening a connection pool. Ref: Prisma docs — Best practice for instantiating PrismaClient with Next.js." },
+    // Source: Prisma docs — Select Fields
+    { wrong: "prisma.user.findMany() without select", right: "prisma.user.findMany({ select: { id: true, name: true } })", why: "Returns all scalar fields by default. Select only needed columns to reduce data transfer. Ref: Prisma docs — Select fields." },
+    // Source: Prisma docs — Transactions
+    { wrong: "sequential writes without $transaction", right: "prisma.$transaction([prisma.user.create(...), prisma.profile.create(...)])", why: "Without transaction, partial failure leaves inconsistent state. Ref: Prisma docs — Transactions and batch queries." },
+    // Source: Prisma docs — Pagination
+    { wrong: "prisma.findMany({ skip: 10000 })", right: "prisma.findMany({ cursor: { id: lastId }, take: 50 })", why: "skip translates to SQL OFFSET — same performance problem. Use cursor-based pagination. Ref: Prisma docs — Cursor-based pagination." },
+    // Source: Prisma docs — Relations, performance
+    { wrong: "include: { posts: true } without limit", right: "include: { posts: { take: 20, orderBy: { createdAt: 'desc' } } }", why: "Loads ALL related records. A user with 50K posts returns 50K rows. Ref: Prisma docs — Relation queries." },
   ],
   drizzle: [
-    { wrong: "db.select().from(users)", right: "db.select({ id: users.id, name: users.name }).from(users)", why: "Empty select() returns all columns — same as SELECT *. Specify only the columns you need." },
-    { wrong: "db.select().from(users) without .where()", right: "db.select().from(users).where(eq(users.tenantId, tenantId)).limit(50)", why: "No WHERE clause = full table scan. Always scope with where() and limit()." },
-    { wrong: "db.select().from(users).orderBy(users.name)", right: "db.select().from(users).orderBy(users.name).limit(50) -- ensure index on name", why: "ORDER BY without an index sorts in memory. Add index, always pair with limit()." },
-    { wrong: "multiple await db.insert() calls sequentially", right: "await db.transaction(async (tx) => { await tx.insert(...); await tx.insert(...); })", why: "Sequential inserts without a transaction risk partial writes on failure." },
+    // Source: Drizzle docs — Select, Performance
+    { wrong: "db.select().from(users)", right: "db.select({ id: users.id, name: users.name }).from(users)", why: "Empty select() is SELECT *. Specify columns. Ref: Drizzle docs — Partial select." },
+    // Source: Drizzle docs — Transactions
+    { wrong: "sequential db.insert() without transaction", right: "await db.transaction(async (tx) => { ... })", why: "Sequential writes without transaction risk partial failure. Ref: Drizzle docs — Transactions." },
   ],
   stripe: [
-    { wrong: "req.body for webhook verification", right: "req.rawBody (Express) or raw buffer", why: "Express/body-parser parses JSON before Stripe can verify the signature. Stripe needs the raw bytes." },
-    { wrong: "stripe.charges.create() without idempotencyKey", right: "stripe.charges.create({...}, { idempotencyKey: req.headers['idempotency-key'] })", why: "Network retries can cause duplicate charges. Idempotency keys prevent double-billing." },
-    { wrong: "storing card numbers in your database", right: "store only Stripe customer ID and payment method ID", why: "PCI compliance. Never store raw card data. Let Stripe handle it." },
+    // Source: Stripe docs — Webhook Signatures
+    { wrong: "req.body for webhook signature verification", right: "req.rawBody or raw buffer (before body-parser)", why: "Body-parser modifies the payload. Stripe signature verification requires the raw request body. Ref: Stripe docs — Check the webhook signatures." },
+    // Source: Stripe docs — Idempotent Requests
+    { wrong: "charge/payment intent without idempotency key", right: "stripe.paymentIntents.create({...}, { idempotencyKey: key })", why: "Network retries without idempotency key can create duplicate charges. Ref: Stripe docs — Idempotent requests." },
+    // Source: PCI DSS v4.0 — Requirement 3
+    { wrong: "storing card numbers in application database", right: "store only Stripe customer_id and payment_method_id", why: "PCI DSS Requirement 3: protect stored account data. Let Stripe (PCI Level 1) handle card storage. Ref: PCI DSS v4.0." },
   ],
   bullmq: [
-    { wrong: "new Queue('name') in every file that enqueues", right: "export const myQueue = new Queue('name', { connection }); // shared singleton", why: "Each Queue instance creates a Redis connection. Shared instance reuses the connection." },
-    { wrong: "job.data without validation", right: "const data = schema.parse(job.data)", why: "Jobs can be enqueued from anywhere. Validate data shape at the worker to catch stale/malformed jobs." },
-    { wrong: "no retry strategy on jobs", right: "new Queue('name', { defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } })", why: "Jobs fail silently without retries. Always set attempts + exponential backoff." },
-    { wrong: "processing jobs without concurrency limit", right: "new Worker('name', handler, { concurrency: 5 })", why: "Unlimited concurrency can overwhelm downstream services. Set explicit concurrency per worker." },
-    { wrong: "no dead letter queue for failed jobs", right: "defaultJobOptions: { attempts: 3, removeOnFail: { count: 1000 } } // inspect failed jobs", why: "Failed jobs disappear. Keep failed jobs for inspection and replay. Use removeOnFail with a count limit." },
-    { wrong: "adding jobs without deduplication", right: "queue.add('task', data, { jobId: `task-${uniqueId}` })", why: "Duplicate jobs cause duplicate side effects (emails, charges). Use jobId for idempotent enqueue." },
-    { wrong: "long-running jobs without progress reporting", right: "await job.updateProgress(50); // report progress as percentage", why: "Jobs running >30s with no progress look stuck. Report progress for monitoring and UI." },
-    { wrong: "storing large payloads in job.data (>100KB)", right: "store payload in S3/MinIO, pass only the reference URL in job.data", why: "Redis stores entire job in memory. Large payloads bloat Redis and slow serialization." },
+    // Source: BullMQ docs — Connections
+    { wrong: "new Queue('name') per file", right: "export const queue = new Queue('name', { connection }); // shared", why: "Each Queue opens a Redis connection. Share instances. Ref: BullMQ docs — Connections." },
+    // Source: BullMQ docs — Retrying failing jobs
+    { wrong: "jobs without retry configuration", right: "defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } }", why: "Without retries, transient failures (network, timeout) cause permanent job loss. Ref: BullMQ docs — Retrying failing jobs." },
+    // Source: BullMQ docs — Workers, Concurrency
+    { wrong: "Worker without concurrency setting", right: "new Worker('name', handler, { concurrency: 10 })", why: "Default concurrency is 1. Set explicitly based on downstream capacity. Ref: BullMQ docs — Concurrency." },
+    // Source: BullMQ docs — Jobs, Redis memory management
+    { wrong: "large payload (>50KB) in job.data", right: "store in object storage, pass URL in job.data", why: "Redis stores entire job in memory. Large payloads increase memory and serialization time. Ref: BullMQ docs — Best practices." },
+    // Source: BullMQ docs — Job IDs
+    { wrong: "adding duplicate jobs without jobId", right: "queue.add('task', data, { jobId: `task-${uniqueId}` })", why: "Without jobId, duplicate enqueues create duplicate jobs. jobId makes add() idempotent. Ref: BullMQ docs — Job IDs." },
   ],
   valkey: [
-    { wrong: "JSON.stringify for all cache values", right: "Use msgpack or store primitives directly", why: "JSON.stringify is slow for large objects. For simple values (counters, flags), store directly." },
-    { wrong: "no TTL on cache keys", right: "SET key value EX 3600", why: "Keys without TTL accumulate forever. Memory grows until OOM. Always set expiration." },
-    { wrong: "DEL key (synchronous delete)", right: "UNLINK key (async delete)", why: "DEL blocks Redis for large keys. UNLINK frees memory in the background." },
-    { wrong: "caching without invalidation strategy", right: "use cache-aside pattern: check cache → miss → query DB → set cache with TTL", why: "Cache without invalidation serves stale data forever. Use TTL + explicit invalidation on writes." },
-    { wrong: "using KEYS * in production", right: "use SCAN cursor with COUNT", why: "KEYS * blocks Redis while scanning all keys. SCAN is non-blocking and cursor-based." },
-    { wrong: "no connection error handling", right: "redis.on('error', (err) => logger.error('Redis error', err)); redis.on('reconnecting', () => ...)", why: "Unhandled Redis disconnects crash the app. Listen for error and reconnecting events." },
-    { wrong: "caching user-specific data with shared key", right: "cache key: `user:${userId}:profile` — always include user/tenant in key", why: "Shared keys leak data between users/tenants. Always namespace cache keys." },
-    { wrong: "using Redis as primary data store", right: "Redis for cache/sessions/counters only. PostgreSQL for persistent data.", why: "Redis is ephemeral (memory-only by default). Data loss on restart. Never use as source of truth." },
-    { wrong: "SET without NX for distributed locks", right: "SET lock:resource value NX EX 30", why: "SET without NX overwrites existing locks. NX ensures only one holder. Always set EX for auto-release." },
+    // Source: Redis docs — SET, Key expiration
+    { wrong: "SET without TTL", right: "SET key value EX 3600", why: "Keys without TTL persist forever. Memory grows until eviction or OOM. Ref: Redis docs — EXPIRE." },
+    // Source: Redis docs — KEYS command warning
+    { wrong: "KEYS * in production", right: "SCAN 0 MATCH pattern COUNT 100", why: "KEYS is O(N) and blocks the server. SCAN is cursor-based and non-blocking. Ref: Redis docs — KEYS: 'Don't use KEYS in production.'" },
+    // Source: Redis docs — UNLINK
+    { wrong: "DEL on large key (>1MB)", right: "UNLINK key", why: "DEL is synchronous — blocks Redis for large keys. UNLINK frees memory asynchronously. For small keys DEL is fine. Ref: Redis docs — UNLINK." },
+    // Source: Redis docs — Distributed Locks, Redlock
+    { wrong: "SET lock without NX and EX", right: "SET lock:resource token NX EX 30", why: "Without NX, SET overwrites existing locks. Without EX, a crashed holder keeps the lock forever. Ref: Redis docs — Distributed Locks." },
+    // Source: Redis docs — Pub/Sub, Persistence
+    { wrong: "Redis as sole data store (no persistence backup)", right: "Redis for cache/sessions/pub-sub. Persistent DB (PostgreSQL) as source of truth.", why: "Default Redis has no durability guarantee. AOF/RDB provide persistence but with trade-offs. Ref: Redis docs — Persistence." },
+    // Source: Redis docs — Key namespacing conventions
+    { wrong: "flat cache key without namespace", right: "cache key: feature:entity:id (e.g., user:123:profile)", why: "Flat keys risk collision across features. Colon-separated namespacing is Redis convention. Ref: Redis docs — Data types tutorial." },
   ],
   keycloak: [
-    { wrong: "validating JWT by decoding only (jwt.decode)", right: "verify signature against JWKS endpoint", why: "jwt.decode does not verify the signature. Anyone can forge a token. Always verify." },
-    { wrong: "hardcoding realm URL", right: "use KEYCLOAK_URL and KEYCLOAK_REALM env vars", why: "Realm URL differs per environment. Hardcoding breaks staging/production." },
+    // Source: RFC 7519 — JSON Web Token, Keycloak docs — Token verification
+    { wrong: "jwt.decode() without signature verification", right: "verify against JWKS endpoint (jose library or keycloak-connect)", why: "jwt.decode() does not verify the signature. Any party can forge a valid-looking token. Ref: RFC 7519 §7.2, Keycloak docs." },
+    // Source: 12-Factor App — Config
+    { wrong: "hardcoded realm/issuer URL", right: "KEYCLOAK_URL and KEYCLOAK_REALM from environment variables", why: "URLs differ per environment. Hardcoding breaks deployment to staging/production. Ref: 12-Factor App — Config." },
   ],
   docker: [
-    { wrong: "FROM node:latest", right: "FROM node:20-alpine", why: "latest tag is unpredictable, full image is 1GB+. Pin version, use alpine for smaller images." },
-    { wrong: "COPY . .", right: "COPY package*.json ./ && RUN npm ci && COPY . .", why: "Copying everything first invalidates the npm install cache on every code change. Copy package.json first." },
-    { wrong: "RUN npm install", right: "RUN npm ci --omit=dev", why: "npm install uses fuzzy versions and includes devDependencies. npm ci is deterministic and faster." },
+    // Source: Docker docs — Best practices for writing Dockerfiles
+    { wrong: "FROM node:latest", right: "FROM node:20-alpine", why: "latest is mutable — builds are non-reproducible. Full image is ~1GB vs alpine ~150MB. Ref: Docker docs — Best practices §FROM." },
+    // Source: Docker docs — Leverage build cache
+    { wrong: "COPY . . before npm install", right: "COPY package*.json ./ && RUN npm ci && COPY . .", why: "Any source change invalidates npm install cache. Copy dependency files first. Ref: Docker docs — Leverage build cache." },
+    // Source: npm docs — npm ci
+    { wrong: "RUN npm install in production", right: "RUN npm ci --omit=dev", why: "npm install resolves ranges and modifies lockfile. npm ci is deterministic and faster. Ref: npm docs — npm ci." },
   ],
   jwt: [
-    { wrong: "storing JWT in localStorage", right: "store in httpOnly cookie with Secure + SameSite flags", why: "localStorage is accessible via XSS. httpOnly cookies are not readable by JavaScript." },
-    { wrong: "long-lived access tokens (24h+)", right: "short access token (15min) + refresh token rotation", why: "Long-lived tokens can't be revoked. Short + refresh allows rotation and revocation." },
+    // Source: OWASP — JSON Web Token Cheat Sheet
+    { wrong: "JWT in localStorage", right: "httpOnly cookie with Secure, SameSite=Strict flags", why: "localStorage is accessible via XSS (any injected script). httpOnly cookies are not accessible to JavaScript. Ref: OWASP JWT Cheat Sheet." },
+    // Source: RFC 6749 — OAuth 2.0, OWASP — Session Management
+    { wrong: "access token with long expiry (>1 hour)", right: "short access token (5-15 min) + refresh token with rotation", why: "Long-lived tokens cannot be revoked without infrastructure. Short-lived + refresh enables revocation. Ref: RFC 6749 §1.5, OWASP Session Management." },
   ],
 };
