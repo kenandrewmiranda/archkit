@@ -305,6 +305,51 @@ async function generateFiles(state) {
       written.push({ path: `.claude/skills/${s}/SKILL.md`, size: skillMd.length });
       console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/skills/${s}/SKILL.md`);
     }
+    // 4. .claude/settings.json — hooks that enforce archkit in every session
+    log.generate("Generating Claude Code hooks...");
+    const settingsPath = path.join(projectRoot, ".claude", "settings.json");
+    let existingSettings = {};
+    if (fs.existsSync(settingsPath)) {
+      try { existingSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8")); } catch {}
+    }
+
+    const archkitHooks = {
+      hooks: {
+        ...(existingSettings.hooks || {}),
+        // Before any Bash command that looks like git commit, run review
+        PreToolUse: [
+          ...((existingSettings.hooks || {}).PreToolUse || []),
+          {
+            matcher: "Bash",
+            hooks: [
+              {
+                type: "command",
+                command: "if echo \"$TOOL_INPUT\" | grep -q 'git commit'; then archkit review --staged --agent 2>/dev/null | head -5; fi",
+              }
+            ]
+          }
+        ],
+        // After session starts (first tool use), nudge warmup
+        PostToolUse: [
+          ...((existingSettings.hooks || {}).PostToolUse || []),
+          {
+            matcher: "Read",
+            hooks: [
+              {
+                type: "command",
+                command: "if [ ! -f /tmp/.archkit-warmup-done-$$ ]; then echo '[ARCHKIT] Run: archkit resolve warmup'; touch /tmp/.archkit-warmup-done-$$; fi",
+              }
+            ]
+          }
+        ],
+      },
+    };
+
+    // Merge with existing settings (preserve non-hook settings)
+    const mergedSettings = { ...existingSettings, ...archkitHooks };
+    fs.writeFileSync(settingsPath, JSON.stringify(mergedSettings, null, 2));
+    written.push({ path: ".claude/settings.json", size: JSON.stringify(mergedSettings).length });
+    console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/settings.json ${C.dim}(hooks: pre-commit review, warmup nudge)${C.reset}`);
   }
 
   // ── File previews ─────────────────────────────────────────────────────

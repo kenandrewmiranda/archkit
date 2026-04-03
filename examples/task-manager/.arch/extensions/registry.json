@@ -1,0 +1,11 @@
+[
+  {
+    "name": "check-deps",
+    "description": "Check if any .skill or .api files are outdated vs installed package versions",
+    "trigger": "After running npm update, or periodically to catch stale skills",
+    "category": "maintenance",
+    "file": "check-deps.mjs",
+    "args": [],
+    "created": "2026-04-03"
+  }
+]

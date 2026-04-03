@@ -28,6 +28,11 @@ WHY: Multiple writes without a transaction can leave data in an inconsistent sta
 
 [Add more WRONG/RIGHT/WHY blocks as you discover them.]
 
+
+WRONG: findMany()
+RIGHT: findMany({ select: {} })
+WHY: Over-fetching without select
+
 ## Boundaries
 [What Prisma ORM does NOT do in your project.]
 [Prevents the AI from overreaching with this package.]
