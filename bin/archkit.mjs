@@ -31,6 +31,7 @@ const commands = {
   export:   "../src/commands/export.mjs",
   sync:     "../src/commands/sync.mjs",
   update:   "../src/commands/update.mjs",
+  migrate:  "../src/commands/migrate.mjs",
 };
 
 if (command && commands[command]) {
