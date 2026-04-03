@@ -4,12 +4,39 @@
 
 A context engineering system that makes AI coding agents dramatically more effective. Generates a `.arch/` directory with architecture graphs, package skills, API contracts, and rules — so the AI generates code that fits your system, not just code that works.
 
-## Install & Run
+## Install
 
 ```bash
-npm install
-archkit            # Interactive wizard
-archkit --claude    # Also generates Claude Code native files
+# Option 1: Clone into your project (recommended)
+git clone https://github.com/kenandrewmiranda/archkit.git
+cd archkit && npm install
+
+# Option 2: Install globally from GitHub
+npm install -g github:kenandrewmiranda/archkit
+
+# Option 3: Run without installing
+npx github:kenandrewmiranda/archkit
+```
+
+## Usage
+
+```bash
+# New project — interactive wizard
+archkit                     # Scaffold .arch/ directory
+archkit --claude            # + Claude Code native files
+
+# Existing project — auto-detect from codebase
+archkit init                # Reverse-engineer .arch/ from src/
+archkit init src --json     # Detection only, no file generation
+
+# Export for other AI tools
+archkit export cursor       # Generate .cursorrules
+archkit export copilot      # Generate .github/copilot-instructions.md
+archkit export all          # All tools at once
+
+# Update to latest
+archkit update              # Self-update from GitHub
+archkit update --check      # Check for updates without installing
 ```
 
 ## Commands

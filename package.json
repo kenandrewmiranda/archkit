@@ -1,8 +1,12 @@
 {
   "name": "archkit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Context Engineering Scaffolder for AI-Assisted Development",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kenandrewmiranda/archkit.git"
+  },
   "bin": {
     "archkit": "./bin/archkit.mjs"
   },
@@ -14,7 +18,16 @@
     "extend": "node bin/archkit.mjs extend",
     "gotcha": "node bin/archkit.mjs gotcha",
     "review": "node bin/archkit.mjs review",
-    "stats": "node bin/archkit.mjs stats"
+    "stats": "node bin/archkit.mjs stats",
+    "init": "node bin/archkit.mjs init",
+    "export": "node bin/archkit.mjs export",
+    "sync": "node bin/archkit.mjs sync",
+    "drift": "node bin/archkit.mjs drift"
+  },
+  "keywords": ["context-engineering", "ai", "architecture", "scaffolder", "llm", "claude", "cursor", "copilot"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "inquirer": "^9.2.12"

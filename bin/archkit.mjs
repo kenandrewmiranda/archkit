@@ -29,6 +29,8 @@ const commands = {
   stats:    "../src/commands/stats.mjs",
   drift:    "../src/commands/drift.mjs",
   export:   "../src/commands/export.mjs",
+  sync:     "../src/commands/sync.mjs",
+  update:   "../src/commands/update.mjs",
 };
 
 if (command && commands[command]) {
