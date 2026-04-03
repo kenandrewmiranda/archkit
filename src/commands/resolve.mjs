@@ -22,8 +22,10 @@ import { findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseIndex, loadGraphCluster, loadSkillGotchas, loadApiDigest } from "../lib/parsers.mjs";
 import { cmdWarmup } from "./resolve/warmup.mjs";
 import { cmdPlan } from "./resolve/plan.mjs";
+import { cmdVerifyWiring } from "./resolve/verify-wiring.mjs";
 import { expandWithSynonyms } from "../data/synonyms.mjs";
 import * as log from "../lib/logger.mjs";
+import { parseRequirements, checkCoverage, formatCoverageReport } from "../lib/spec-tracker.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -463,6 +465,23 @@ function main() {
       output(cmdWarmup(archDir, deep), pretty);
       break;
     }
+    case "verify-wiring": {
+      const srcDir = cleanArgs[1] || "src";
+      output(cmdVerifyWiring(path.resolve(srcDir)), pretty);
+      break;
+    }
+    case "audit-spec": {
+      const specFile = cleanArgs[1];
+      const srcDir = cleanArgs[2] || "src";
+      if (!specFile) { output({ error: "Usage: archkit resolve audit-spec <spec-file> [src-dir]" }, pretty); process.exit(1); }
+      log.resolve(`Auditing spec: ${specFile} against ${srcDir}`);
+      const reqs = parseRequirements(path.resolve(specFile));
+      if (reqs.length === 0) { output({ error: "No requirements found. Use format: - [ ] REQ-001: Description" }, pretty); process.exit(1); }
+      log.resolve(`Found ${reqs.length} requirements`);
+      const results = checkCoverage(reqs, path.resolve(srcDir));
+      output(formatCoverageReport(results), pretty);
+      break;
+    }
     default: {
       output({
         error: "Unknown command",
@@ -473,6 +492,8 @@ function main() {
           scaffold: "resolve.mjs scaffold <featureId> — Get checklist for new feature",
           lookup: "resolve.mjs lookup <id> — Look up a node, skill, or cluster",
           plan: "archkit resolve plan \"<prompt>\" — Get structured implementation plan",
+          "audit-spec": "archkit resolve audit-spec <spec.md> [src-dir] — Check spec requirement coverage",
+          "verify-wiring": "archkit resolve verify-wiring [src-dir] — Scan for unwired/dead components",
         },
         flags: { "--pretty": "Pretty-print JSON output", "--deep": "Full validation (warmup only)" },
       }, pretty);

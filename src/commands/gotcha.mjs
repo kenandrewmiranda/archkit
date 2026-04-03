@@ -416,11 +416,24 @@ async function debriefMode(archDir) {
 }
 
 async function cliMode(args) {
+  const jsonMode = args.includes("--json");
   const archDir = findArchDir();
   if (!archDir) {
-    console.log(`${C.red}  ${I.warn} Cannot find .arch/ directory.${C.reset}`);
-    console.log(`${C.gray}  Run this from your project root, or run archkit first.${C.reset}\n`);
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: "Cannot find .arch/ directory" }));
+    } else {
+      console.log(`${C.red}  ${I.warn} Cannot find .arch/ directory.${C.reset}`);
+      console.log(`${C.gray}  Run this from your project root, or run archkit first.${C.reset}\n`);
+    }
     process.exit(1);
+  }
+
+  // Agent-friendly: list all skills and gotcha counts as JSON
+  if (args.includes("--list")) {
+    const skills = listSkills(archDir);
+    const result = skills.map(id => ({ id, gotchas: countGotchas(archDir, id) }));
+    console.log(JSON.stringify({ skills: result }));
+    return;
   }
 
   if (args.includes("--debrief") || args.includes("-d")) {
@@ -442,10 +455,16 @@ async function cliMode(args) {
   const [skillId, wrong, right, why] = args.filter(a => !a.startsWith("-"));
 
   if (!skillId || !wrong || !right || !why) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: "Usage: archkit gotcha <skill> \"<wrong>\" \"<right>\" \"<why>\"" }));
+      process.exit(1);
+    }
     banner();
     console.log(`${C.yellow}  Usage:${C.reset}`);
     console.log(`${C.gray}    archkit gotcha <skill> "<wrong>" "<right>" "<why>"${C.reset}`);
     console.log(`${C.gray}    archkit gotcha --interactive${C.reset}`);
+    console.log(`${C.gray}    archkit gotcha --list              ${C.dim}List skills + gotcha counts (JSON)${C.reset}`);
+    console.log(`${C.gray}    archkit gotcha --json <skill> ...  ${C.dim}Direct mode with JSON output${C.reset}`);
     console.log("");
     console.log(`${C.yellow}  Examples:${C.reset}`);
     console.log(`${C.gray}    archkit gotcha stripe "req.body" "req.rawBody" "Express parses. Stripe needs raw."${C.reset}`);
@@ -455,7 +474,9 @@ async function cliMode(args) {
   }
 
   const ok = appendGotcha(archDir, skillId, wrong, right, why);
-  if (ok) {
+  if (jsonMode) {
+    console.log(JSON.stringify({ success: ok, skill: skillId, total: ok ? countGotchas(archDir, skillId) : 0 }));
+  } else if (ok) {
     const total = countGotchas(archDir, skillId);
     console.log(`${C.green}  ${I.check} Gotcha added to ${skillId}.skill (${total} total)${C.reset}`);
   }

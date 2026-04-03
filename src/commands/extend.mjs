@@ -22,6 +22,7 @@ import { execSync } from "child_process";
 import { C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { PRESETS, generateExtension } from "./extend/presets.mjs";
+import * as log from "../lib/logger.mjs";
 
 function banner() {
   commandBanner("arch-extend", "Self-evolving CLI extension system");
@@ -387,6 +388,33 @@ async function main() {
 
   switch (cmd) {
     case "create":
+      if (args[1] === "--from-preset" && args[2]) {
+        // Non-interactive preset creation (agent-callable)
+        const presetName = args[2];
+        if (!PRESETS[presetName]) {
+          console.log(JSON.stringify({ error: `Unknown preset: ${presetName}`, available: Object.keys(PRESETS) }));
+          return;
+        }
+        const meta = PRESETS[presetName];
+        const code = generateExtension(meta);
+        const extDir = ensureExtDir(archDir);
+        const extPath = path.join(extDir, `${meta.name}.mjs`);
+        fs.writeFileSync(extPath, code);
+        const registry = loadRegistry(archDir);
+        registry.push({
+          name: meta.name,
+          description: meta.description,
+          trigger: meta.trigger,
+          category: meta.category,
+          file: `${meta.name}.mjs`,
+          args: meta.args,
+          created: new Date().toISOString().split("T")[0],
+        });
+        saveRegistry(archDir, registry);
+        log.extend(`Created extension: ${meta.name}`);
+        log.ok(`File: ${extPath}`);
+        return;
+      }
       banner();
       await cmdCreate(archDir);
       break;

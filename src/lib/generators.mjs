@@ -58,6 +58,14 @@ export function genSystemMd(cfg) {
   o += `| \`archkit resolve plan "<prompt>"\` | Need a structured implementation plan |\n`;
   o += `| \`archkit review --staged\` | Before committing — final quality gate |\n`;
   o += `| \`archkit gotcha --debrief\` | End of session — capture what you learned |\n`;
+  o += `\n### External Skill Integration\n`;
+  o += `If using external workflow skills (superpowers, custom skills, etc.):\n`;
+  o += `- External skills do NOT replace archkit commands\n`;
+  o += `- BEFORE any task execution: \`archkit resolve warmup\`\n`;
+  o += `- BEFORE each feature task: \`archkit resolve preflight <feature> <layer>\`\n`;
+  o += `- BEFORE each commit: \`archkit review --staged\`\n`;
+  o += `- AFTER completing a plan: \`archkit resolve verify-wiring src/\`\n`;
+  o += `- AT session end: \`archkit gotcha --debrief\` (or report via --json)\n`;
   if (cfg.includeDelegation !== false) {
     o += `\n## Delegation Principle\n`;
     o += `Delegate everything deterministic to sub-agents and CLI tools first. The main agent finalizes with judgment.\n\n`;
