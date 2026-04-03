@@ -80,13 +80,16 @@ export function parseIndex(content) {
       const skill = right.trim();
       keywords.forEach(k => { keywordSkills[k] = skill; });
     } else if (section === "nc") {
+      // Format: @node = [cluster] → base/path/  OR  @node = [cluster] → base/path/
+      // The left side has the node ref, right side may have [cluster] → path or just a path
       const nodeMatch = left.match(/@(\w+)/);
-      const clusterMatch = right.match(/\[(\w+)\]/);
-      const pathMatch = right.match(/\]\s*(?:→|->)+\s*(.+)/);
+      const clusterMatch = (left + " " + right).match(/\[(\w+)\]/);
+      // Extract path: everything after the last → or after [cluster]
+      const pathFromRight = right.replace(/\[(\w+)\]\s*(?:→|->)*\s*/, "").trim();
       if (nodeMatch) {
         nodeCluster[nodeMatch[1]] = {
           cluster: clusterMatch ? clusterMatch[1] : nodeMatch[1],
-          basePath: pathMatch ? pathMatch[1].trim() : `src/features/${nodeMatch[1]}/`,
+          basePath: pathFromRight || `src/features/${nodeMatch[1]}/`,
         };
       }
     } else if (section === "sf") {

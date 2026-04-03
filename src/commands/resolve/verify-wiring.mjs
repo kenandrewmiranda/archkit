@@ -96,9 +96,13 @@ export function cmdVerifyWiring(srcDir) {
 
 function resolveImport(fromDir, importPath) {
   const extensions = [".ts", ".tsx", ".js", ".mjs", ""];
+  // Strip existing extension for re-resolution (handles .js → .ts in ESM TypeScript)
+  const stripped = importPath.replace(/\.(js|mjs|ts|tsx)$/, "");
   const candidates = [
-    importPath,
+    importPath,          // exact match first
+    stripped,            // without extension (try all)
     importPath + "/index",
+    stripped + "/index",
   ];
   for (const candidate of candidates) {
     for (const ext of extensions) {
