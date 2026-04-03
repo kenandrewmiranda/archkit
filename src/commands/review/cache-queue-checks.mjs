@@ -60,8 +60,28 @@ export function checkCachePatterns(code, filepath) {
       severity: "warning", type: "cache",
       message: "Redis client created without error event handler",
       fix: "Add: redis.on('error', (err) => logger.error('Redis error', err))",
-      reason: "Unhandled Redis disconnects crash the process.",
+      reason: "Unhandled Redis disconnects crash the process. Ref: ioredis — Auto-reconnect.",
     });
+  }
+
+  // Cache access without fallback (try/catch around get)
+  for (let i = 0; i < lines.length; i++) {
+    if (/await\s+.*\.(get|hget|hgetall)\(/i.test(lines[i])) {
+      // Check if wrapped in try/catch
+      let hasTryCatch = false;
+      for (let j = Math.max(0, i - 5); j < i; j++) {
+        if (/try\s*{/i.test(lines[j])) { hasTryCatch = true; break; }
+      }
+      if (!hasTryCatch) {
+        findings.push({
+          severity: "info", type: "cache", line: i + 1,
+          message: "Cache read without try/catch — no fallback if cache is down",
+          fix: "Wrap in try/catch and fall back to DB query. App should degrade, not crash.",
+          reason: "Cache failure should not cause application outage. Ref: Microsoft — Cache-Aside pattern.",
+        });
+        break;
+      }
+    }
   }
 
   return findings;
@@ -117,6 +137,26 @@ export function checkQueuePatterns(code, filepath) {
         break;
       }
     }
+  }
+
+  // Worker without graceful shutdown
+  if (/new Worker\(/i.test(code) && !/worker\.close\(\)|graceful|SIGTERM|SIGINT/i.test(code)) {
+    findings.push({
+      severity: "warning", type: "queue",
+      message: "Worker without graceful shutdown — jobs will be abandoned on deploy",
+      fix: "process.on('SIGTERM', async () => { await worker.close(); process.exit(0); })",
+      reason: "close() waits for active jobs to finish. Without it, deploy kills jobs mid-execution. Ref: BullMQ — Graceful shutdown.",
+    });
+  }
+
+  // Worker without stalled job detection
+  if (/new Worker\(/i.test(code) && !/stalledInterval|maxStalledCount/i.test(code)) {
+    findings.push({
+      severity: "info", type: "queue",
+      message: "Worker without stalled job detection — crashed jobs stay stuck in active state",
+      fix: "Add { stalledInterval: 30000, maxStalledCount: 2 } to Worker options.",
+      reason: "If worker crashes mid-job, the job stays active forever without stalled checks. Ref: BullMQ — Stalled jobs.",
+    });
   }
 
   return findings;

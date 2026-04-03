@@ -59,6 +59,16 @@ export const GOTCHA_DB = {
     { wrong: "large payload (>50KB) in job.data", right: "store in object storage, pass URL in job.data", why: "Redis stores entire job in memory. Large payloads increase memory and serialization time. Ref: BullMQ docs — Best practices." },
     // Source: BullMQ docs — Job IDs
     { wrong: "adding duplicate jobs without jobId", right: "queue.add('task', data, { jobId: `task-${uniqueId}` })", why: "Without jobId, duplicate enqueues create duplicate jobs. jobId makes add() idempotent. Ref: BullMQ docs — Job IDs." },
+    // Source: BullMQ docs — Graceful shutdown
+    { wrong: "process.exit() without draining workers", right: "await worker.close(); // waits for active jobs to finish, then shuts down", why: "Killing workers mid-job leaves jobs in active state (stuck). close() drains gracefully. Ref: BullMQ docs — Graceful shutdown." },
+    // Source: BullMQ docs — Events, Stalled jobs
+    { wrong: "no stalled job handling", right: "new Worker('name', handler, { stalledInterval: 30000, maxStalledCount: 2 })", why: "If a worker crashes mid-job, the job stalls. Without stalled check interval, it stays stuck forever. Ref: BullMQ docs — Stalled jobs." },
+    // Source: At-least-once delivery — distributed systems (Kleppmann, Designing Data-Intensive Applications §11)
+    { wrong: "non-idempotent job handler (side effects on retry)", right: "check if action already completed before executing: if (await alreadyProcessed(job.id)) return;", why: "Jobs can be delivered more than once (at-least-once). Handlers must be idempotent. Ref: Kleppmann DDIA §11 — Message delivery guarantees." },
+    // Source: BullMQ docs — Rate limiting
+    { wrong: "no rate limiting on queue that calls external APIs", right: "new Queue('api-calls', { limiter: { max: 10, duration: 1000 } })", why: "Without rate limiting, burst of jobs can exceed external API rate limits (429 errors). Ref: BullMQ docs — Rate limiting." },
+    // Source: Kubernetes docs — Liveness/Readiness probes
+    { wrong: "no health check on queue connection", right: "expose /health endpoint that checks queue.client.status === 'ready'", why: "If Redis connection drops, workers silently stop processing. Health check enables orchestrator restart. Ref: BullMQ docs — Events, Kubernetes — Configure Liveness." },
   ],
   valkey: [
     // Source: Redis docs — SET, Key expiration
@@ -73,6 +83,14 @@ export const GOTCHA_DB = {
     { wrong: "Redis as sole data store (no persistence backup)", right: "Redis for cache/sessions/pub-sub. Persistent DB (PostgreSQL) as source of truth.", why: "Default Redis has no durability guarantee. AOF/RDB provide persistence but with trade-offs. Ref: Redis docs — Persistence." },
     // Source: Redis docs — Key namespacing conventions
     { wrong: "flat cache key without namespace", right: "cache key: feature:entity:id (e.g., user:123:profile)", why: "Flat keys risk collision across features. Colon-separated namespacing is Redis convention. Ref: Redis docs — Data types tutorial." },
+    // Source: Microsoft — Cache-Aside pattern, AWS — Caching Best Practices
+    { wrong: "no fallback when cache is down", right: "try { value = await cache.get(key); } catch { value = await db.query(...); } // circuit breaker", why: "If cache is down and app crashes instead of falling back to DB, a cache failure becomes a full outage. Ref: Microsoft — Cache-Aside pattern." },
+    // Source: Facebook — Scaling Memcache, cache stampede literature
+    { wrong: "no stampede protection on hot keys", right: "use lock-based recompute: SET key value NX EX 5 → if locked, serve stale → recompute → update", why: "When a hot key expires, all concurrent requests hit DB simultaneously (thundering herd). Lock recompute so only one request rebuilds. Ref: Facebook — Scaling Memcache at Facebook." },
+    // Source: Redis docs — Maxmemory, Eviction policies
+    { wrong: "no maxmemory or eviction policy configured", right: "maxmemory 256mb + maxmemory-policy allkeys-lru", why: "Without maxmemory, Redis grows until OS OOM-kills it. Set a limit + eviction policy. Ref: Redis docs — Using Redis as an LRU cache." },
+    // Source: Kubernetes — Container probes
+    { wrong: "no health check on Redis connection", right: "expose /health that runs redis.ping() with timeout", why: "Silent Redis disconnects cause stale reads or timeouts. Health probe enables orchestrator restart. Ref: Redis docs — PING, Kubernetes — Configure Liveness." },
   ],
   keycloak: [
     // Source: RFC 7519 — JSON Web Token, Keycloak docs — Token verification
