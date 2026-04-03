@@ -3,6 +3,7 @@
 export const PACKAGE_DOCS = {
   postgres: { npm: "pg", docs: "https://node-postgres.com" },
   prisma: { npm: "@prisma/client", docs: "https://www.prisma.io/docs" },
+  drizzle: { npm: "drizzle-orm", docs: "https://orm.drizzle.team/docs" },
   valkey: { npm: "ioredis", docs: "https://redis.github.io/ioredis/" },
   keycloak: { npm: "keycloak-js", docs: "https://www.keycloak.org/docs/latest/" },
   stripe: { npm: "stripe", docs: "https://stripe.com/docs/api" },

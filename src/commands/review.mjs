@@ -25,6 +25,7 @@ import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { checkImportHierarchy } from "./review/import-checks.mjs";
 import { checkRealtimeRules, checkAIRules, checkDataRules, checkMobileRules, checkInternalRules, checkContentRules, getAppType } from "./review/app-checks.mjs";
+import { checkDatabasePatterns } from "./review/db-checks.mjs";
 import * as log from "../lib/logger.mjs";
 
 function banner() {
@@ -425,6 +426,7 @@ function main() {
       ...checkArchitectureRules(code, filepath, rules, reservedWords),
       ...checkFileLocation(filepath, graphs),
       ...checkImportHierarchy(code, filepath),
+      ...checkDatabasePatterns(code, filepath),
     ];
     if (appType === "realtime") findings.push(...checkRealtimeRules(code, filepath));
     if (appType === "ai") findings.push(...checkAIRules(code, filepath));

@@ -7,6 +7,12 @@ const UNIVERSAL_BOUNDARIES = [
   "NEVER store passwords in plain text. Use bcrypt/argon2 with salt.",
   "NEVER disable CORS in production. Configure allowed origins explicitly.",
   "NEVER return stack traces or internal errors to the client in production.",
+  "NEVER use SELECT * — always specify the columns you need.",
+  "NEVER query without WHERE on tables with more than 100 rows. Scope every query.",
+  "NEVER ORDER BY a column without an index. Add an index or remove the sort.",
+  "NEVER use OFFSET for deep pagination (>1000). Use cursor-based pagination.",
+  "NEVER load unbounded relations (e.g., include all posts for a user). Always LIMIT.",
+  "NEVER run N+1 queries in a loop. Batch with IN/ANY or use a JOIN.",
 ];
 
 const APP_TYPE_BOUNDARIES = {
