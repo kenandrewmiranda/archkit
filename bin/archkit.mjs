@@ -20,6 +20,7 @@ if (presetIdx !== -1 && process.argv[presetIdx + 1]) {
 const command = process.argv[2];
 
 const commands = {
+  init:     "../src/commands/init.mjs",
   resolve:  "../src/commands/resolve.mjs",
   guard:    "../src/commands/guard.mjs",
   extend:   "../src/commands/extend.mjs",
@@ -27,6 +28,7 @@ const commands = {
   review:   "../src/commands/review.mjs",
   stats:    "../src/commands/stats.mjs",
   drift:    "../src/commands/drift.mjs",
+  export:   "../src/commands/export.mjs",
 };
 
 if (command && commands[command]) {

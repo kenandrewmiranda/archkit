@@ -24,7 +24,7 @@ import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { checkImportHierarchy } from "./review/import-checks.mjs";
-import { checkRealtimeRules, checkAIRules, getAppType } from "./review/app-checks.mjs";
+import { checkRealtimeRules, checkAIRules, checkDataRules, checkMobileRules, checkInternalRules, checkContentRules, getAppType } from "./review/app-checks.mjs";
 import * as log from "../lib/logger.mjs";
 
 function banner() {
@@ -404,6 +404,10 @@ function main() {
     ];
     if (appType === "realtime") findings.push(...checkRealtimeRules(code, filepath));
     if (appType === "ai") findings.push(...checkAIRules(code, filepath));
+    if (appType === "data") findings.push(...checkDataRules(code, filepath));
+    if (appType === "mobile") findings.push(...checkMobileRules(code, filepath));
+    if (appType === "internal") findings.push(...checkInternalRules(code, filepath));
+    if (appType === "content") findings.push(...checkContentRules(code, filepath));
     firstFile = false;
 
     if (agentMode) {
