@@ -255,6 +255,8 @@ async function generateFiles(state) {
     fs.mkdirSync(claudeRulesDir, { recursive: true });
 
     let archRule = `---\ndescription: "Architecture rules from archkit"\nalwaysApply: true\n---\n\n`;
+    archRule += `## archkit Protocol (NON-NEGOTIABLE)\nBefore ANY code generation, invoke the \`archkit-protocol\` skill.\nThis applies even when using superpowers or other workflow skills.\n\n`;
+    archRule += `## Architecture Rules\n`;
     at.rules.forEach(r => archRule += `- ${r}\n`);
     fs.writeFileSync(path.join(claudeRulesDir, "architecture.md"), archRule);
     written.push({ path: ".claude/rules/architecture.md", size: archRule.length });
@@ -305,6 +307,93 @@ async function generateFiles(state) {
       written.push({ path: `.claude/skills/${s}/SKILL.md`, size: skillMd.length });
       console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/skills/${s}/SKILL.md`);
     }
+
+    // 5. archkit-protocol skill — unified workflow integration for AI agents
+    log.generate("Generating archkit-protocol skill...");
+    const protocolDir = path.join(claudeSkillsDir, "archkit-protocol");
+    fs.mkdirSync(protocolDir, { recursive: true });
+
+    const protocolSkill = `---
+name: archkit-protocol
+description: "Architecture-first development workflow using archkit CLI tools"
+trigger: "When starting any coding task, implementing a feature, before committing, at session end, or when asked about architecture"
+---
+
+# archkit Protocol
+
+This skill maps your development workflow to archkit commands. All commands return JSON on stdout (logs go to stderr).
+
+## Before Starting Work
+\`\`\`bash
+archkit resolve warmup          # Check system health (blockers = stop)
+\`\`\`
+
+## Before Implementing a Feature
+\`\`\`bash
+# New feature:
+archkit resolve scaffold <featureId> --pretty
+
+# Existing feature:
+archkit resolve preflight <feature> <layer> --pretty
+
+# Unsure what's affected:
+archkit resolve context "<prompt>" --pretty
+
+# Need a full plan:
+archkit resolve plan "<prompt>" --pretty
+\`\`\`
+
+## While Coding
+\`\`\`bash
+# Look up a node, skill, or cluster:
+archkit resolve lookup <id> --pretty
+
+# Check for gotchas on a package:
+archkit gotcha --list
+\`\`\`
+
+## Before Committing
+\`\`\`bash
+# Review staged files against architecture rules:
+archkit review --staged --agent
+
+# Check for unwired/dead components:
+archkit resolve verify-wiring src/
+\`\`\`
+
+## After Completing a Feature
+\`\`\`bash
+# Check requirement coverage:
+archkit resolve audit-spec docs/spec.md src/
+
+# Check for architectural drift:
+archkit drift --json
+\`\`\`
+
+## At Session End
+\`\`\`bash
+# Capture a gotcha:
+archkit gotcha <skill> "<wrong>" "<right>" "<why>" --json
+
+# Non-interactive debrief:
+archkit gotcha --debrief --json '{"gotchas":[{"skill":"x","wrong":"x","right":"x","why":"x"}]}'
+
+# Check health score:
+archkit stats --compact
+\`\`\`
+
+## Key Rules
+- ALL archkit commands return JSON on stdout — safe to pipe and parse
+- Log output goes to stderr — won't corrupt JSON parsing
+- Run warmup at least once per session before generating code
+- Run review --staged before every commit
+- Capture gotchas when you discover bad patterns — the system gets smarter
+`;
+
+    fs.writeFileSync(path.join(protocolDir, "SKILL.md"), protocolSkill);
+    written.push({ path: ".claude/skills/archkit-protocol/SKILL.md", size: protocolSkill.length });
+    console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/skills/archkit-protocol/SKILL.md ${C.dim}(workflow integration)${C.reset}`);
+
     // 4. .claude/settings.json — hooks that enforce archkit in every session
     log.generate("Generating Claude Code hooks...");
     const settingsPath = path.join(projectRoot, ".claude", "settings.json");

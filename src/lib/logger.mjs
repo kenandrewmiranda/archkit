@@ -40,7 +40,7 @@ export function setQuiet(val) {
 export function log(prefix, message) {
   if (quiet) return;
   const tag = PREFIXES[prefix] || `${C.gray}${C.bold}[${prefix.toUpperCase()}]${C.reset}`;
-  console.log(`  ${tag} ${C.dim}${message}${C.reset}`);
+  console.error(`  ${tag} ${C.dim}${message}${C.reset}`);
 }
 
 // Convenience shortcuts

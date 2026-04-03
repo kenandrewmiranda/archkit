@@ -26,6 +26,7 @@ const commands = {
   gotcha:   "../src/commands/gotcha.mjs",
   review:   "../src/commands/review.mjs",
   stats:    "../src/commands/stats.mjs",
+  drift:    "../src/commands/drift.mjs",
 };
 
 if (command && commands[command]) {

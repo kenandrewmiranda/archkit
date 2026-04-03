@@ -436,6 +436,89 @@ async function cliMode(args) {
     return;
   }
 
+  // Non-interactive debrief for AI agents
+  if ((args.includes("--debrief") || args.includes("-d")) && args.includes("--json")) {
+    const jsonArg = args.filter(a => !a.startsWith("-")).join(" ");
+    let input;
+    try {
+      input = JSON.parse(jsonArg);
+    } catch {
+      console.log(JSON.stringify({ error: "Invalid JSON. Expected: {\"gotchas\":[{\"skill\":\"x\",\"wrong\":\"x\",\"right\":\"x\",\"why\":\"x\"}],\"placement\":\"optional note\",\"apiSurprise\":{\"skill\":\"x\",\"note\":\"x\"},\"goodPattern\":{\"skill\":\"x\",\"pattern\":\"x\"}}" }));
+      process.exit(1);
+    }
+
+    const results = [];
+
+    // Process gotchas
+    if (input.gotchas && Array.isArray(input.gotchas)) {
+      for (const g of input.gotchas) {
+        if (g.skill && g.wrong && g.right && g.why) {
+          const ok = appendGotcha(archDir, g.skill, g.wrong, g.right, g.why);
+          results.push({ type: "gotcha", skill: g.skill, success: ok });
+        }
+      }
+    }
+
+    // Process placement note
+    if (input.placement) {
+      const sysPath = path.join(archDir, "SYSTEM.md");
+      if (fs.existsSync(sysPath)) {
+        let sys = fs.readFileSync(sysPath, "utf8");
+        const rulesIdx = sys.indexOf("## Rules");
+        if (rulesIdx !== -1) {
+          const nextSection = sys.indexOf("\n## ", rulesIdx + 8);
+          const insertAt = nextSection !== -1 ? nextSection : sys.length;
+          sys = sys.slice(0, insertAt) + `- LEARNED: ${input.placement}\n` + sys.slice(insertAt);
+          fs.writeFileSync(sysPath, sys);
+          results.push({ type: "placement", success: true });
+        }
+      }
+    }
+
+    // Process API surprise
+    if (input.apiSurprise && input.apiSurprise.skill && input.apiSurprise.note) {
+      const skillPath = path.join(archDir, "skills", `${input.apiSurprise.skill}.skill`);
+      if (fs.existsSync(skillPath)) {
+        let content = fs.readFileSync(skillPath, "utf8");
+        const gotchaIdx = content.indexOf("## Gotchas");
+        if (gotchaIdx !== -1) {
+          const afterGotcha = content.indexOf("## ", gotchaIdx + 10);
+          const entry = `\n# TODO-GOTCHA: ${input.apiSurprise.note}\n# Convert to WRONG/RIGHT/WHY when pattern is clear.\n`;
+          if (afterGotcha !== -1) {
+            content = content.slice(0, afterGotcha) + entry + content.slice(afterGotcha);
+          } else {
+            content += entry;
+          }
+          fs.writeFileSync(skillPath, content);
+          results.push({ type: "api-surprise", skill: input.apiSurprise.skill, success: true });
+        }
+      }
+    }
+
+    // Process good pattern
+    if (input.goodPattern && input.goodPattern.skill && input.goodPattern.pattern) {
+      const skillPath = path.join(archDir, "skills", `${input.goodPattern.skill}.skill`);
+      if (fs.existsSync(skillPath)) {
+        let content = fs.readFileSync(skillPath, "utf8");
+        const patternsIdx = content.indexOf("## Patterns");
+        if (patternsIdx !== -1) {
+          const afterPatterns = content.indexOf("## ", patternsIdx + 11);
+          const entry = `\n# LEARNED: ${input.goodPattern.pattern}\n`;
+          if (afterPatterns !== -1) {
+            content = content.slice(0, afterPatterns) + entry + content.slice(afterPatterns);
+          } else {
+            content += entry;
+          }
+          fs.writeFileSync(skillPath, content);
+          results.push({ type: "good-pattern", skill: input.goodPattern.skill, success: true });
+        }
+      }
+    }
+
+    console.log(JSON.stringify({ success: true, results }));
+    return;
+  }
+
   if (args.includes("--debrief") || args.includes("-d")) {
     banner();
     console.log(`${C.cyan}${C.bold}  ${I.brain} Session Debrief Mode${C.reset}`);
