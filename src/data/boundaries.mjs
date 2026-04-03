@@ -13,6 +13,12 @@ const UNIVERSAL_BOUNDARIES = [
   "NEVER use OFFSET for deep pagination (>1000). Use cursor-based pagination.",
   "NEVER load unbounded relations (e.g., include all posts for a user). Always LIMIT.",
   "NEVER run N+1 queries in a loop. Batch with IN/ANY or use a JOIN.",
+  "NEVER cache without a TTL. Every cached value must expire.",
+  "NEVER use shared cache keys for user-specific data. Namespace: `user:{id}:resource`.",
+  "NEVER use KEYS * in production Redis/Valkey. Use SCAN with cursor.",
+  "NEVER use Redis/Valkey as the primary data store. It's a cache, not a database.",
+  "NEVER enqueue jobs without retry + backoff configured. Jobs fail — plan for it.",
+  "NEVER store large payloads (>100KB) in job data. Store in object storage, pass the URL.",
 ];
 
 const APP_TYPE_BOUNDARIES = {

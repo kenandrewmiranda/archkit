@@ -35,11 +35,23 @@ export const GOTCHA_DB = {
   bullmq: [
     { wrong: "new Queue('name') in every file that enqueues", right: "export const myQueue = new Queue('name', { connection }); // shared singleton", why: "Each Queue instance creates a Redis connection. Shared instance reuses the connection." },
     { wrong: "job.data without validation", right: "const data = schema.parse(job.data)", why: "Jobs can be enqueued from anywhere. Validate data shape at the worker to catch stale/malformed jobs." },
+    { wrong: "no retry strategy on jobs", right: "new Queue('name', { defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } } })", why: "Jobs fail silently without retries. Always set attempts + exponential backoff." },
+    { wrong: "processing jobs without concurrency limit", right: "new Worker('name', handler, { concurrency: 5 })", why: "Unlimited concurrency can overwhelm downstream services. Set explicit concurrency per worker." },
+    { wrong: "no dead letter queue for failed jobs", right: "defaultJobOptions: { attempts: 3, removeOnFail: { count: 1000 } } // inspect failed jobs", why: "Failed jobs disappear. Keep failed jobs for inspection and replay. Use removeOnFail with a count limit." },
+    { wrong: "adding jobs without deduplication", right: "queue.add('task', data, { jobId: `task-${uniqueId}` })", why: "Duplicate jobs cause duplicate side effects (emails, charges). Use jobId for idempotent enqueue." },
+    { wrong: "long-running jobs without progress reporting", right: "await job.updateProgress(50); // report progress as percentage", why: "Jobs running >30s with no progress look stuck. Report progress for monitoring and UI." },
+    { wrong: "storing large payloads in job.data (>100KB)", right: "store payload in S3/MinIO, pass only the reference URL in job.data", why: "Redis stores entire job in memory. Large payloads bloat Redis and slow serialization." },
   ],
   valkey: [
     { wrong: "JSON.stringify for all cache values", right: "Use msgpack or store primitives directly", why: "JSON.stringify is slow for large objects. For simple values (counters, flags), store directly." },
     { wrong: "no TTL on cache keys", right: "SET key value EX 3600", why: "Keys without TTL accumulate forever. Memory grows until OOM. Always set expiration." },
     { wrong: "DEL key (synchronous delete)", right: "UNLINK key (async delete)", why: "DEL blocks Redis for large keys. UNLINK frees memory in the background." },
+    { wrong: "caching without invalidation strategy", right: "use cache-aside pattern: check cache → miss → query DB → set cache with TTL", why: "Cache without invalidation serves stale data forever. Use TTL + explicit invalidation on writes." },
+    { wrong: "using KEYS * in production", right: "use SCAN cursor with COUNT", why: "KEYS * blocks Redis while scanning all keys. SCAN is non-blocking and cursor-based." },
+    { wrong: "no connection error handling", right: "redis.on('error', (err) => logger.error('Redis error', err)); redis.on('reconnecting', () => ...)", why: "Unhandled Redis disconnects crash the app. Listen for error and reconnecting events." },
+    { wrong: "caching user-specific data with shared key", right: "cache key: `user:${userId}:profile` — always include user/tenant in key", why: "Shared keys leak data between users/tenants. Always namespace cache keys." },
+    { wrong: "using Redis as primary data store", right: "Redis for cache/sessions/counters only. PostgreSQL for persistent data.", why: "Redis is ephemeral (memory-only by default). Data loss on restart. Never use as source of truth." },
+    { wrong: "SET without NX for distributed locks", right: "SET lock:resource value NX EX 30", why: "SET without NX overwrites existing locks. NX ensures only one holder. Always set EX for auto-release." },
   ],
   keycloak: [
     { wrong: "validating JWT by decoding only (jwt.decode)", right: "verify signature against JWKS endpoint", why: "jwt.decode does not verify the signature. Anyone can forge a token. Always verify." },
