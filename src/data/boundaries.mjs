@@ -25,6 +25,14 @@ const UNIVERSAL_BOUNDARIES = [
   "NEVER SET cache keys without TTL. Every cached value must have an expiration. (Redis docs — EXPIRE)",
   // BullMQ docs — Retrying failing jobs
   "NEVER enqueue jobs without retry + backoff configured. (BullMQ docs — Retrying failing jobs)",
+  // Source: RFC 9457 — Problem Details for HTTP APIs
+  "NEVER return inconsistent error response shapes. Use RFC 9457 Problem Details format. (RFC 9457)",
+  // Source: OWASP Logging Cheat Sheet
+  "NEVER log PII, credentials, or tokens. Log user IDs and request IDs only. (OWASP Logging Cheat Sheet)",
+  // Source: AWS SDK — Timeouts
+  "NEVER make outbound HTTP requests without a timeout. (AWS SDK Best Practices)",
+  // Source: 12-Factor App §9
+  "NEVER exit without graceful shutdown. Drain connections on SIGTERM. (12-Factor App §9)",
 ];
 
 const APP_TYPE_BOUNDARIES = {

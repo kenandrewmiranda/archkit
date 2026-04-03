@@ -112,4 +112,102 @@ export const GOTCHA_DB = {
     // Source: RFC 6749 — OAuth 2.0, OWASP — Session Management
     { wrong: "access token with long expiry (>1 hour)", right: "short access token (5-15 min) + refresh token with rotation", why: "Long-lived tokens cannot be revoked without infrastructure. Short-lived + refresh enables revocation. Ref: RFC 6749 §1.5, OWASP Session Management." },
   ],
+  api: [
+    // Source: RFC 7231 — HTTP/1.1 Semantics and Content §6
+    { wrong: "returning 200 for all responses with { success: false } in body", right: "use correct HTTP status codes: 201 Created, 400 Bad Request, 404 Not Found, 409 Conflict, 422 Unprocessable Entity", why: "HTTP clients, proxies, and CDNs rely on status codes for caching, retry, and routing decisions. Ref: RFC 7231 §6." },
+    // Source: RFC 9457 — Problem Details for HTTP APIs (supersedes RFC 7807)
+    { wrong: "inconsistent error response shapes: { error: 'msg' } vs { message: 'msg' } vs string", right: "{ type: 'about:blank', title: 'Not Found', status: 404, detail: 'User 123 not found' } — RFC 9457 Problem Details", why: "Inconsistent error shapes force every client to handle multiple formats. RFC 9457 standardizes error responses. Ref: RFC 9457." },
+    // Source: IETF RFC 6585 — Additional HTTP Status Codes (429)
+    { wrong: "no rate limiting on public API endpoints", right: "return 429 Too Many Requests with Retry-After header", why: "Without rate limiting, a single client can exhaust server resources. 429 + Retry-After is the standard response. Ref: RFC 6585 §4." },
+    // Source: Google API Design Guide — Standard Methods
+    { wrong: "POST /getUsers, POST /deleteUser", right: "GET /users, DELETE /users/:id — use HTTP methods as verbs", why: "REST uses HTTP methods (GET/POST/PUT/DELETE) as verbs. Endpoints are nouns. Ref: Google API Design Guide — Standard methods." },
+    // Source: RFC 7231 §4.2.2 — Idempotent Methods
+    { wrong: "PUT/DELETE endpoints with side effects that aren't idempotent", right: "PUT and DELETE must produce the same result when called multiple times", why: "PUT and DELETE are defined as idempotent by RFC 7231 §4.2.2. Network retries depend on this guarantee." },
+    // Source: RFC 8288 — Web Linking, cursor-based pagination
+    { wrong: "pagination with no total count or next page indicator", right: "return { data: [...], pagination: { total, page, pageSize, hasNext } } or Link headers", why: "Clients need to know if more pages exist. Standard patterns: RFC 8288 Link header or envelope with pagination metadata." },
+    // Source: Semver, Stripe API versioning
+    { wrong: "breaking API changes without versioning", right: "version via URL prefix (/v1/, /v2/) or Accept header (application/vnd.api+json;version=2)", why: "Breaking changes without versioning break all existing clients simultaneously. Ref: Stripe — API versioning." },
+  ],
+  errors: [
+    // Source: Node.js docs — Error handling, MDN — Promise
+    { wrong: "async function without try/catch or .catch()", right: "wrap async handlers: try { await logic(); } catch (err) { next(err); }", why: "Unhandled promise rejections crash Node.js (--unhandled-rejections=throw is default since v15). Ref: Node.js docs — Errors." },
+    // Source: RFC 9457 — Problem Details
+    { wrong: "throw new Error('something went wrong') — generic string errors", right: "throw new NotFoundError('User', userId) — typed error classes with context", why: "Generic errors lose context. Typed errors enable centralized handling with correct HTTP status codes. Ref: OWASP Error Handling." },
+    // Source: OWASP — Error Handling Cheat Sheet
+    { wrong: "catch (err) { } — swallowing errors silently", right: "catch (err) { logger.error('context', { error: err, requestId }); throw err; }", why: "Swallowed errors are invisible bugs. Always log with context and either re-throw or handle explicitly. Ref: OWASP Error Handling Cheat Sheet." },
+    // Source: OWASP — Error Handling, information leakage
+    { wrong: "res.status(500).json({ error: err.message, stack: err.stack })", right: "res.status(500).json({ type: 'internal_error', title: 'Internal Server Error' }) — log full error server-side", why: "Stack traces expose internals (file paths, versions, dependencies). Log server-side, return generic message to client. Ref: OWASP — Improper Error Handling." },
+    // Source: Express docs — Error handling middleware
+    { wrong: "error handling in every route handler", right: "centralized error middleware: app.use((err, req, res, next) => { ... })", why: "Duplicated try/catch in every route is fragile. Centralized error middleware handles all errors consistently. Ref: Express docs — Error handling." },
+  ],
+  http_client: [
+    // Source: AWS SDK Best Practices — Timeouts
+    { wrong: "fetch() or axios() without timeout", right: "fetch(url, { signal: AbortSignal.timeout(5000) }) or axios({ timeout: 5000 })", why: "Without timeout, a hung upstream service blocks your thread indefinitely. Always set connect + read timeout. Ref: AWS SDK — Timeouts and HTTP client best practices." },
+    // Source: Microsoft — Circuit Breaker pattern
+    { wrong: "retrying failed HTTP requests immediately in a tight loop", right: "exponential backoff: delay = Math.min(baseDelay * 2^attempt, maxDelay) + jitter", why: "Immediate retries amplify load on a failing service. Exponential backoff with jitter spreads retry load. Ref: AWS — Exponential Backoff and Jitter." },
+    // Source: Microsoft — Circuit Breaker pattern (Cloud Design Patterns)
+    { wrong: "no circuit breaker on external API calls", right: "use circuit breaker: after N consecutive failures, stop calling for cooldown period", why: "Continuing to call a failing service wastes resources and delays recovery. Circuit breaker fails fast. Ref: Microsoft — Circuit Breaker pattern." },
+    // Source: IETF — Retry-After header (RFC 7231 §7.1.3)
+    { wrong: "ignoring Retry-After header on 429/503 responses", right: "if (res.status === 429) { await sleep(res.headers.get('Retry-After') * 1000); retry(); }", why: "Retry-After tells you exactly when to retry. Ignoring it wastes requests and may get you banned. Ref: RFC 7231 §7.1.3." },
+    // Source: Node.js docs — HTTP Agent, Keep-Alive
+    { wrong: "creating new HTTP connection per request (no keep-alive)", right: "const agent = new http.Agent({ keepAlive: true, maxSockets: 50 })", why: "TCP + TLS handshake per request adds ~100ms latency. Keep-alive reuses connections. Ref: Node.js docs — http.Agent." },
+  ],
+  deployment: [
+    // Source: Kubernetes — Container probes, 12-Factor App §9
+    { wrong: "no health check endpoint", right: "GET /health returns { status: 'ok', checks: { db: 'connected', cache: 'connected' } }", why: "Without health checks, orchestrators can't detect failures or route traffic away from unhealthy instances. Ref: Kubernetes — Configure Liveness, Readiness." },
+    // Source: 12-Factor App §9 — Disposability
+    { wrong: "no graceful shutdown (process just dies on SIGTERM)", right: "process.on('SIGTERM', async () => { server.close(); await db.disconnect(); await cache.quit(); process.exit(0); })", why: "SIGTERM is sent on deploy/scale-down. Without graceful shutdown, in-flight requests fail. Ref: 12-Factor App §9 — Disposability." },
+    // Source: Kubernetes — Rolling Update Strategy
+    { wrong: "deploying by killing all instances and starting new ones", right: "rolling update: maxUnavailable: 0, maxSurge: 1 — zero-downtime deployment", why: "Replacing all instances at once causes downtime. Rolling update ensures at least one instance is always serving. Ref: Kubernetes — Rolling Update." },
+    // Source: OWASP — Docker Security Cheat Sheet
+    { wrong: "running container as root user", right: "USER node (in Dockerfile) — run as non-root", why: "Root in container = root-equivalent if container is compromised. Run as non-root. Ref: OWASP Docker Security, Docker — Best practices §USER." },
+    // Source: 12-Factor App §7 — Port Binding
+    { wrong: "hardcoded port: app.listen(3000)", right: "app.listen(process.env.PORT || 3000)", why: "Port must be configurable for container orchestration. Multiple instances can't bind the same port. Ref: 12-Factor App §7." },
+  ],
+  concurrency: [
+    // Source: PostgreSQL §13.4 — Serialization Failure Handling
+    { wrong: "read-modify-write without optimistic locking", right: "UPDATE table SET col = newVal, version = version + 1 WHERE id = $1 AND version = $2 — check rowCount", why: "Concurrent read-modify-write causes lost updates. Optimistic locking detects conflicts via version column. Ref: PostgreSQL §13.4." },
+    // Source: Stripe — Idempotent Requests
+    { wrong: "non-idempotent mutation endpoints (POST /charge called twice = double charge)", right: "accept Idempotency-Key header: if (await isDuplicate(key)) return cachedResponse;", why: "Network retries, user double-clicks, and queue redelivery all cause duplicate calls. Idempotency keys prevent duplicate side effects. Ref: Stripe — Idempotent Requests, IETF draft-ietf-httpapi-idempotency-key." },
+    // Source: PostgreSQL §13.3.2 — Row-Level Locks
+    { wrong: "check-then-act without locking (TOCTOU race condition)", right: "SELECT ... FOR UPDATE within a transaction — lock the row before checking", why: "Between your SELECT and UPDATE, another transaction can modify the row. FOR UPDATE serializes access. Ref: PostgreSQL §13.3.2." },
+    // Source: Redis docs — Distributed Locks with SET NX
+    { wrong: "distributed locking with SETNX without expiry or token", right: "SET lock:resource $token NX EX 30 — release only if token matches (compare-and-delete)", why: "Lock without expiry: crash = permanent lock. Lock without token: any process can release it. Ref: Redis — Distributed Locks, Martin Kleppmann — lock analysis." },
+  ],
+  logging: [
+    // Source: OWASP — Logging Cheat Sheet
+    { wrong: "console.log('user logged in', user)", right: "logger.info('user_login', { userId: user.id, ip: req.ip, timestamp: new Date().toISOString() })", why: "console.log is unstructured — can't query, filter, or alert. Use structured logging (JSON) with context. Ref: OWASP Logging Cheat Sheet." },
+    // Source: OWASP — Logging Cheat Sheet §What to Log
+    { wrong: "logger.info('Login', { email: user.email, password: req.body.password })", right: "logger.info('Login', { userId: user.id }) — never log PII or credentials", why: "Logs are often stored unencrypted and accessible to ops teams. PII in logs violates GDPR. Ref: OWASP Logging Cheat Sheet." },
+    // Source: OpenTelemetry — Context Propagation
+    { wrong: "log statements without request/correlation ID", right: "logger.info('action', { requestId: req.id, ...data })", why: "Without correlation ID, you can't trace a request across services or logs. Ref: OpenTelemetry — Context propagation." },
+    // Source: 12-Factor App §11 — Logs
+    { wrong: "writing logs to local files (fs.writeFileSync('app.log', ...))", right: "write to stdout/stderr — let the platform (Docker, K8s) handle collection", why: "Log files fill disks, need rotation, and aren't accessible in containers. 12-Factor: treat logs as event streams. Ref: 12-Factor App §11." },
+    // Source: Pino/Winston docs — Log Levels
+    { wrong: "using console.log for everything (no log levels)", right: "logger.debug() for dev, logger.info() for operations, logger.error() for failures", why: "Without levels, production logs are flooded with debug output. Levels enable filtering by environment. Ref: RFC 5424 — Syslog severity levels." },
+  ],
+  security: [
+    // Source: OWASP A01:2021 — Broken Access Control
+    { wrong: "checking permissions only in the frontend (UI hides buttons)", right: "enforce authorization server-side on every request: if (!user.can('delete', resource)) throw ForbiddenError()", why: "Frontend checks are bypassable with browser devtools or direct API calls. Ref: OWASP A01:2021 — Broken Access Control." },
+    // Source: OWASP — CSRF Prevention Cheat Sheet
+    { wrong: "no CSRF protection on state-changing requests", right: "use CSRF token (Synchronizer Token Pattern) or SameSite=Strict cookies", why: "Without CSRF protection, malicious sites can submit forms on behalf of authenticated users. Ref: OWASP — CSRF Prevention Cheat Sheet." },
+    // Source: OWASP — HTTP Security Response Headers
+    { wrong: "no security headers in HTTP responses", right: "set Content-Security-Policy, X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Strict-Transport-Security", why: "Security headers prevent XSS, clickjacking, and MIME sniffing attacks. Ref: OWASP — HTTP Security Response Headers Cheat Sheet." },
+    // Source: OWASP A06:2021 — Vulnerable and Outdated Components
+    { wrong: "no dependency vulnerability scanning", right: "run npm audit or snyk test in CI pipeline on every PR", why: "Known vulnerabilities in dependencies are the #6 OWASP risk. Automated scanning catches them before deploy. Ref: OWASP A06:2021." },
+    // Source: OWASP — Input Validation Cheat Sheet
+    { wrong: "rendering user input as HTML without sanitization", right: "sanitize with DOMPurify (frontend) or isomorphic-dompurify (server): DOMPurify.sanitize(userInput)", why: "Unsanitized HTML enables XSS (stored, reflected, DOM-based). Ref: OWASP — Input Validation Cheat Sheet, OWASP A03:2021." },
+    // Source: OWASP — REST Security Cheat Sheet
+    { wrong: "API endpoint that returns different data based on existence (user enumeration)", right: "return same response shape and timing for exists/not-exists: 'Invalid credentials' for both", why: "Different responses for 'user not found' vs 'wrong password' enable user enumeration attacks. Ref: OWASP — Authentication Cheat Sheet." },
+  ],
+  config: [
+    // Source: 12-Factor App §3 — Config
+    { wrong: "hardcoded configuration values: const DB_HOST = 'localhost'", right: "const DB_HOST = process.env.DB_HOST ?? throwEnvError('DB_HOST')", why: "Config varies between environments. Hardcoding breaks deployment. Ref: 12-Factor App §3 — Store config in the environment." },
+    // Source: 12-Factor App §3, fail-fast principle
+    { wrong: "process.env.SECRET_KEY || 'default-secret'", right: "if (!process.env.SECRET_KEY) throw new Error('SECRET_KEY is required') — fail at startup", why: "Default secrets create false security. App should crash at startup if required config is missing. Ref: 12-Factor App §3." },
+    // Source: OWASP — Secrets Management Cheat Sheet
+    { wrong: ".env file committed to git", right: ".env in .gitignore, .env.example committed with placeholder values", why: "Committed .env files expose secrets in git history (even after removal). Ref: OWASP — Secrets Management Cheat Sheet." },
+    // Source: Node.js best practices — config validation
+    { wrong: "reading process.env throughout the codebase", right: "validate all env vars at startup with zod/joi: const config = envSchema.parse(process.env)", why: "Scattered env reads fail at runtime when a var is missing. Validate once at startup, export typed config. Ref: 12-Factor App §3, Zod docs." },
+  ],
 };
