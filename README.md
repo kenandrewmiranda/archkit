@@ -7,117 +7,180 @@ A context engineering system that makes AI coding agents dramatically more effec
 ## Install
 
 ```bash
-# Option 1: Clone into your project (recommended)
+# Option 1: Clone (recommended)
 git clone https://github.com/kenandrewmiranda/archkit.git
 cd archkit && npm install
 
-# Option 2: Install globally from GitHub
+# Option 2: Global install
 npm install -g github:kenandrewmiranda/archkit
 
-# Option 3: Run without installing
+# Option 3: One-shot
 npx github:kenandrewmiranda/archkit
 ```
 
-## Usage
+## Quick Start
 
 ```bash
 # New project — interactive wizard
-archkit                     # Scaffold .arch/ directory
-archkit --claude            # + Claude Code native files
+archkit                     # Scaffold .arch/ with 7-step wizard
+archkit --claude            # + Claude Code native files (hooks, skills, rules)
 
-# Existing project — auto-detect from codebase
-archkit init                # Reverse-engineer .arch/ from src/
+# Existing project — auto-detect
+archkit init                # Reverse-engineer .arch/ from codebase
 archkit init src --json     # Detection only, no file generation
 
-# Export for other AI tools
-archkit export cursor       # Generate .cursorrules
-archkit export copilot      # Generate .github/copilot-instructions.md
-archkit export all          # All tools at once
-
-# Update to latest
+# Upgrade from 1.0
 archkit update              # Self-update from GitHub
-archkit update --check      # Check for updates without installing
+archkit migrate --dry-run   # Preview migration (safe)
+archkit migrate             # Upgrade .arch/ without losing gotchas/rules
 ```
 
 ## Commands
 
+### Scaffold & Setup
+
 | Command | Purpose | Output |
 |---------|---------|--------|
-| `archkit` | Scaffold `.arch/` directory | Interactive wizard |
-| `archkit --claude` | + Generate CLAUDE.md, .claude/rules/, .claude/skills/ | Claude Code native |
-| `archkit gotcha` | Capture bad AI patterns into .skill files | Interactive |
-| `archkit gotcha -d` | Session debrief (4 guided questions) | Interactive |
-| `archkit review` | Check code against rules and skills | Colored terminal |
-| `archkit review --agent` | Same checks, machine-readable | JSON |
-| `archkit stats` | Health dashboard with scores | Full dashboard |
-| `archkit stats --compact` | One-line health summary | One line |
-| `archkit extend` | Self-evolving extension system | Interactive / registry |
-| `archkit guard` | Guardrails: validate, audit, enforce | Pass/fail |
-| `archkit resolve warmup` | Pre-session readiness gate (NON-NEGOTIABLE) | JSON |
-| `archkit resolve context "..."` | Resolve prompt → nodes + skills + files | JSON |
-| `archkit resolve preflight <f> <l>` | Verify target before generating code | JSON |
-| `archkit resolve scaffold <f>` | Deterministic checklist for new feature | JSON |
-| `archkit resolve lookup <id>` | Look up any node, skill, or cluster | JSON |
+| `archkit` | Interactive 7-step wizard (save/load/back/exit) | `.arch/` directory |
+| `archkit --claude` | + CLAUDE.md, .claude/rules/, .claude/skills/, hooks | Claude Code native |
+| `archkit init [src-dir]` | Reverse-engineer .arch/ from existing codebase | `.arch/` directory |
+| `archkit migrate` | Upgrade 1.0 .arch/ to 1.1 without data loss | Merged files |
+| `archkit update` | Self-update from GitHub | Latest version |
 
-## Claude Code Integration (`--claude`)
+### Context Resolution (JSON — agent-callable)
 
-When you run `archkit --claude`, archkit generates Claude Code native files alongside `.arch/`:
+| Command | Purpose |
+|---------|---------|
+| `archkit resolve warmup [--deep]` | Pre-session health check (blockers = stop) |
+| `archkit resolve context "<prompt>"` | Resolve prompt → nodes, skills, files, rules |
+| `archkit resolve preflight <feature> <layer>` | Verify target before generating code |
+| `archkit resolve scaffold <feature>` | Checklist for new feature with embedded gotchas |
+| `archkit resolve lookup <id>` | Look up any node, skill, or cluster |
+| `archkit resolve plan "<prompt>"` | Structured implementation plan with ordered steps |
+| `archkit resolve verify-wiring [src-dir]` | Detect dead code / unwired components |
+| `archkit resolve audit-spec <spec.md> [src-dir]` | Check spec requirement coverage |
 
+### Code Review (app-type-aware)
+
+| Command | Purpose |
+|---------|---------|
+| `archkit review <file>` | Review file against rules + gotchas |
+| `archkit review --staged` | Review git staged files |
+| `archkit review --diff` | Review modified (unstaged) files |
+| `archkit review --dir src/` | Review entire directory |
+| `archkit review --agent` | JSON output with autofix fields + gotcha suggestions |
+| `archkit review --verify` | Re-check only previously flagged files |
+
+### Knowledge Capture
+
+| Command | Purpose |
+|---------|---------|
+| `archkit gotcha <skill> "wrong" "right" "why"` | Direct gotcha capture |
+| `archkit gotcha --interactive` | Guided gotcha wizard |
+| `archkit gotcha --debrief` | 4-question session debrief |
+| `archkit gotcha --list` | JSON: all skills + gotcha counts |
+| `archkit gotcha --json <skill> "wrong" "right" "why"` | JSON output (agent-callable) |
+| `archkit gotcha --debrief --json '{...}'` | Non-interactive debrief (agent-callable) |
+
+### Health & Maintenance
+
+| Command | Purpose |
+|---------|---------|
+| `archkit stats` | Health dashboard (0-100 score) |
+| `archkit stats --compact` | One-line health summary |
+| `archkit drift [--json]` | Detect stale/orphaned .arch/ files |
+| `archkit sync [src-dir]` | Detect code changes needing .arch/ updates |
+
+### Multi-Tool Export
+
+| Command | Output |
+|---------|--------|
+| `archkit export cursor` | `.cursorrules` |
+| `archkit export windsurf` | `.windsurfrules` |
+| `archkit export copilot` | `.github/copilot-instructions.md` |
+| `archkit export aider` | `.aider-conventions.md` |
+| `archkit export all` | All of the above |
+
+### Extensions
+
+| Command | Purpose |
+|---------|---------|
+| `archkit extend create` | Interactive extension builder |
+| `archkit extend create --from-preset <name>` | Non-interactive preset install |
+| `archkit extend run <name> [args]` | Execute an extension |
+| `archkit extend list` | List installed extensions |
+| `archkit guard validate <file>` | Validate extension (22-rule security gate) |
+| `archkit guard audit` | Full .arch/ security audit |
+
+## What Gets Generated
+
+### .arch/ Directory
+
+| File | Purpose | Token Weight |
+|------|---------|-------------|
+| `SYSTEM.md` | Rules, reserved words, decision-tree On Generate, session management | ~800-1200 |
+| `BOUNDARIES.md` | Hard NEVER rules (universal + app-type-specific) | ~300-500 |
+| `CONTEXT.compact.md` | ~500 token injectable for cheap-model calls | ~500 |
+| `INDEX.md` | Keyword → node/skill routing + cross-references | ~400-800 |
+| `clusters/*.graph` | Architecture graphs (Key-Rel-Dep v2 notation) | ~100 each |
+| `skills/*.skill` | Package gotchas — pre-populated with built-in WRONG/RIGHT/WHY | ~200 each |
+| `apis/*.api` | API contract digest stubs | ~100 each |
+| `lenses/*.md` | Research / Implement / Review mode overlays | ~150 each |
+
+### Claude Code Native (`--claude`)
+
+| File | Purpose |
+|------|---------|
+| `CLAUDE.md` | Auto-loaded every session (<200 lines) |
+| `.claude/rules/architecture.md` | alwaysApply — rules + protocol mandate |
+| `.claude/rules/[feature].md` | Path-targeted — loads when editing that feature |
+| `.claude/skills/[package]/SKILL.md` | On-demand package knowledge |
+| `.claude/skills/archkit-protocol/SKILL.md` | Workflow integration — maps every step to archkit commands |
+| `.claude/settings.json` | Pre-commit review hook + warmup nudge (harness-enforced) |
+
+## How It Works
+
+### For AI Agents
+
+All `resolve`, `review`, `gotcha --json`, `drift`, `sync` commands return structured JSON on stdout. Log output goes to stderr — safe to pipe.
+
+```bash
+# Agent workflow:
+archkit resolve warmup                              # health check
+archkit resolve context "add user notifications"    # get relevant files/rules
+archkit resolve plan "add user notifications"       # get implementation steps
+archkit review --staged --agent                     # pre-commit gate
+archkit gotcha --json postgres "wrong" "right" "why"  # capture learning
 ```
-project-root/
-  CLAUDE.md                     # Auto-loaded every session (<200 lines)
-  .claude/
-    rules/
-      architecture.md           # alwaysApply: true — core rules
-      [feature].md              # Path-targeted — loads when editing that feature
-    skills/
-      [package]/SKILL.md        # On-demand — loads when that package is relevant
-  .arch/                        # Full archkit context system
-    SYSTEM.md                   # Rules + $reserved words + session protocol
-    INDEX.md                    # Keyword → node + skill routing table
-    clusters/*.graph            # Architecture graphs (Key-Rel-Dep v2)
-    skills/*.skill              # Package gotchas (WRONG/RIGHT/WHY)
-    apis/*.api                  # API contract digests
-    lenses/                     # Context mode overlays
-    extensions/                 # Self-built automation
-```
 
-Claude Code auto-loads `CLAUDE.md` and `.claude/rules/` every session. Path-targeted rules only activate when Claude touches files in that feature's directory. Skills load on demand.
+### Token Budget
 
-## What `.arch/` Contains
+archkit shows token estimates for every generated file and warns when always-loaded context exceeds budget:
+- **EFFICIENT** (<1000 tokens) — minimal overhead
+- **MODERATE** (1000-2000) — good for always-loaded
+- **HIGH** (2000-3000) — consider trimming
+- **OVER BUDGET** (>3000) — use CONTEXT.compact.md for cheap-model calls
 
-| Directory | Contents | Purpose |
-|-----------|----------|---------|
-| `SYSTEM.md` | Rules, $reserved words, session protocol, delegation principle | The AI's operating constraints |
-| `INDEX.md` | Keyword → @node + $skill routing | Context resolution table |
-| `clusters/*.graph` | Key-Rel-Dep v2 architecture nodes | Where code lives, what connects to what |
-| `skills/*.skill` | WRONG → RIGHT → WHY per package | What the AI gets wrong and how to fix it |
-| `apis/*.api` | Type-signature endpoint digests | Real API contracts, not training data guesses |
-| `lenses/` | Research / Implement / Review modes | Shifts AI focus without changing rules |
-| `extensions/` | Self-built automation tools | Codified workflows the AI or team creates |
+### Review Checks (All 8 App Types)
 
-## Core Principles
+| App Type | What Gets Checked |
+|----------|-------------------|
+| SaaS | DB-in-controller, cross-feature imports, tenant scoping, money floats, layer hierarchy |
+| E-Commerce | Same as SaaS + inventory locking, payment idempotency |
+| Realtime | DB-in-handler, I/O-in-domain, handler complexity |
+| Data | Direct ClickHouse in API, pipeline side effects |
+| AI | Hardcoded LLM providers, inline prompts, missing guardrails/tracing |
+| Mobile | Logic-in-screens, FlatList usage, direct API calls in screens |
+| Internal | Destructive actions without audit log, primary DB for reads, unmasked PII |
+| Content | Unoptimized images, client-side JS in static pages, missing SEO |
 
-**Token-efficient.** Three-tier lazy loading: ~540 tokens per prompt vs ~1,800 for flat context.
+### Built-in Gotcha Database
 
-**Delegation-first.** Sub-agents handle 70-80% (scaffolding, lookup, review) via deterministic CLI. Main agent spends expensive tokens on TDD finalization and judgment.
+Skills come pre-populated with real WRONG/RIGHT/WHY entries for: **PostgreSQL, Prisma, Stripe, BullMQ, Valkey, Keycloak, Docker, JWT**. No more empty skeletons on day 1.
 
-**Self-improving.** Every session debrief, every gotcha captured, every stale skill flagged by warmup makes the system permanently smarter.
+### Synonym Expansion
 
-**Non-negotiable warmup.** `archkit resolve warmup` runs before any code generation. Blockers = stop. Warnings = proceed with awareness.
-
-## Session Protocol
-
-```
-1. Warmup    → archkit resolve warmup           (hard gate)
-2. Context   → archkit resolve context "..."     (resolve prompt)
-3. Scaffold  → archkit resolve scaffold <feat>   (if new feature)
-4. Preflight → archkit resolve preflight <f> <l> (if existing)
-5. Generate  → sub-agent implements from checklist
-6. Test      → main agent writes failing test first (TDD)
-7. Review    → archkit review --agent             (final gate)
-8. Debrief   → archkit gotcha -d                  (capture learnings)
-```
+Context resolution expands prompts with 24 synonym groups — "payment" matches "billing", "authenticate" matches "auth", "database" matches "db".
 
 ## Supported App Types
 
@@ -132,9 +195,19 @@ Claude Code auto-loads `CLAUDE.md` and `.claude/rules/` every session. Path-targ
 | Internal Tools | Simple Layered |
 | Content Site (CMS/Blog) | Static Generation + Interactive Islands |
 
-## Guardrails
+## Upgrading from 1.0
 
-22 validation rules enforce extension safety across 4 categories: Structure (7), Boundaries (6), Safety (6), Conventions (3). Extensions that fail are rejected or deregistered.
+```bash
+archkit update              # Get latest code
+archkit migrate --dry-run   # Preview changes (safe)
+archkit migrate             # Apply upgrade
+```
+
+Migration preserves all user content (gotchas, learned rules, cross-refs) while adding:
+- BOUNDARIES.md, CONTEXT.compact.md
+- Built-in gotchas merged into existing skills
+- Session Management table (replaces rigid protocol)
+- archkit-protocol skill + hooks (if --claude was used)
 
 ## License
 
