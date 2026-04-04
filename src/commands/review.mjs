@@ -28,6 +28,7 @@ import { checkRealtimeRules, checkAIRules, checkDataRules, checkMobileRules, che
 import { checkDatabasePatterns } from "./review/db-checks.mjs";
 import { checkCachePatterns, checkQueuePatterns } from "./review/cache-queue-checks.mjs";
 import { checkApiPatterns } from "./review/api-checks.mjs";
+import { checkFeatureCompleteness } from "./review/completeness-checks.mjs";
 import * as log from "../lib/logger.mjs";
 
 function banner() {
@@ -432,6 +433,7 @@ function main() {
       ...checkCachePatterns(code, filepath),
       ...checkQueuePatterns(code, filepath),
       ...checkApiPatterns(code, filepath),
+      ...checkFeatureCompleteness(code, filepath),
     ];
     if (appType === "realtime") findings.push(...checkRealtimeRules(code, filepath));
     if (appType === "ai") findings.push(...checkAIRules(code, filepath));
