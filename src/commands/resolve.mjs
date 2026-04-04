@@ -337,12 +337,11 @@ function cmdScaffold(archDir, featureId) {
       ...(system.pattern.toLowerCase().includes("event") || system.reservedWords["$bus"]
         ? [`Add Evt${displayName}Changed to events.graph`]
         : []),
-      `Implement types and validation first (contracts before logic)`,
+      `Implement types and validation schemas first (contracts before logic)`,
       `Implement ${files[0].layer} layer`,
-      `Write unit tests for service layer (test business logic in isolation)`,
-      `Write integration test that hits the real API endpoint — seed → request → assert response`,
-      `Add seed data for any new tables (db/seeds/${featureId}.ts or migrations/seed.ts)`,
-      `Test error paths: invalid input (400), not found (404), unauthorized (401)`,
+      `Write unit tests for service/domain logic (Ref: Fowler — Test Pyramid)`,
+      `Write integration test verifying API endpoint returns correct status codes (Ref: RFC 7231 §6)`,
+      `Test error responses: 400 (validation), 404 (not found), 401/403 (auth) (Ref: RFC 7231 §6.5)`,
       `Run: archkit review --staged (must pass with zero errors)`,
     ],
     relevantGotchas: (() => {

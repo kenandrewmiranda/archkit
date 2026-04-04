@@ -36,7 +36,7 @@ export function checkFeatureCompleteness(code, filepath) {
       type: "completeness",
       message: `No test file found for ${path.basename(filepath)}`,
       fix: `Create ${base}.test.ts with unit tests (service) or integration tests (controller/handler).`,
-      reason: "Every implementation file must have a corresponding test. Ref: Definition of Done.",
+      reason: "Implementation without tests is untested code in production. Ref: Martin Fowler — Test Pyramid.",
     });
   }
 
@@ -52,8 +52,8 @@ export function checkFeatureCompleteness(code, filepath) {
           severity: "info",
           type: "completeness",
           message: `Test file for ${path.basename(filepath)} may lack integration tests (no HTTP assertions found)`,
-          fix: "Controller/handler tests should hit the real API endpoint: seed → request → assert response + status code.",
-          reason: "Unit tests with mocks don't catch wiring issues. Integration tests verify the full request chain.",
+          fix: "Add integration test that verifies the API endpoint returns correct status codes and response shape.",
+          reason: "Integration tests verify component interaction through real boundaries. Ref: Fowler — IntegrationTest.",
         });
       }
     }
