@@ -291,6 +291,32 @@ archkit stats --compact
         }
       }
     }
+
+    // Superpowers integration rule
+    const superpowersRulePath = path.join(claudeDir, "rules", "superpowers-integration.md");
+    if (!fs.existsSync(superpowersRulePath)) {
+      changes.push({ file: ".claude/rules/superpowers-integration.md", action: "create", reason: "Hooks archkit into each superpowers phase (brainstorm, plan, execute, review, verify)" });
+      if (!dryRun) {
+        fs.mkdirSync(path.join(claudeDir, "rules"), { recursive: true });
+        const rule = `---\ndescription: "archkit integration with superpowers workflow skills"\nalwaysApply: true\n---\n\n` +
+          `## archkit + Superpowers Integration\n\n` +
+          `When using superpowers skills, run archkit commands at these points:\n\n` +
+          `### brainstorming\n` +
+          `\`archkit resolve context "<topic>" --pretty\` — load architecture context before exploring\n\n` +
+          `### writing-plans\n` +
+          `\`archkit resolve scaffold <feature> --pretty\` or \`archkit resolve plan "<prompt>" --pretty\`\n` +
+          `Plans must follow INDEX.md file conventions and include Definition of Done from SYSTEM.md\n\n` +
+          `### executing-plans\n` +
+          `Before each task: \`archkit resolve preflight <feature> <layer> --pretty\`\n` +
+          `After each task: \`archkit review --staged --agent\` — fix errors before marking complete\n\n` +
+          `### code review\n` +
+          `\`archkit review --staged --agent\` — check against rules, boundaries, gotchas\n\n` +
+          `### verification-before-completion\n` +
+          `ALL must pass: \`archkit review --staged --agent\`, \`archkit resolve verify-wiring src/\`, \`archkit drift --json\`, \`archkit stats --compact\`\n`;
+        fs.writeFileSync(superpowersRulePath, rule);
+        log.generate("Created superpowers-integration.md");
+      }
+    }
   }
 
   // Summary

@@ -284,6 +284,93 @@ async function generateFiles(state) {
       console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/rules/${f.id}.md ${C.dim}(path-targeted: src/features/${f.id}/**)${C.reset}`);
     }
 
+    // Superpowers integration rule — tells each superpowers phase how to use archkit
+    const superpowersRule = `---
+description: "archkit integration with superpowers workflow skills"
+alwaysApply: true
+---
+
+## archkit + Superpowers Integration
+
+When using superpowers skills (brainstorming, writing-plans, executing-plans, code-reviewer, etc.), archkit commands MUST be run at these integration points. This is not optional.
+
+### During brainstorming
+
+Before exploring approaches, load architecture context:
+\`\`\`bash
+archkit resolve context "<the topic being brainstormed>" --pretty
+\`\`\`
+Use the returned nodes, skills, rules, and cross-refs to constrain the brainstorm. Don't propose approaches that violate the architecture rules or boundaries.
+
+Also read:
+- \`.arch/BOUNDARIES.md\` — hard prohibitions (NEVER rules)
+- \`.arch/SYSTEM.md\` — architecture pattern, reserved words, Definition of Done
+
+### During writing-plans
+
+Before writing any plan, run:
+\`\`\`bash
+archkit resolve scaffold <featureId> --pretty   # for new features
+archkit resolve plan "<prompt>" --pretty         # for structured plan
+\`\`\`
+
+Plans MUST follow these constraints:
+- File paths must match the convention in INDEX.md
+- Each plan task must produce a vertically-sliced increment (not horizontal layers)
+- Every task that creates implementation code must also create its test
+- The last task in every plan must be: \`archkit review --staged\` + \`archkit resolve verify-wiring src/\`
+- Include the Definition of Done checklist from SYSTEM.md in the plan's acceptance criteria
+
+### During executing-plans
+
+Before each task:
+\`\`\`bash
+archkit resolve preflight <feature> <layer> --pretty
+\`\`\`
+
+After each task that modifies code:
+\`\`\`bash
+archkit review --staged --agent
+\`\`\`
+If review returns errors, fix them before marking the task complete.
+
+After the final task:
+\`\`\`bash
+archkit resolve verify-wiring src/        # catch unwired components
+archkit review --dir src/ --agent         # full project review
+\`\`\`
+
+### During code review (requesting-code-review / receiving-code-review)
+
+Load the review criteria:
+\`\`\`bash
+archkit review --staged --agent           # get JSON findings
+archkit gotcha --list                     # check available gotchas
+\`\`\`
+
+Review MUST check against:
+- .arch/BOUNDARIES.md — are any NEVER rules violated?
+- .arch/skills/*.skill — are any known gotcha patterns present?
+- Definition of Done — are tests, error paths, and health checks present?
+- Frontend wiring — are pages actually connected to the API?
+
+### During verification-before-completion
+
+Before claiming any work is complete:
+\`\`\`bash
+archkit review --staged --agent           # zero errors required
+archkit resolve verify-wiring src/        # zero unwired components
+archkit drift --json                      # zero drift findings
+archkit stats --compact                   # health check
+\`\`\`
+
+ALL four must pass. If any fails, the work is not complete.
+`;
+
+    fs.writeFileSync(path.join(claudeRulesDir, "superpowers-integration.md"), superpowersRule);
+    written.push({ path: ".claude/rules/superpowers-integration.md", size: superpowersRule.length });
+    console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/rules/superpowers-integration.md ${C.dim}(alwaysApply — superpowers hooks)${C.reset}`);
+
     const claudeSkillsDir = path.join(projectRoot, ".claude", "skills");
     fs.mkdirSync(claudeSkillsDir, { recursive: true });
 
