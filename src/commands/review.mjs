@@ -30,6 +30,7 @@ import { checkCachePatterns, checkQueuePatterns } from "./review/cache-queue-che
 import { checkApiPatterns } from "./review/api-checks.mjs";
 import { checkFeatureCompleteness } from "./review/completeness-checks.mjs";
 import { checkFrontendWiring } from "./review/frontend-checks.mjs";
+import { checkEventPatterns } from "./review/event-checks.mjs";
 import * as log from "../lib/logger.mjs";
 
 function banner() {
@@ -436,6 +437,7 @@ function main() {
       ...checkApiPatterns(code, filepath),
       ...checkFeatureCompleteness(code, filepath),
       ...checkFrontendWiring(code, filepath),
+      ...checkEventPatterns(code, filepath),
     ];
     if (appType === "realtime") findings.push(...checkRealtimeRules(code, filepath));
     if (appType === "ai") findings.push(...checkAIRules(code, filepath));

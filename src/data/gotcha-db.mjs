@@ -106,6 +106,32 @@ export const GOTCHA_DB = {
     // Source: npm docs — npm ci
     { wrong: "RUN npm install in production", right: "RUN npm ci --omit=dev", why: "npm install resolves ranges and modifies lockfile. npm ci is deterministic and faster. Ref: npm docs — npm ci." },
   ],
+  hono: [
+    // Source: Hono docs — Routing
+    { wrong: "route order: /configs/:id before /configs/mine", right: "specific routes first: /configs/mine before /configs/:id", why: "Hono matches routes in order. /configs/:id matches 'mine' as a parameter. Specific routes must come before parameterized. Ref: Hono docs — Routing." },
+    // Source: Hono docs — Middleware
+    { wrong: "middleware applied after route definition", right: "app.use('*', middleware) BEFORE app.get/post/etc.", why: "Middleware must be registered before routes to intercept requests. After registration order matters. Ref: Hono docs — Middleware." },
+    // Source: Hono docs — CORS
+    { wrong: "app.use('*', cors()) with no origin config", right: "cors({ origin: ['https://yourdomain.com'], credentials: true })", why: "Default CORS allows all origins. In production, restrict to your domains. Ref: Hono docs — CORS, OWASP A05:2021." },
+    // Source: Hono docs — Error Handling
+    { wrong: "no global error handler", right: "app.onError((err, c) => { logger.error(err); return c.json({ error: 'Internal Error' }, 500); })", why: "Without onError, unhandled exceptions return default error with stack trace. Ref: Hono docs — Error Handling." },
+  ],
+  express: [
+    // Source: Express docs — Error handling
+    { wrong: "error handler with 3 params instead of 4", right: "app.use((err, req, res, next) => { ... }) — must have 4 params", why: "Express identifies error middleware by the 4-parameter signature. 3 params makes it a regular middleware. Ref: Express docs — Error handling." },
+    // Source: Express docs — Security Best Practices
+    { wrong: "app.use(express.json()) with no size limit", right: "app.use(express.json({ limit: '100kb' }))", why: "Without limit, a single request can send a multi-GB JSON payload and crash the server (DoS). Ref: Express Security Best Practices." },
+    // Source: Express docs — req.body
+    { wrong: "accessing req.body without verifying Content-Type", right: "use express.json() middleware — it rejects non-JSON bodies automatically", why: "Without body-parser, req.body is undefined. With it but wrong Content-Type, req.body is empty. Ref: Express docs — req.body." },
+  ],
+  eventbus: [
+    // Source: Distributed systems — pub/sub semantics
+    { wrong: "emitLocal() in production services (bypasses pub/sub)", right: "emit() — uses Valkey pub/sub for cross-process delivery, falls back to local when unavailable", why: "emitLocal() only reaches handlers in the same process. In multi-process/multi-server deployments, events are silently lost. Ref: Valkey pub/sub docs." },
+    // Source: Event-driven architecture — event sourcing patterns
+    { wrong: "registering event handlers with no corresponding emitter", right: "verify every bus.on('event') has a matching emit('event') somewhere in the codebase", why: "Handlers without emitters are dead code. They pass tests but never execute in production. Cross-reference emitters and subscribers." },
+    // Source: Distributed systems — idempotent consumers
+    { wrong: "event handler with side effects that isn't idempotent", right: "check if already processed: if (await isProcessed(event.id)) return;", why: "Events can be delivered more than once (at-least-once delivery). Handlers must be idempotent. Ref: Kleppmann DDIA §11." },
+  ],
   jwt: [
     // Source: OWASP — JSON Web Token Cheat Sheet
     { wrong: "JWT in localStorage", right: "httpOnly cookie with Secure, SameSite=Strict flags", why: "localStorage is accessible via XSS (any injected script). httpOnly cookies are not accessible to JavaScript. Ref: OWASP JWT Cheat Sheet." },

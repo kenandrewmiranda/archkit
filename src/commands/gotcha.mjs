@@ -556,6 +556,20 @@ async function cliMode(args) {
     process.exit(1);
   }
 
+  // Check if skill file exists — warn and offer to create
+  const skillPath = path.join(archDir, "skills", `${skillId}.skill`);
+  if (!fs.existsSync(skillPath)) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: `Skill file not found: ${skillId}.skill`, available: listSkills(archDir), hint: `Create it first or use a different skill. Available: ${listSkills(archDir).join(", ")}` }));
+      process.exit(1);
+    }
+    console.log(`${C.red}  ${I.warn} Skill file not found: ${skillId}.skill${C.reset}`);
+    console.log(`${C.gray}  Available skills: ${listSkills(archDir).join(", ")}${C.reset}`);
+    console.log(`${C.gray}  To create a new skill: archkit extend create --from-preset add-skill${C.reset}`);
+    console.log("");
+    process.exit(1);
+  }
+
   const ok = appendGotcha(archDir, skillId, wrong, right, why);
   if (jsonMode) {
     console.log(JSON.stringify({ success: ok, skill: skillId, total: ok ? countGotchas(archDir, skillId) : 0 }));
