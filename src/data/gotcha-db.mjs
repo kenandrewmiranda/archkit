@@ -21,6 +21,8 @@ export const GOTCHA_DB = {
     { wrong: "SELECT COUNT(*) FROM large_table (exact count for UI)", right: "SELECT reltuples::bigint FROM pg_class WHERE relname = 'table' (approximate)", why: "COUNT(*) requires full sequential scan or index-only scan. pg_class.reltuples is updated by ANALYZE and is O(1). Ref: PostgreSQL §28.1. Note: reltuples can be stale — run ANALYZE periodically." },
     // Source: PostgreSQL docs — SELECT FOR UPDATE §13.3.2
     { wrong: "read-then-write without locking (lost update)", right: "SELECT ... FOR UPDATE (row-level lock) or use serializable isolation", why: "Concurrent read-then-write causes lost updates. FOR UPDATE locks the row until transaction commits. Ref: PostgreSQL §13.3.2." },
+    // Source: PostgreSQL docs — SET LOCAL, set_config()
+    { wrong: "SET LOCAL app.tenant_id = $1 (parameter binding in SET LOCAL)", right: "SELECT set_config('app.tenant_id', $1, true)", why: "SET LOCAL doesn't support parameter binding — $1 is treated as literal text. set_config() accepts parameters. Third arg true = transaction-local. Ref: PostgreSQL docs — set_config()." },
   ],
   prisma: [
     // Source: Prisma docs — Connection Management, Best Practices
@@ -91,12 +93,20 @@ export const GOTCHA_DB = {
     { wrong: "no maxmemory or eviction policy configured", right: "maxmemory 256mb + maxmemory-policy allkeys-lru", why: "Without maxmemory, Redis grows until OS OOM-kills it. Set a limit + eviction policy. Ref: Redis docs — Using Redis as an LRU cache." },
     // Source: Kubernetes — Container probes
     { wrong: "no health check on Redis connection", right: "expose /health that runs redis.ping() with timeout", why: "Silent Redis disconnects cause stale reads or timeouts. Health probe enables orchestrator restart. Ref: Redis docs — PING, Kubernetes — Configure Liveness." },
+    // Source: JSON serialization — Date handling
+    { wrong: "calling .toISOString() on event payload dates after pub/sub", right: "check instanceof Date first: const d = payload.date instanceof Date ? payload.date : new Date(payload.date)", why: "JSON.parse returns strings for Date values. Calling .toISOString() on a string crashes. Events through Valkey pub/sub lose Date types. Ref: MDN — JSON.parse." },
   ],
   keycloak: [
     // Source: RFC 7519 — JSON Web Token, Keycloak docs — Token verification
     { wrong: "jwt.decode() without signature verification", right: "verify against JWKS endpoint (jose library or keycloak-connect)", why: "jwt.decode() does not verify the signature. Any party can forge a valid-looking token. Ref: RFC 7519 §7.2, Keycloak docs." },
     // Source: 12-Factor App — Config
     { wrong: "hardcoded realm/issuer URL", right: "KEYCLOAK_URL and KEYCLOAK_REALM from environment variables", why: "URLs differ per environment. Hardcoding breaks deployment to staging/production. Ref: 12-Factor App — Config." },
+    // Source: Keycloak docs — Reverse Proxy, production deployment
+    { wrong: "Keycloak behind reverse proxy without forwarded headers", right: "send X-Forwarded-Proto: https and X-Forwarded-Host from proxy; use --proxy-headers=forwarded on Keycloak", why: "Without forwarded headers, Keycloak doesn't set Secure cookies and generates wrong redirect URLs. Ref: Keycloak docs — Reverse Proxy." },
+    // Source: Keycloak docs — check-sso, browser third-party cookie policies
+    { wrong: "check-sso with iframe when auth domain differs from app domain", right: "disable check-sso and silentCheckSsoRedirectUri; use explicit login redirect", why: "Modern browsers block third-party cookies. check-sso iframe fails silently when auth domain ≠ app domain. Ref: Keycloak docs — SSO, Chrome third-party cookie deprecation." },
+    // Source: Keycloak docs — Bootstrap admin
+    { wrong: "creating permanent admin user without assigning admin role first", right: "assign admin realm role to new user BEFORE or immediately after creation", why: "Keycloak deletes the bootstrap admin once a permanent user is created. If the new user lacks admin role, you're locked out. Ref: Keycloak docs — Admin bootstrap." },
   ],
   docker: [
     // Source: Docker docs — Best practices for writing Dockerfiles
@@ -105,6 +115,14 @@ export const GOTCHA_DB = {
     { wrong: "COPY . . before npm install", right: "COPY package*.json ./ && RUN npm ci && COPY . .", why: "Any source change invalidates npm install cache. Copy dependency files first. Ref: Docker docs — Leverage build cache." },
     // Source: npm docs — npm ci
     { wrong: "RUN npm install in production", right: "RUN npm ci --omit=dev", why: "npm install resolves ranges and modifies lockfile. npm ci is deterministic and faster. Ref: npm docs — npm ci." },
+    // Source: Docker docs — USER instruction, OWASP Docker Security
+    { wrong: "running container as root (no USER instruction)", right: "USER node (after creating node user or using node:alpine which has it)", why: "Root in container = root-equivalent if container is compromised. Ref: OWASP Docker Security, Docker docs — USER." },
+    // Source: Next.js docs — Environment Variables
+    { wrong: "NEXT_PUBLIC_* vars in docker-compose environment (not build args)", right: "declare as ARG in Dockerfile build stage, set as ENV before 'next build'", why: "NEXT_PUBLIC_* are baked at build time, not runtime. Docker Compose 'environment' is runtime only. Ref: Next.js docs — Environment Variables." },
+    // Source: Monorepo build tooling — TypeScript project references
+    { wrong: "Dockerfile CMD path assumes flat output (dist/src/...)", right: "check actual compiled path: tsc with rootDir='../../' outputs to dist/apps/api/src/...", why: "TypeScript rootDir affects output directory structure. Monorepo compiled paths differ from single-project. Verify with 'tsc --showConfig'. Ref: TypeScript docs — rootDir." },
+    // Source: MinIO docs — TLS configuration
+    { wrong: "MinIO client with useSSL based on NODE_ENV when MinIO is behind internal proxy", right: "match useSSL to actual MinIO protocol: useSSL: false for internal HTTP, even in production", why: "MinIO often serves plain HTTP internally with TLS terminated at the proxy. useSSL: true → EPROTO crash. Ref: MinIO docs — Network Encryption." },
   ],
   hono: [
     // Source: Hono docs — Routing
@@ -115,6 +133,8 @@ export const GOTCHA_DB = {
     { wrong: "app.use('*', cors()) with no origin config", right: "cors({ origin: ['https://yourdomain.com'], credentials: true })", why: "Default CORS allows all origins. In production, restrict to your domains. Ref: Hono docs — CORS, OWASP A05:2021." },
     // Source: Hono docs — Error Handling
     { wrong: "no global error handler", right: "app.onError((err, c) => { logger.error(err); return c.json({ error: 'Internal Error' }, 500); })", why: "Without onError, unhandled exceptions return default error with stack trace. Ref: Hono docs — Error Handling." },
+    // Source: Hono docs — Routing, app.route()
+    { wrong: "authed sub-app middleware blocks public routes when mounted on same prefix", right: "mount public routes BEFORE authed routes, or use separate prefixes (/api/public vs /api/authed)", why: "app.route('/api', authed) applies authed middleware to ALL /api/* routes including public ones. Hono doesn't fall through between app.route() mounts. Ref: Hono docs — Routing." },
   ],
   express: [
     // Source: Express docs — Error handling
