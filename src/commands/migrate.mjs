@@ -317,6 +317,27 @@ archkit stats --compact
         log.generate("Created superpowers-integration.md");
       }
     }
+
+    // Explore-with-archkit rule
+    const exploreRulePath = path.join(claudeDir, "rules", "explore-with-archkit.md");
+    if (!fs.existsSync(exploreRulePath)) {
+      changes.push({ file: ".claude/rules/explore-with-archkit.md", action: "create", reason: "Directs agents to use archkit context before raw file scanning" });
+      if (!dryRun) {
+        fs.mkdirSync(path.join(claudeDir, "rules"), { recursive: true });
+        const rule = `---\ndescription: "Use archkit context before raw file exploration"\nalwaysApply: true\n---\n\n` +
+          `## Use archkit Before Exploring\n\n` +
+          `This project has .arch/ with pre-mapped architecture. Before Glob/Grep/Read:\n\n` +
+          `\`\`\`bash\n` +
+          `archkit resolve context "<question>" --pretty  # files, nodes, skills, rules\n` +
+          `archkit resolve lookup <feature> --pretty       # feature details\n` +
+          `archkit resolve warmup --pretty                 # system health + stats\n` +
+          `\`\`\`\n\n` +
+          `Read .arch/SYSTEM.md for rules, .arch/INDEX.md for routing, .arch/BOUNDARIES.md for prohibitions.\n` +
+          `The .arch/ files are the map. Raw scanning is the territory. Read the map first.\n`;
+        fs.writeFileSync(exploreRulePath, rule);
+        log.generate("Created explore-with-archkit.md");
+      }
+    }
   }
 
   // Summary

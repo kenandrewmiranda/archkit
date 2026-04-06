@@ -371,6 +371,60 @@ ALL four must pass. If any fails, the work is not complete.
     written.push({ path: ".claude/rules/superpowers-integration.md", size: superpowersRule.length });
     console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/rules/superpowers-integration.md ${C.dim}(alwaysApply — superpowers hooks)${C.reset}`);
 
+    // Exploration rule — use archkit before raw file scanning
+    const exploreRule = `---
+description: "Use archkit context before raw file exploration"
+alwaysApply: true
+---
+
+## Codebase Exploration — Use archkit First
+
+This project has an \`.arch/\` directory with pre-mapped architecture context. Before exploring the codebase with Glob, Grep, or Read, check archkit first — it's faster and more accurate.
+
+### Instead of scanning files to understand the architecture:
+\`\`\`bash
+# Get the full architecture map in one call:
+archkit resolve warmup --pretty          # system health + stats
+archkit resolve context "<question>" --pretty   # relevant files, nodes, skills, rules
+archkit resolve lookup <feature> --pretty       # single feature details
+\`\`\`
+
+### Instead of searching for where something is defined:
+\`\`\`bash
+# archkit knows the file paths:
+archkit resolve preflight <feature> <layer> --pretty  # exact file path + dependencies
+\`\`\`
+
+### Instead of guessing the project structure:
+Read these files in order (most useful first):
+1. \`.arch/SYSTEM.md\` — rules, reserved words, architecture pattern
+2. \`.arch/BOUNDARIES.md\` — hard prohibitions (NEVER rules)
+3. \`.arch/INDEX.md\` — keyword → feature/file routing
+4. \`.arch/CONTEXT.compact.md\` — 500-token summary of the whole system
+
+### Instead of reading package.json to understand the stack:
+\`\`\`bash
+archkit resolve warmup --pretty  # returns stack, feature count, skill count, health score
+\`\`\`
+
+### When exploring a specific feature:
+\`\`\`bash
+# Get the graph (nodes, layers, dependencies, data flow):
+cat .arch/clusters/<feature>.graph
+
+# Get package gotchas relevant to this feature:
+archkit gotcha --list                    # all skills + gotcha counts
+cat .arch/skills/<package>.skill         # specific gotchas for a package
+\`\`\`
+
+### Key principle
+archkit's \`.arch/\` files are the map. Raw file scanning is the territory. Read the map first — only scan files when the map doesn't have the answer.
+`;
+
+    fs.writeFileSync(path.join(claudeRulesDir, "explore-with-archkit.md"), exploreRule);
+    written.push({ path: ".claude/rules/explore-with-archkit.md", size: exploreRule.length });
+    console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/rules/explore-with-archkit.md ${C.dim}(alwaysApply — explore via archkit)${C.reset}`);
+
     const claudeSkillsDir = path.join(projectRoot, ".claude", "skills");
     fs.mkdirSync(claudeSkillsDir, { recursive: true });
 
