@@ -32,9 +32,17 @@ const commands = {
   sync:     "../src/commands/sync.mjs",
   update:   "../src/commands/update.mjs",
   migrate:  "../src/commands/migrate.mjs",
+  market:   "../src/commands/market.mjs",
 };
 
-if (command && commands[command]) {
+// Marketplace convenience aliases — route e.g. `archkit install X` to `archkit market install X`
+const marketAliases = { login: true, logout: true, search: true, install: true, info: true };
+
+if (command && marketAliases[command]) {
+  // Rewrite argv so market.mjs sees the subcommand: [node, script, subcommand, ...rest]
+  // No splice needed — market.mjs reads process.argv.slice(2) which already starts with the subcommand
+  await import(path.resolve(__dirname, "../src/commands/market.mjs"));
+} else if (command && commands[command]) {
   // Pass remaining args
   process.argv.splice(2, 1);
   await import(path.resolve(__dirname, commands[command]));
