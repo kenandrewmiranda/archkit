@@ -570,9 +570,9 @@ ready_for_review: yes | no
     const archkitHooks = {
       hooks: {
         ...(existingSettings.hooks || {}),
-        // Before any Bash command that looks like git commit, run review
         PreToolUse: [
           ...((existingSettings.hooks || {}).PreToolUse || []),
+          // Before git commit — run review
           {
             matcher: "Bash",
             hooks: [
@@ -581,11 +581,33 @@ ready_for_review: yes | no
                 command: "if echo \"$TOOL_INPUT\" | grep -q 'git commit'; then archkit review --staged --agent 2>/dev/null | head -5; fi",
               }
             ]
-          }
+          },
+          // Before Write — check for [PRE] block
+          {
+            matcher: "Write",
+            hooks: [
+              {
+                type: "command",
+                command: "if echo \"$TOOL_INPUT\" | grep -q 'src/' && ! echo \"$TOOL_INPUT\" | grep -qE '\\.(test|spec|config|json|md)'; then if [ ! -f /tmp/.archkit-pre-$$ ]; then echo '[ARCHKIT] No [PRE] block declared. Output [PRE] with target, feature, layer, and checks before writing.'; fi; fi",
+                timeout: 3000,
+              }
+            ]
+          },
+          // Before Edit — check for [PRE] block
+          {
+            matcher: "Edit",
+            hooks: [
+              {
+                type: "command",
+                command: "if echo \"$TOOL_INPUT\" | grep -q 'src/' && ! echo \"$TOOL_INPUT\" | grep -qE '\\.(test|spec|config|json|md)'; then if [ ! -f /tmp/.archkit-pre-$$ ]; then echo '[ARCHKIT] No [PRE] block declared. Output [PRE] with target, feature, layer, and checks before editing.'; fi; fi",
+                timeout: 3000,
+              }
+            ]
+          },
         ],
-        // After session starts (first tool use), nudge warmup
         PostToolUse: [
           ...((existingSettings.hooks || {}).PostToolUse || []),
+          // After session starts — warmup nudge
           {
             matcher: "Read",
             hooks: [
@@ -594,7 +616,17 @@ ready_for_review: yes | no
                 command: "if [ ! -f /tmp/.archkit-warmup-done-$$ ]; then echo '[ARCHKIT] Run: archkit resolve warmup'; touch /tmp/.archkit-warmup-done-$$; fi",
               }
             ]
-          }
+          },
+          // After Bash — capture [PRE] block declarations
+          {
+            matcher: "Bash",
+            hooks: [
+              {
+                type: "command",
+                command: "if echo \"$TOOL_INPUT\" | grep -q '\\[PRE\\]'; then touch /tmp/.archkit-pre-$$; fi; if echo \"$TOOL_INPUT\" | grep -q '\\[POST\\]'; then rm -f /tmp/.archkit-pre-$$; fi",
+              }
+            ]
+          },
         ],
       },
     };
