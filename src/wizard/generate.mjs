@@ -523,12 +523,36 @@ archkit gotcha --debrief --json '{"gotchas":[{"skill":"x","wrong":"x","right":"x
 archkit stats --compact
 \`\`\`
 
+## Structured I/O — Required for Every Code Change
+
+Before writing any file, output:
+\`\`\`
+[PRE]
+action: create | modify | delete
+target: <file path>
+feature: <feature id>
+layer: <layer>
+checked: preflight=yes/no, gotchas=yes/no, boundaries=yes/no
+[/PRE]
+\`\`\`
+
+After completing the change, output:
+\`\`\`
+[POST]
+files_changed: <list>
+test: written | updated | skipped
+gotchas_applied: <list or none>
+ready_for_review: yes | no
+[/POST]
+\`\`\`
+
 ## Key Rules
 - ALL archkit commands return JSON on stdout — safe to pipe and parse
 - Log output goes to stderr — won't corrupt JSON parsing
 - Run warmup at least once per session before generating code
 - Run review --staged before every commit
 - Capture gotchas when you discover bad patterns — the system gets smarter
+- PRE/POST blocks are mandatory for every code change
 `;
 
     fs.writeFileSync(path.join(protocolDir, "SKILL.md"), protocolSkill);
