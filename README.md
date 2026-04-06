@@ -4,6 +4,9 @@
 
 A context engineering system that makes AI coding agents dramatically more effective. Generates a `.arch/` directory with architecture graphs, package skills, API contracts, and rules — so the AI generates code that fits your system, not just code that works.
 
+**Website:** [thearchkit.com](https://thearchkit.com)
+**Config Marketplace:** [market.thearchkit.com](https://market.thearchkit.com) — browse, share, and install community-built archkit configs
+
 ## Install
 
 ```bash
@@ -208,6 +211,12 @@ Migration preserves all user content (gotchas, learned rules, cross-refs) while 
 - Built-in gotchas merged into existing skills
 - Session Management table (replaces rigid protocol)
 - archkit-protocol skill + hooks (if --claude was used)
+
+## Community
+
+- **Website:** [thearchkit.com](https://thearchkit.com)
+- **Config Marketplace:** [market.thearchkit.com](https://market.thearchkit.com) — share and install community configs
+- **Issues:** [github.com/kenandrewmiranda/archkit/issues](https://github.com/kenandrewmiranda/archkit/issues)
 
 ## License
 
