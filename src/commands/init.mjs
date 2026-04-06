@@ -72,10 +72,16 @@ function detectStack(pkgJson) {
   if (allDeps["vitest"]) stack["Testing"] = "Vitest";
   else if (allDeps["jest"]) stack["Testing"] = "Jest";
 
+  // CLI tools
+  if (allDeps["inquirer"]) stack["CLI"] = "Inquirer (interactive prompts)";
+  else if (allDeps["commander"]) stack["CLI"] = "Commander";
+  else if (allDeps["yargs"]) stack["CLI"] = "Yargs";
+  else if (allDeps["meow"]) stack["CLI"] = "Meow";
+
   return stack;
 }
 
-function detectAppType(stack, dirStructure) {
+function detectAppType(stack, dirStructure, pkgJson) {
   // Heuristic detection based on stack + directory patterns
   if (stack["LLM"] || stack["Vector DB"]) return "ai";
   if (stack["Realtime"] && !stack["ORM"]) return "realtime";
@@ -83,7 +89,12 @@ function detectAppType(stack, dirStructure) {
   if (dirStructure.some(d => d.includes("pipelines") || d.includes("dagster"))) return "data";
   if (stack["Frontend"] && stack["Frontend"].includes("Astro")) return "content";
   if (stack["Payments"]) return "ecommerce";
-  return "saas"; // default
+  // CLI tool detection — has bin field or CLI framework dependency
+  if (pkgJson.bin || stack["CLI"]) return "internal"; // closest match — simple layered
+  // Library detection — has main/exports but no frontend/API framework
+  if ((pkgJson.main || pkgJson.exports) && !stack["Frontend"] && !stack["API Framework"]) return "internal";
+  if (stack["Frontend"] || stack["API Framework"]) return "saas";
+  return "internal"; // default to simple layered instead of assuming SaaS
 }
 
 function detectFeatures(srcDir) {
@@ -95,6 +106,9 @@ function detectFeatures(srcDir) {
     path.join(srcDir, "modules"),
     path.join(srcDir, "domains"),
     path.join(srcDir, "apps"),
+    path.join(srcDir, "commands"),
+    path.join(srcDir, "plugins"),
+    path.join(srcDir, "packages"),
   ];
 
   for (const dir of featureDirs) {
@@ -247,7 +261,7 @@ function main() {
   const dirStructure = getDirStructure(process.cwd());
 
   log.resolve("Detecting app type...");
-  const appType = detectAppType(stack, dirStructure);
+  const appType = detectAppType(stack, dirStructure, pkgJson);
   log.resolve(`App type: ${APP_TYPES[appType]?.name || appType}`);
 
   log.resolve(`Scanning ${srcDir}/ for features...`);
