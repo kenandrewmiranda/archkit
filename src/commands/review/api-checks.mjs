@@ -25,15 +25,61 @@ export function checkApiPatterns(code, filepath) {
     }
   }
 
-  // Check for stack traces in error responses
+  // Check for internal error details in responses (OWASP — Improper Error Handling)
   for (let i = 0; i < lines.length; i++) {
-    if (/err\.stack|error\.stack|stack.*trace/i.test(lines[i]) && /res|response|json|send/i.test(lines[i])) {
+    const line = lines[i];
+    const isResponseLine = /res|response|json|send|c\.\w+\(/i.test(line);
+    if (!isResponseLine) continue;
+
+    // Stack traces in responses
+    if (/err\.stack|error\.stack|stack.*trace/i.test(line)) {
       findings.push({
-        severity: "error", type: "api", line: i + 1,
+        severity: "error", type: "security", line: i + 1,
         message: "Stack trace exposed in error response — information leakage",
-        fix: "Log the full error server-side. Return only { type, title, status, detail } to the client. Ref: OWASP — Improper Error Handling.",
+        fix: "Log full error server-side. Return only { type, title, status } to client. Ref: OWASP A09:2021 — Security Logging and Monitoring.",
       });
       break;
+    }
+
+    // Raw err.message forwarded to client (may contain DB errors, file paths, SQL)
+    if (/err\.message|error\.message/i.test(line) && /json|send|status/i.test(line)) {
+      // Check if it's inside a catch block (likely an error handler)
+      let inCatch = false;
+      for (let j = Math.max(0, i - 5); j < i; j++) {
+        if (/catch\s*\(/i.test(lines[j])) { inCatch = true; break; }
+      }
+      if (inCatch) {
+        findings.push({
+          severity: "warning", type: "security", line: i + 1,
+          message: "Raw error message forwarded to client — may expose internal details",
+          fix: "Map errors to safe client messages: DB errors → 500 'Internal Error', validation → 400 with field details only. Ref: OWASP — Improper Error Handling.",
+        });
+        break;
+      }
+    }
+
+    // Database-specific fields in response (constraint, table, column, relation)
+    if (/constraint|\.table|\.column|\.relation|\.detail|SQLSTATE|duplicate key/i.test(line) && isResponseLine) {
+      findings.push({
+        severity: "warning", type: "security", line: i + 1,
+        message: "Database error details may be exposed in response (constraint, table, column names)",
+        fix: "Catch DB errors and return generic messages. Log specifics server-side. Ref: OWASP — Error Handling Cheat Sheet.",
+      });
+      break;
+    }
+  }
+
+  // Check for missing global error handler in app entry files
+  const isAppEntry = /app\.(ts|js|mjs)|server\.(ts|js|mjs)|index\.(ts|js|mjs)/i.test(filepath);
+  if (isAppEntry) {
+    const hasGlobalHandler = /\.onError|app\.use\(\s*\(\s*err|errorHandler|errorMiddleware/i.test(code);
+    const isFrameworkApp = /Hono|express|fastify|koa/i.test(code);
+    if (isFrameworkApp && !hasGlobalHandler) {
+      findings.push({
+        severity: "warning", type: "security",
+        message: "App entry file has no global error handler — unhandled errors will expose framework defaults",
+        fix: "Add: app.onError() (Hono) or app.use((err, req, res, next) => {...}) (Express). Framework defaults often include stack traces. Ref: OWASP — Error Handling.",
+      });
     }
   }
 

@@ -185,6 +185,10 @@ export const GOTCHA_DB = {
     { wrong: "res.status(500).json({ error: err.message, stack: err.stack })", right: "res.status(500).json({ type: 'internal_error', title: 'Internal Server Error' }) — log full error server-side", why: "Stack traces expose internals (file paths, versions, dependencies). Log server-side, return generic message to client. Ref: OWASP — Improper Error Handling." },
     // Source: Express docs — Error handling middleware
     { wrong: "error handling in every route handler", right: "centralized error middleware: app.use((err, req, res, next) => { ... })", why: "Duplicated try/catch in every route is fragile. Centralized error middleware handles all errors consistently. Ref: Express docs — Error handling." },
+    // Source: OWASP — Improper Error Handling, information leakage
+    { wrong: "forwarding raw DB error to response: res.json({ error: err.message })", right: "map DB errors to safe messages: if (err.code === '23505') res.status(409).json({ error: 'Already exists' })", why: "DB errors contain table names, constraint names, SQL fragments. Map to generic messages. Log full error server-side only. Ref: OWASP A09:2021." },
+    // Source: OWASP — Error Handling, frontend security
+    { wrong: "frontend displays raw API error.message to user", right: "API returns { code: 'CONFLICT', message: 'Already exists' }. Frontend maps code to UI string.", why: "Internal error messages (UNIQUE constraint, column not found) shown to users leak DB schema. Use error codes, not messages. Ref: OWASP — Error Handling." },
   ],
   http_client: [
     // Source: AWS SDK Best Practices — Timeouts
