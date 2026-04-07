@@ -24,6 +24,7 @@ const commands = {
   resolve:  "../src/commands/resolve.mjs",
   gotcha:   "../src/commands/gotcha.mjs",
   review:   "../src/commands/review.mjs",
+  stats:    "../src/commands/stats.mjs",
   drift:    "../src/commands/drift.mjs",
   export:   "../src/commands/export.mjs",
   sync:     "../src/commands/sync.mjs",
