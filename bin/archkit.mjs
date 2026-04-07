@@ -22,11 +22,8 @@ const command = process.argv[2];
 const commands = {
   init:     "../src/commands/init.mjs",
   resolve:  "../src/commands/resolve.mjs",
-  guard:    "../src/commands/guard.mjs",
-  extend:   "../src/commands/extend.mjs",
   gotcha:   "../src/commands/gotcha.mjs",
   review:   "../src/commands/review.mjs",
-  stats:    "../src/commands/stats.mjs",
   drift:    "../src/commands/drift.mjs",
   export:   "../src/commands/export.mjs",
   sync:     "../src/commands/sync.mjs",
