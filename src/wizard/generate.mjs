@@ -555,13 +555,15 @@ ready_for_review: yes | no
 - PRE/POST blocks are mandatory for every code change
 
 ## Marketplace — Enhance Your Setup
-If warmup reports empty skills or low gotcha count, install community packs:
-\`\`\`bash
-archkit search "<package-name>"           # find skill packs
-archkit install archkit-postgres-gotchas  # install a pack
-archkit install archkit-boundaries-saas   # install boundary rules
-\`\`\`
-The warmup JSON includes a \`marketplace.emptySkillPacks\` array with exact install commands for each empty skill.
+If warmup reports empty skills or low gotcha count, **ask the user** before installing:
+> "Your postgres skill has no gotchas. There's a community pack available with 9 industry-standard patterns. Want me to install it? (archkit install archkit-postgres-gotchas)"
+
+NEVER install marketplace packs without user approval. Always present:
+1. What would be installed (package name, gotcha count)
+2. The exact command that will run
+3. Wait for explicit "yes" before executing
+
+The warmup JSON includes \`marketplace.emptySkillPacks\` with suggested install commands.
 Browse all packs: https://market.thearchkit.com
 `;
 
