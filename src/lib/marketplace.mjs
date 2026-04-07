@@ -6,7 +6,7 @@ import fs from "fs";
 import path from "path";
 import * as log from "./logger.mjs";
 
-const DEFAULT_BASE_URL = "https://archmarket.dev/api/cli";
+const DEFAULT_BASE_URL = "https://market.thearchkit.com/api/cli";
 const CREDENTIALS_DIR = path.join(process.env.HOME || process.env.USERPROFILE || "~", ".archkit");
 const CREDENTIALS_FILE = path.join(CREDENTIALS_DIR, "credentials");
 
@@ -37,7 +37,8 @@ export async function apiRequest(method, endpoint, params = {}) {
     return { error: { code: "NO_API_KEY", message: "Not logged in. Run: archkit login" } };
   }
 
-  const url = new URL(endpoint, getBaseUrl());
+  // Concatenate base + endpoint (new URL() would strip the /api/cli prefix)
+  const url = new URL(getBaseUrl() + endpoint);
   if (method === "GET" && params) {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, v);
