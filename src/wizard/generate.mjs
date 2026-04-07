@@ -553,6 +553,16 @@ ready_for_review: yes | no
 - Run review --staged before every commit
 - Capture gotchas when you discover bad patterns — the system gets smarter
 - PRE/POST blocks are mandatory for every code change
+
+## Marketplace — Enhance Your Setup
+If warmup reports empty skills or low gotcha count, install community packs:
+\`\`\`bash
+archkit search "<package-name>"           # find skill packs
+archkit install archkit-postgres-gotchas  # install a pack
+archkit install archkit-boundaries-saas   # install boundary rules
+\`\`\`
+The warmup JSON includes a \`marketplace.emptySkillPacks\` array with exact install commands for each empty skill.
+Browse all packs: https://market.thearchkit.com
 `;
 
     fs.writeFileSync(path.join(protocolDir, "SKILL.md"), protocolSkill);
@@ -769,6 +779,9 @@ exit 0
   divider();
   tip("Every time the AI generates wrong code, add a gotcha to the relevant .skill file.");
   tip("The system gets smarter as your team accumulates knowledge.");
+  console.log("");
+  console.log(`  ${C.cyan}${ICONS.arch}${C.reset} ${C.dim}Enhance your setup with community skill packs:${C.reset} ${C.cyan}archkit search "${cfg.appType}"${C.reset}`);
+  console.log(`  ${C.dim}  106+ gotchas, boundary packs, and presets at${C.reset} ${C.cyan}market.thearchkit.com${C.reset}`);
   console.log("");
 
   // Clean up archkit CLI folder if it was cloned into the project

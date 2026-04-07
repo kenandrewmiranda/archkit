@@ -253,5 +253,11 @@ export function cmdWarmup(archDir, deep) {
     instruction: pass
       ? "Warmup PASSED. You may proceed with code generation. Load the appropriate lens (research/implement/review) for your current task."
       : "Warmup FAILED. DO NOT generate code. Fix the blockers listed above first.",
+    marketplace: {
+      hint: emptySkills.length > 0 || totalGotchas < 20
+        ? `Enhance your setup: archkit search "<relevant-package>" — community skill packs with 106+ gotchas at market.thearchkit.com`
+        : null,
+      emptySkillPacks: emptySkills.map(id => `archkit install archkit-${id}-gotchas`),
+    },
   };
 }
