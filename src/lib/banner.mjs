@@ -9,14 +9,15 @@ const VERSION = pkg.version;
 
 export function showBanner() {
   console.log("");
-  console.log(`${C.cyan}${C.bold}      ┌─┐ ┬─┐ ┌─┐ ┬ ┬ ┬┌─ ┬ ┌┬┐${C.reset}`);
-  console.log(`${C.cyan}${C.bold}      ├─┤ ├┬┘ │   ├─┤ ├┴┐ │  │ ${C.reset}`);
-  console.log(`${C.cyan}${C.bold}      ┴ ┴ ┴└─ └─┘ ┴ ┴ ┴ ┴ ┴  ┴ ${C.reset}`);
-  console.log("");
-  console.log(`  ${C.dim}Context Engineering Scaffolder${C.reset}  ${C.gray}v${VERSION}${C.reset}`);
-  console.log(`  ${C.gray}Generates .arch/ with SYSTEM.md, graphs, skills, APIs${C.reset}`);
-  console.log("");
-  console.log(`  ${C.dim}${"─".repeat(52)}${C.reset}`);
+  console.log(`${C.dim}      ╔══════════════════════════════════════════════╗${C.reset}`);
+  console.log(`${C.dim}      ║${C.reset}                                              ${C.dim}║${C.reset}`);
+  console.log(`${C.dim}      ║${C.reset}   ${C.cyan}${C.bold}  ▄▀█ █▀█ █▀▀ █ █ █▄▀ █ ▀█▀${C.reset}             ${C.dim}║${C.reset}`);
+  console.log(`${C.dim}      ║${C.reset}   ${C.cyan}${C.bold}  █▀█ █▀▄ █▄▄ █▀█ █ █ █  █ ${C.reset}             ${C.dim}║${C.reset}`);
+  console.log(`${C.dim}      ║${C.reset}                                              ${C.dim}║${C.reset}`);
+  console.log(`${C.dim}      ║${C.reset}   ${C.dim}◆ Context Engineering for AI Agents${C.reset}        ${C.dim}║${C.reset}`);
+  console.log(`${C.dim}      ║${C.reset}   ${C.gray}  Give AI the blueprint, then the task${C.reset}     ${C.dim}║${C.reset}`);
+  console.log(`${C.dim}      ║${C.reset}                                    ${C.gray}v${VERSION}${C.reset}  ${C.dim}║${C.reset}`);
+  console.log(`${C.dim}      ╚══════════════════════════════════════════════╝${C.reset}`);
   console.log("");
 }
 
