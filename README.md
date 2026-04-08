@@ -1,19 +1,20 @@
 <div align="center">
 
 ```
-  ╔══════════════════════════════════════════════════════════════╗
-  ║                                                              ║
-  ║        ▄▀█ █▀█ █▀▀ █ █ █▄▀ █ ▀█▀                            ║
-  ║        █▀█ █▀▄ █▄▄ █▀█ █ █ █  █                             ║
-  ║                                                              ║
-  ║      ◆ Context Engineering for AI Agents                     ║
-  ║        Give AI the blueprint, then the task.                 ║
-  ╚══════════════════════════════════════════════════════════════╝
+       ___   ____  ____  __ __  __ __  ____  ______
+      /   \ |    \|    \|  |  ||  |  ||    ||      |
+     |  o  ||  D  )  _  |  |  ||  |  | |  | |      |
+     |     ||    /|  |  |  _  ||  _  | |  | |_|  |_|
+     |  _  ||    \|  |  |  |  ||  |  | |  |   |  |
+     |  |  ||  .  |  |  |  |  ||  |  | |  |   |  |
+     |__|__||__|\_|__|__|__|__||__|__||____|  |__|
 ```
 
-**AI agents write better code when they understand your architecture.**<br>
-archkit generates a `.arch/` directory — architecture graphs, package skills,<br>
-API contracts, guardrails, and rules — so every line fits your system.
+**Context Engineering for AI Agents**
+
+AI agents write better code when they understand your architecture.<br>
+archkit generates a `.arch/` directory -- architecture graphs, package skills,<br>
+API contracts, guardrails, and rules -- so every line fits your system.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
@@ -27,20 +28,20 @@ API contracts, guardrails, and rules — so every line fits your system.
 
 ## The Problem
 
-AI coding agents generate code that works in isolation — but doesn't fit your system. They don't know your layer boundaries, naming conventions, package gotchas, or API contracts. You end up reviewing and rewriting what was supposed to save you time.
+AI coding agents generate code that works in isolation -- but doesn't fit your system. They don't know your layer boundaries, naming conventions, package gotchas, or API contracts. You end up reviewing and rewriting what was supposed to save you time.
 
 **archkit fixes this.** One command generates a machine-readable blueprint of your architecture. The agent reads it before writing a single line.
 
 ```
-  ┌─────────────┐         ┌─────────────────────────┐         ┌──────────────┐
-  │             │         │        .arch/            │         │              │
-  │  Your       │  ────▶  │  SYSTEM.md   rules      │  ────▶  │  AI Agent    │
-  │  Codebase   │         │  INDEX.md    routing     │         │  writes code │
-  │             │         │  clusters/   graphs      │         │  that fits   │
-  │             │         │  skills/     gotchas     │         │              │
-  └─────────────┘         │  apis/       contracts   │         └──────────────┘
-                          │  lenses/     overlays    │
-                          └─────────────────────────┘
+  +--------------+        +---------------------------+        +---------------+
+  |              |        |         .arch/            |        |               |
+  |  Your        | -----> |  SYSTEM.md    rules       | -----> |  AI Agent     |
+  |  Codebase    |        |  INDEX.md     routing     |        |  writes code  |
+  |              |        |  clusters/    graphs      |        |  that fits    |
+  |              |        |  skills/      gotchas     |        |               |
+  +--------------+        |  apis/        contracts   |        +---------------+
+                          |  lenses/      overlays    |
+                          +---------------------------+
 ```
 
 ---
@@ -52,10 +53,10 @@ AI coding agents generate code that works in isolation — but doesn't fit your 
 git clone https://github.com/kenandrewmiranda/archkit.git
 cd archkit && npm install
 
-# New project — interactive 7-step wizard
+# New project -- interactive 7-step wizard
 archkit
 
-# Existing project — auto-detect from code
+# Existing project -- auto-detect from code
 archkit init
 
 # With Claude Code native integration
@@ -63,7 +64,7 @@ archkit --claude
 ```
 
 > [!TIP]
-> `archkit --claude` generates CLAUDE.md, `.claude/rules/`, `.claude/skills/`, pre-commit hooks, and warmup nudges — fully integrated out of the box.
+> `archkit --claude` generates CLAUDE.md, `.claude/rules/`, `.claude/skills/`, pre-commit hooks, and warmup nudges -- fully integrated out of the box.
 
 ---
 
@@ -72,27 +73,27 @@ archkit --claude
 archkit commands return structured JSON on stdout, making them callable by any AI agent. Human-readable logs go to stderr.
 
 ```
-  ┌──────────────────────────────────────────────────────────────────────┐
-  │                         Agent Workflow                              │
-  │                                                                    │
-  │   1. WARMUP        archkit resolve warmup                          │
-  │      │              └─▶ health check, blockers, warnings           │
-  │      ▼                                                             │
-  │   2. CONTEXT       archkit resolve context "add notifications"     │
-  │      │              └─▶ features, skills, files, rules             │
-  │      ▼                                                             │
-  │   3. PLAN          archkit resolve plan "add notifications"        │
-  │      │              └─▶ ordered steps, dependencies, gotchas       │
-  │      ▼                                                             │
-  │   4. CODE          write implementation...                         │
-  │      │                                                             │
-  │      ▼                                                             │
-  │   5. REVIEW        archkit review --staged --agent                 │
-  │      │              └─▶ violations, autofixes, suggestions         │
-  │      ▼                                                             │
-  │   6. LEARN         archkit gotcha --json postgres "..." "..." "…"  │
-  │                     └─▶ captured for next session                  │
-  └──────────────────────────────────────────────────────────────────────┘
+  +----------------------------------------------------------------------+
+  |                          Agent Workflow                               |
+  |                                                                      |
+  |   1. WARMUP        archkit resolve warmup                            |
+  |      |               \-- health check, blockers, warnings            |
+  |      v                                                               |
+  |   2. CONTEXT       archkit resolve context "add notifications"       |
+  |      |               \-- features, skills, files, rules              |
+  |      v                                                               |
+  |   3. PLAN          archkit resolve plan "add notifications"          |
+  |      |               \-- ordered steps, dependencies, gotchas        |
+  |      v                                                               |
+  |   4. CODE          write implementation...                           |
+  |      |                                                               |
+  |      v                                                               |
+  |   5. REVIEW        archkit review --staged --agent                   |
+  |      |               \-- violations, autofixes, suggestions          |
+  |      v                                                               |
+  |   6. LEARN         archkit gotcha --json postgres "..." "..." "..."  |
+  |                      \-- captured for next session                   |
+  +----------------------------------------------------------------------+
 ```
 
 ---
@@ -103,18 +104,18 @@ archkit commands return structured JSON on stdout, making them callable by any A
 
 ```
 .arch/
-├── SYSTEM.md              # Rules, reserved words, session management       ~800-1200 tokens
-├── BOUNDARIES.md          # Hard NEVER rules (universal + app-type)         ~300-500 tokens
-├── CONTEXT.compact.md     # 500-token injectable for cheap models           ~500 tokens
-├── INDEX.md               # Keyword → node/skill routing + cross-refs      ~400-800 tokens
-├── clusters/
-│   └── *.graph            # Architecture graphs (Key-Rel-Dep v2)           ~100 each
-├── skills/
-│   └── *.skill            # Package gotchas — WRONG / RIGHT / WHY          ~200 each
-├── apis/
-│   └── *.api              # API contract digest stubs                      ~100 each
-└── lenses/
-    └── *.md               # Research / Implement / Review overlays         ~150 each
+|-- SYSTEM.md              # Rules, reserved words, session management       ~800-1200 tokens
+|-- BOUNDARIES.md          # Hard NEVER rules (universal + app-type)         ~300-500 tokens
+|-- CONTEXT.compact.md     # 500-token injectable for cheap models           ~500 tokens
+|-- INDEX.md               # Keyword -> node/skill routing + cross-refs     ~400-800 tokens
+|-- clusters/
+|   \-- *.graph            # Architecture graphs (Key-Rel-Dep v2)           ~100 each
+|-- skills/
+|   \-- *.skill            # Package gotchas -- WRONG / RIGHT / WHY         ~200 each
+|-- apis/
+|   \-- *.api              # API contract digest stubs                      ~100 each
+\-- lenses/
+    \-- *.md               # Research / Implement / Review overlays         ~150 each
 ```
 
 ### Claude Code Native (`--claude`)
@@ -122,13 +123,13 @@ archkit commands return structured JSON on stdout, making them callable by any A
 ```
 CLAUDE.md                              # Auto-loaded every session (<200 lines)
 .claude/
-├── rules/
-│   ├── architecture.md                # alwaysApply — architecture rules
-│   └── [feature].md                   # Path-targeted — loads per feature
-├── skills/
-│   ├── [package]/SKILL.md             # On-demand package knowledge
-│   └── archkit-protocol/SKILL.md      # Workflow → archkit command mapping
-└── settings.json                      # Pre-commit review hook + warmup nudge
+|-- rules/
+|   |-- architecture.md                # alwaysApply -- architecture rules
+|   \-- [feature].md                   # Path-targeted -- loads per feature
+|-- skills/
+|   |-- [package]/SKILL.md             # On-demand package knowledge
+|   \-- archkit-protocol/SKILL.md      # Workflow -> archkit command mapping
+\-- settings.json                      # Pre-commit review hook + warmup nudge
 ```
 
 ---
@@ -142,9 +143,9 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | **SaaS / B2B** | Layered + Modular Monolith | DB-in-controller, cross-feature imports, tenant scoping, money floats |
 | **E-Commerce** | Layered + Event-Driven | + inventory locking, payment idempotency |
 | **Real-Time** | Event-Driven + Gateway | DB-in-handler, I/O-in-domain, handler complexity |
-| **Data / Analytics** | CQRS (Pipeline → Semantic → API) | Direct DB in API layer, pipeline side effects |
+| **Data / Analytics** | CQRS (Pipeline -> Semantic -> API) | Direct DB in API layer, pipeline side effects |
 | **AI-Powered** | Hexagonal + Pipeline Chains | Hardcoded LLM providers, inline prompts, missing guardrails |
-| **Mobile** | MVVM (Screen → Hook → Service) | Logic-in-screens, direct API calls in views |
+| **Mobile** | MVVM (Screen -> Hook -> Service) | Logic-in-screens, direct API calls in views |
 | **Internal Tools** | Simple Layered | Destructive actions without audit, unmasked PII |
 | **Content / CMS** | Static Gen + Islands | Unoptimized images, client JS in static pages, missing SEO |
 
@@ -161,18 +162,18 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit --claude` | + CLAUDE.md, .claude/rules/, .claude/skills/, hooks |
 | `archkit init [src-dir]` | Auto-detect architecture from codebase |
 | `archkit init src --json` | Detection only, no file generation |
-| `archkit migrate` | Upgrade 1.0 → 1.1 without data loss |
+| `archkit migrate` | Upgrade 1.0 -> 1.1 without data loss |
 | `archkit update` | Self-update from GitHub |
 
 </details>
 
 <details>
-<summary><b>Context Resolution</b> — JSON, agent-callable</summary>
+<summary><b>Context Resolution</b> -- JSON, agent-callable</summary>
 
 | Command | What it does |
 |---------|--------------|
 | `archkit resolve warmup [--deep]` | Pre-session health check (blockers = stop) |
-| `archkit resolve context "<prompt>"` | Map prompt → features, skills, files, rules |
+| `archkit resolve context "<prompt>"` | Map prompt -> features, skills, files, rules |
 | `archkit resolve preflight <feature> <layer>` | Verify target before generating code |
 | `archkit resolve scaffold <feature>` | New feature checklist with embedded gotchas |
 | `archkit resolve lookup <id>` | Look up any node, skill, or cluster |
@@ -183,7 +184,7 @@ archkit understands your application type and tailors rules, reviews, and defaul
 </details>
 
 <details>
-<summary><b>Code Review</b> — app-type-aware</summary>
+<summary><b>Code Review</b> -- app-type-aware</summary>
 
 | Command | What it does |
 |---------|--------------|
@@ -215,7 +216,7 @@ archkit understands your application type and tailors rules, reviews, and defaul
 
 | Command | What it does |
 |---------|--------------|
-| `archkit stats` | Health dashboard (0–100 score) |
+| `archkit stats` | Health dashboard (0-100 score) |
 | `archkit stats --compact` | One-line health summary |
 | `archkit drift [--json]` | Detect stale/orphaned .arch/ files |
 | `archkit sync [src-dir]` | Detect code changes needing .arch/ updates |
@@ -264,20 +265,20 @@ archkit understands your application type and tailors rules, reviews, and defaul
 
 ## Key Features
 
-**Built-in Gotcha Database** — Skills come pre-populated with real WRONG/RIGHT/WHY entries for PostgreSQL, Prisma, Stripe, BullMQ, Valkey, Keycloak, Docker, and JWT. No empty skeletons on day 1.
+**Built-in Gotcha Database** -- Skills come pre-populated with real WRONG/RIGHT/WHY entries for PostgreSQL, Prisma, Stripe, BullMQ, Valkey, Keycloak, Docker, and JWT. No empty skeletons on day 1.
 
-**Synonym Expansion** — Context resolution expands prompts across 24 synonym groups. "payment" matches "billing", "authenticate" matches "auth", "database" matches "db".
+**Synonym Expansion** -- Context resolution expands prompts across 24 synonym groups. "payment" matches "billing", "authenticate" matches "auth", "database" matches "db".
 
-**Token Budgeting** — Every generated file shows its token cost. Always-loaded context is monitored:
+**Token Budgeting** -- Every generated file shows its token cost. Always-loaded context is monitored:
 
 | | Tokens | |
 |---|---|---|
 | EFFICIENT | < 1,000 | Minimal overhead |
-| MODERATE | 1,000 – 2,000 | Good for always-loaded |
-| HIGH | 2,000 – 3,000 | Consider trimming |
+| MODERATE | 1,000 - 2,000 | Good for always-loaded |
+| HIGH | 2,000 - 3,000 | Consider trimming |
 | OVER BUDGET | > 3,000 | Use CONTEXT.compact.md |
 
-**Works Everywhere** — Export to Cursor, Windsurf, Copilot, Aider, or use natively with Claude Code.
+**Works Everywhere** -- Export to Cursor, Windsurf, Copilot, Aider, or use natively with Claude Code.
 
 ---
 
