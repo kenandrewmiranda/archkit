@@ -1,6 +1,6 @@
 <div align="center">
 
-```
+<pre>
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
 ║                  ▄▀█ █▀█ █▀▀ █ █ █▄▀ █ ▀█▀                   ║
@@ -9,7 +9,7 @@
 ║             ◆ Context Engineering for AI Agents              ║
 ║            Give AI the blueprint, then the task.             ║
 ╚══════════════════════════════════════════════════════════════╝
-```
+</pre>
 
 **Context Engineering for AI Agents**
 
