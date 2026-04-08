@@ -140,7 +140,7 @@ function checkArchitectureRules(code, filepath, rules, reservedWords) {
   }
 
   // Check: repo returning raw rows
-  if (filename.includes("repository") || filename.includes("Repo")) {
+  if (filename.includes("repository") || /repo/i.test(filename)) {
     if (code.includes("rows[0]") || code.includes(".rows") || code.includes("result.rows")) {
       findings.push({
         severity: "info",
@@ -153,12 +153,15 @@ function checkArchitectureRules(code, filepath, rules, reservedWords) {
   }
 
   // Check: missing tenant scoping
+  // Runs on any file with DB query patterns, not just files named .repository
   if (reservedWords["$tenant"]) {
-    if ((filename.includes("repository") || filename.includes("Repo") || filename.includes("repo"))
-        && !code.includes("tenant") && !code.includes("TENANT") && (code.includes("SELECT") || code.includes("findMany") || code.includes(".query"))) {
-      // Only flag if there are actual queries but no tenant reference
-      const hasQuery = /SELECT|findMany|findFirst|\.query|\.where/i.test(code);
-      const hasTenant = /tenant/i.test(code);
+    const isTestFile = /\.(test|spec)\./i.test(filename);
+    const isTypesFile = /\.(types|dto|model|entity)\./i.test(filename);
+    if (!isTestFile && !isTypesFile) {
+      // Strip comments before checking for tenant references to avoid false negatives
+      const codeNoComments = code.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+      const hasQuery = /SELECT\s|findMany|findFirst|findUnique|\.query\(|\.execute\(/i.test(codeNoComments);
+      const hasTenant = /tenant/i.test(codeNoComments);
       if (hasQuery && !hasTenant) {
         findings.push({
           severity: "error",

@@ -13,6 +13,14 @@ const LAYER_PATTERNS = {
   test: /\.(test|spec)(\.|$|['"])/,
 };
 
+// Detect layer from imported symbol names (e.g., AuthRepo → repository)
+// This catches barrel file re-exports where the import path has no layer info
+const SYMBOL_LAYER_PATTERNS = {
+  controller: /\b\w*(Controller|Cont|Router|Route)\b/,
+  service: /\b\w*(Service|Svc|UseCase)\b/,
+  repository: /\b\w*(Repository|Repo|Dal)\b/,
+};
+
 // What each layer is allowed to import (by layer)
 const ALLOWED_IMPORTS = {
   controller: ["service", "types", "validation"],
@@ -36,17 +44,25 @@ function detectFeature(filepath) {
   return match ? match[1] : null;
 }
 
+// Detect layer from the imported symbols on the import line
+function detectLayerFromSymbols(importLine) {
+  for (const [layer, pattern] of Object.entries(SYMBOL_LAYER_PATTERNS)) {
+    if (pattern.test(importLine)) return layer;
+  }
+  return null;
+}
+
 function extractImports(code) {
   const imports = [];
   // ES module imports: import ... from "..."
   const esImports = code.matchAll(/import\s+.*?\s+from\s+['"](\..*?)['"]/g);
-  for (const m of esImports) imports.push(m[1]);
+  for (const m of esImports) imports.push({ path: m[1], line: m[0] });
   // Dynamic imports: import("...")
   const dynImports = code.matchAll(/import\(\s*['"](\..*?)['"]\s*\)/g);
-  for (const m of dynImports) imports.push(m[1]);
+  for (const m of dynImports) imports.push({ path: m[1], line: m[0] });
   // CommonJS: require("...")
   const cjsImports = code.matchAll(/require\(\s*['"](\..*?)['"]\s*\)/g);
-  for (const m of cjsImports) imports.push(m[1]);
+  for (const m of cjsImports) imports.push({ path: m[1], line: m[0] });
   return imports;
 }
 
@@ -63,9 +79,9 @@ export function checkImportHierarchy(code, filepath) {
 
   for (const imp of imports) {
     // Check cross-feature imports
-    const importFeature = detectFeature(imp) || (() => {
-      // Also detect from relative paths like ../billing/billing.repo
-      const m = imp.match(/\.\.\/([^/]+)\//);
+    const importFeature = detectFeature(imp.path) || (() => {
+      // Also detect from relative paths like ../billing/billing.repo or ../billing (barrel)
+      const m = imp.path.match(/\.\.\/([^/]+)(?:\/|$)/);
       return m ? m[1] : null;
     })();
 
@@ -74,32 +90,32 @@ export function checkImportHierarchy(code, filepath) {
       const lines = code.split("\n");
       let line = undefined;
       for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes(imp)) { line = i + 1; break; }
+        if (lines[i].includes(imp.path)) { line = i + 1; break; }
       }
       findings.push({
         severity: "error",
         type: "import-boundary",
         line,
-        message: `Cross-feature import: ${sourceFeature} → ${importFeature} (${imp})`,
+        message: `Cross-feature import: ${sourceFeature} → ${importFeature} (${imp.path})`,
         fix: "Use a shared interface or event bus instead of direct cross-feature imports.",
         reason: "Features must not import from each other's internal modules.",
       });
       continue;
     }
 
-    // Check layer hierarchy
-    const importLayer = detectLayer(imp);
+    // Check layer hierarchy — first by import path, then by symbol name
+    const importLayer = detectLayer(imp.path) || detectLayerFromSymbols(imp.line);
     if (importLayer && !allowed.includes(importLayer)) {
       const lines = code.split("\n");
       let line = undefined;
       for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes(imp)) { line = i + 1; break; }
+        if (lines[i].includes(imp.path)) { line = i + 1; break; }
       }
       findings.push({
         severity: "error",
         type: "import-hierarchy",
         line,
-        message: `${sourceLayer} imports ${importLayer} (${imp}) — violates layer hierarchy`,
+        message: `${sourceLayer} imports ${importLayer} (${imp.path}) — violates layer hierarchy`,
         fix: `${sourceLayer} can only import: ${allowed.join(", ") || "nothing from the feature"}.`,
         reason: `Architecture rule: ${sourceLayer} → ${allowed.join("/")} only.`,
       });

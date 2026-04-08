@@ -11,15 +11,15 @@ export function checkCachePatterns(code, filepath) {
   const hasRedis = /redis|ioredis|valkey/i.test(code);
   if (!hasRedis) return findings;
 
-  // SET without TTL (EX/PX/EXAT)
+  // SET without TTL (EX/PX/EXAT) — covers direct .set() and pipeline.set()
   for (let i = 0; i < lines.length; i++) {
-    if (/\.set\(\s*['"]/i.test(lines[i]) && !/EX|PX|EXAT|ttl|expire/i.test(lines[i])) {
-      const nextLine = lines[i + 1] || "";
-      if (!/EX|PX|ttl|expire/i.test(nextLine)) {
+    if (/\.set\(/i.test(lines[i]) && !/setex|setnx/i.test(lines[i])) {
+      const context = lines.slice(i, i + 2).join(" ");
+      if (!/EX|PX|EXAT|ttl|expire/i.test(context)) {
         findings.push({
           severity: "warning", type: "cache", line: i + 1,
           message: "Cache SET without TTL — value will persist indefinitely",
-          fix: "Add TTL: SET key value EX 3600 (or use client.set(key, value, 'EX', 3600))",
+          fix: "Add TTL: SET key value EX 3600 (or use client.set(key, value, 'EX', 3600)). For pipelines, use pipeline.setex() instead.",
           reason: "Keys without TTL accumulate forever. Memory grows until OOM.",
         });
         break;
@@ -27,14 +27,14 @@ export function checkCachePatterns(code, filepath) {
     }
   }
 
-  // KEYS * in production code
+  // KEYS command in production code (any pattern, not just *)
   for (let i = 0; i < lines.length; i++) {
-    if (/\.keys\(\s*['"`]\*['"`]\s*\)/i.test(lines[i]) || /KEYS\s+\*/i.test(lines[i])) {
+    if (/\.keys\(\s*['"`]/i.test(lines[i]) || /KEYS\s+/i.test(lines[i])) {
       findings.push({
         severity: "error", type: "cache", line: i + 1,
-        message: "KEYS * blocks Redis while scanning all keys",
-        fix: "Use SCAN with cursor for non-blocking iteration.",
-        reason: "KEYS * is O(N) and blocks the entire Redis instance.",
+        message: "KEYS command blocks Redis while scanning all keys",
+        fix: "Use SCAN with cursor for non-blocking iteration: for await (const key of redis.scanStream({ match: pattern })).",
+        reason: "KEYS is O(N) and blocks the entire Redis instance regardless of pattern.",
       });
       break;
     }

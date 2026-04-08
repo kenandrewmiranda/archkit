@@ -26,23 +26,29 @@ export function checkApiPatterns(code, filepath) {
   }
 
   // Check for internal error details in responses (OWASP — Improper Error Handling)
+  let foundStack = false;
+  let foundErrMsg = false;
+  let foundDbDetails = false;
+  let inResponseContext = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const isResponseLine = /res|response|json|send|c\.\w+\(/i.test(line);
-    if (!isResponseLine) continue;
+    const isResponseLine = /res\.|response\.|\.json\(|\.send\(|\.status\(/i.test(line);
+    if (isResponseLine) inResponseContext = 4; // next 4 lines are in response context
+    if (inResponseContext <= 0) continue;
+    inResponseContext--;
 
     // Stack traces in responses
-    if (/err\.stack|error\.stack|stack.*trace/i.test(line)) {
+    if (!foundStack && /err\.stack|error\.stack|stack.*trace/i.test(line)) {
       findings.push({
         severity: "error", type: "security", line: i + 1,
         message: "Stack trace exposed in error response — information leakage",
         fix: "Log full error server-side. Return only { type, title, status } to client. Ref: OWASP A09:2021 — Security Logging and Monitoring.",
       });
-      break;
+      foundStack = true;
     }
 
     // Raw err.message forwarded to client (may contain DB errors, file paths, SQL)
-    if (/err\.message|error\.message/i.test(line) && /json|send|status/i.test(line)) {
+    if (!foundErrMsg && /err\.message|error\.message/i.test(line) && /json|send|status/i.test(line)) {
       // Check if it's inside a catch block (likely an error handler)
       let inCatch = false;
       for (let j = Math.max(0, i - 5); j < i; j++) {
@@ -54,18 +60,25 @@ export function checkApiPatterns(code, filepath) {
           message: "Raw error message forwarded to client — may expose internal details",
           fix: "Map errors to safe client messages: DB errors → 500 'Internal Error', validation → 400 with field details only. Ref: OWASP — Improper Error Handling.",
         });
-        break;
+        foundErrMsg = true;
       }
     }
 
     // Database-specific fields in response (constraint, table, column, relation)
-    if (/constraint|\.table|\.column|\.relation|\.detail|SQLSTATE|duplicate key/i.test(line) && isResponseLine) {
-      findings.push({
-        severity: "warning", type: "security", line: i + 1,
-        message: "Database error details may be exposed in response (constraint, table, column names)",
-        fix: "Catch DB errors and return generic messages. Log specifics server-side. Ref: OWASP — Error Handling Cheat Sheet.",
-      });
-      break;
+    // Check current line and nearby lines (multi-line response objects)
+    if (!foundDbDetails) {
+      const nearby = lines.slice(Math.max(0, i - 2), i + 3).join(" ");
+      const hasDbField = /constraint|\.table|\.column|\.relation|\.detail|SQLSTATE|duplicate key/i.test(nearby);
+      const hasResponse = /res\.|response\.|json\(|send\(|status\(/i.test(nearby);
+      if (hasDbField && hasResponse) {
+        const dbLine = /constraint|\.table|\.column|\.relation|\.detail|SQLSTATE|duplicate key/i.test(line) ? i + 1 : undefined;
+        findings.push({
+          severity: "warning", type: "security", line: dbLine || i + 1,
+          message: "Database error details may be exposed in response (constraint, table, column names)",
+          fix: "Catch DB errors and return generic messages. Log specifics server-side. Ref: OWASP — Error Handling Cheat Sheet.",
+        });
+        foundDbDetails = true;
+      }
     }
   }
 

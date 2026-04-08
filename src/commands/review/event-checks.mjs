@@ -23,9 +23,10 @@ export function checkEventPatterns(code, filepath) {
     }
   }
 
-  // 2. Controller/handler importing db module directly (bypasses service/repo layers)
+  // 2. Controller/handler/middleware importing db module directly (bypasses service/repo layers)
   const isController = /\.(controller|cont|route|router|handler)\./i.test(filepath);
-  if (isController) {
+  const isMiddleware = /middleware/i.test(filepath);
+  if (isController || isMiddleware) {
     for (let i = 0; i < lines.length; i++) {
       // Match: import { query } from "../../shared/db" or similar
       if (/import\s+.*\bfrom\s+['"].*(?:\/db\/|\/db['"]|\/database\/|\/database['"])/i.test(lines[i])) {
