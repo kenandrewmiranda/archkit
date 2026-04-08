@@ -5,12 +5,12 @@
 const SHARED_DIRS = new Set(["shared", "common", "lib", "utils", "helpers", "packages", "types", "config", "middleware", "infrastructure", "core"]);
 
 const LAYER_PATTERNS = {
-  controller: /\.(controller|cont|route|router)\./,
-  service: /\.(service|svc|use-case)\./,
-  repository: /\.(repository|repo|dal)\./,
-  types: /\.(types|dto|model|entity)\./,
-  validation: /\.(validation|schema|validator)\./,
-  test: /\.(test|spec)\./,
+  controller: /\.(controller|cont|route|router)(\.|$|['"])/,
+  service: /\.(service|svc|use-case)(\.|$|['"])/,
+  repository: /\.(repository|repo|dal)(\.|$|['"])/,
+  types: /\.(types|dto|model|entity)(\.|$|['"])/,
+  validation: /\.(validation|schema|validator)(\.|$|['"])/,
+  test: /\.(test|spec)(\.|$|['"])/,
 };
 
 // What each layer is allowed to import (by layer)
