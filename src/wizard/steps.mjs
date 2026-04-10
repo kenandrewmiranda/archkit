@@ -208,6 +208,9 @@ async function stepFeatures(state) {
 
   console.log("");
   info("Add your own features. Type 'done' when finished.");
+  if (features.length === 0 && at.suggestedFeatures.length > 0) {
+    info("Or type 'suggested' to add all suggested features at once.");
+  }
   console.log("");
 
   let adding = true;
@@ -221,10 +224,28 @@ async function stepFeatures(state) {
 
     if (featureId === "done" || featureId === "") {
       if (features.length === 0) {
-        warn("Need at least one feature. Try again.");
+        warn("At least one feature is required — 'done' only works after you've added one.");
+        info("Enter a feature ID (e.g. 'auth', 'chat'), or type 'suggested' to use the suggested list.");
         continue;
       }
       adding = false;
+      continue;
+    }
+
+    if (featureId === "suggested") {
+      if (at.suggestedFeatures.length === 0) {
+        warn("No suggested features available for this app type.");
+        continue;
+      }
+      const suggestedIds = new Set(features.map(f => f.id));
+      const toAdd = at.suggestedFeatures.filter(f => !suggestedIds.has(f.id));
+      if (toAdd.length === 0) {
+        warn("All suggested features are already added.");
+        continue;
+      }
+      features.push(...toAdd);
+      toAdd.forEach(f => success(`Added: ${f.id} — ${f.name}`));
+      console.log("");
       continue;
     }
 
