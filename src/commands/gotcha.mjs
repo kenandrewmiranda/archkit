@@ -17,6 +17,7 @@
 import inquirer from "inquirer";
 import fs from "fs";
 import path from "path";
+import { createHash } from "node:crypto";
 import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
@@ -76,6 +77,12 @@ function appendGotcha(archDir, skillId, wrong, right, why) {
   fs.writeFileSync(filepath, content);
   return true;
 }
+
+function proposalHash(skill, wrong, right) {
+  return createHash("sha1").update(`${skill}\x1f${wrong}\x1f${right}`).digest("hex").slice(0, 12);
+}
+function proposalsDir(archDir) { return path.join(archDir, "gotcha-proposals"); }
+function rejectedDir(archDir) { return path.join(archDir, "gotcha-proposals", "rejected"); }
 
 async function interactiveMode(archDir) {
   const skills = listSkills(archDir);
@@ -433,6 +440,55 @@ async function cliMode(args) {
     const skills = listSkills(archDir);
     const result = skills.map(id => ({ id, gotchas: countGotchas(archDir, id) }));
     console.log(JSON.stringify({ skills: result }));
+    return;
+  }
+
+  // Queue a gotcha proposal without immediately writing to a .skill file
+  if (args.includes("--propose")) {
+    function getFlag(name) {
+      const idx = args.indexOf(name);
+      if (idx === -1) return undefined;
+      return args[idx + 1];
+    }
+    const skill = getFlag("--skill");
+    const wrong = getFlag("--wrong");
+    const right = getFlag("--right");
+    const why = getFlag("--why");
+
+    for (const [name, val] of [["skill", skill], ["wrong", wrong], ["right", right], ["why", why]]) {
+      if (!val || val.startsWith("--")) {
+        console.log(JSON.stringify({ error: "missing_field", field: name }));
+        process.exit(2);
+      }
+    }
+
+    const hash = proposalHash(skill, wrong, right);
+    const pDir = proposalsDir(archDir);
+    const proposalFile = path.join(pDir, `${hash}.json`);
+    const rejFile = path.join(rejectedDir(archDir), `${hash}.json`);
+
+    if (fs.existsSync(proposalFile)) {
+      console.log(JSON.stringify({ status: "duplicate", hash }));
+      return;
+    }
+
+    if (fs.existsSync(rejFile)) {
+      console.log(JSON.stringify({ status: "previously-rejected", hash }));
+      return;
+    }
+
+    fs.mkdirSync(pDir, { recursive: true });
+    const proposal = { skill, wrong, right, why, source: "cli", created_at: new Date().toISOString() };
+    fs.writeFileSync(proposalFile, JSON.stringify(proposal, null, 2));
+
+    const relPath = path.relative(process.cwd(), proposalFile);
+    if (jsonMode) {
+      console.log(JSON.stringify({ status: "queued", hash, path: relPath }));
+    } else {
+      log.gotcha(`Proposal queued for ${skill}`);
+      console.log(`${C.green}  ${I.check} Proposal saved (${hash})${C.reset}`);
+      console.log(`${C.gray}  Review with: archkit gotcha --review${C.reset}`);
+    }
     return;
   }
 
