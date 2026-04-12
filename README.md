@@ -19,7 +19,7 @@ API contracts, guardrails, and rules -- so every line fits your system.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-1.1.0-cyan.svg)]()
+[![Version](https://img.shields.io/badge/version-1.2.0-cyan.svg)]()
 
 [Website](https://thearchkit.com) &bull; [Marketplace](https://market.thearchkit.com) &bull; [Issues](https://github.com/kenandrewmiranda/archkit/issues)
 
@@ -66,6 +66,46 @@ archkit --claude
 
 > [!TIP]
 > `archkit --claude` generates CLAUDE.md, `.claude/rules/`, `.claude/skills/`, pre-commit hooks, and warmup nudges -- fully integrated out of the box.
+
+
+## Which flow is right for you?
+
+<details open>
+<summary><b>Solo dev, small project</b></summary>
+
+You hold the architecture in your head. Your test suite is your contract.
+You want archkit's context files, not its full protocol.
+
+- Set up `.arch/` once with agent help: `archkit init --agent-scaffold`
+- Wire drift detection into pre-commit: `archkit init --install-hooks`
+- Capture gotchas as you find them: `archkit gotcha --propose --skill <package> --wrong "..." --right "..." --why "..."`
+- Review accumulated gotchas: `archkit gotcha --review`
+
+</details>
+
+<details>
+<summary><b>Team or multi-feature project</b></summary>
+
+You need protocol uniformity and a shared architecture record. Full flow.
+
+- Initialize the full scaffolded `.arch/`: `archkit init` (interactive wizard)
+- Per-feature gating: `archkit resolve preflight <feature> <layer>`
+- Review before every commit: `archkit review --staged`
+- Close the feedback loop: `archkit gotcha --review` to approve proposed gotchas
+
+</details>
+
+<details>
+<summary><b>Greenfield project</b></summary>
+
+You're designing architecture alongside code. Use archkit to make the
+design decisions explicit as you make them.
+
+- Start with boundaries, not code: `archkit init --agent-scaffold` then fill in `.arch/BOUNDARIES.md` first
+- Build outward from the cluster graph as clusters emerge
+- `archkit drift` catches the moment code diverges from the stated design
+
+</details>
 
 ---
 
@@ -165,6 +205,8 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit init src --json` | Detection only, no file generation |
 | `archkit migrate` | Upgrade 1.0 -> 1.1 without data loss |
 | `archkit update` | Self-update from GitHub |
+| `archkit init --agent-scaffold` | Stub `.arch/` with AI-fillable templates |
+| `archkit init --install-hooks` | Install pre-commit hook for drift detection |
 
 </details>
 
@@ -209,6 +251,9 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit gotcha --list` | All skills + gotcha counts (JSON) |
 | `archkit gotcha --json <skill> "wrong" "right" "why"` | JSON output (agent-callable) |
 | `archkit gotcha --debrief --json '{...}'` | Non-interactive debrief (agent-callable) |
+| `archkit gotcha --propose --skill <pkg> ...` | Queue a gotcha proposal (agent-callable) |
+| `archkit gotcha --list-proposals [--json]` | List pending proposals |
+| `archkit gotcha --review` | Interactive proposal review (accept/edit/reject) |
 
 </details>
 
@@ -221,6 +266,8 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit stats --compact` | One-line health summary |
 | `archkit drift [--json]` | Detect stale/orphaned .arch/ files |
 | `archkit sync [src-dir]` | Detect code changes needing .arch/ updates |
+
+> **Husky users:** Add `exec archkit drift --json > /dev/null` to your `.husky/pre-commit` file.
 
 </details>
 
