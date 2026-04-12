@@ -492,6 +492,155 @@ async function cliMode(args) {
     return;
   }
 
+  // ── List proposals mode ───────────────────────────────────────────────
+  if (args.includes("--list-proposals")) {
+    const pDir = proposalsDir(archDir);
+    const proposals = [];
+    if (fs.existsSync(pDir)) {
+      for (const file of fs.readdirSync(pDir)) {
+        if (!file.endsWith(".json")) continue;
+        try {
+          const content = JSON.parse(fs.readFileSync(path.join(pDir, file), "utf8"));
+          content._hash = file.replace(".json", "");
+          proposals.push(content);
+        } catch {
+          log.warn(`Skipping corrupt proposal file: ${file}`);
+        }
+      }
+    }
+    if (jsonMode) {
+      console.log(JSON.stringify(proposals));
+    } else {
+      if (proposals.length === 0) {
+        console.log(`${C.gray}  No pending proposals.${C.reset}`);
+        console.log(`${C.gray}  Agents can emit proposals via: archkit gotcha --propose --skill <pkg> ...${C.reset}`);
+      } else {
+        console.log(`${C.blue}${C.bold}  ${proposals.length} pending proposal${proposals.length !== 1 ? "s" : ""}:${C.reset}`);
+        for (const p of proposals) {
+          console.log(`${C.gray}  ${I.dot} ${p.skill}: ${p.wrong.substring(0, 60)}${C.reset}`);
+        }
+        console.log(`${C.gray}\n  Run archkit gotcha --review to process them.${C.reset}`);
+      }
+    }
+    return;
+  }
+
+  // ── Review mode (interactive, human-only) ─────────────────────────────
+  if (args.includes("--review")) {
+    const pDir = proposalsDir(archDir);
+    if (!fs.existsSync(pDir)) {
+      console.log(`${C.gray}  No pending proposals.${C.reset}`);
+      console.log(`${C.gray}  Agents can emit proposals via: archkit gotcha --propose --skill <pkg> ...${C.reset}`);
+      console.log(`${C.gray}  Or drop JSON files in .arch/gotcha-proposals/${C.reset}`);
+      return;
+    }
+
+    const files = fs.readdirSync(pDir).filter(f => f.endsWith(".json"));
+    if (files.length === 0) {
+      console.log(`${C.gray}  No pending proposals.${C.reset}`);
+      return;
+    }
+
+    banner();
+    console.log(`${C.blue}${C.bold}  ${I.brain} Gotcha Proposal Review${C.reset}`);
+    console.log(`${C.gray}  ${files.length} proposal${files.length !== 1 ? "s" : ""} to review${C.reset}\n`);
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const filePath = path.join(pDir, file);
+      let proposal;
+      try {
+        proposal = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      } catch {
+        log.warn(`Skipping corrupt file: ${file}`);
+        continue;
+      }
+
+      const hash = file.replace(".json", "");
+      console.log(`${C.gray}  ${"─".repeat(50)}${C.reset}`);
+      console.log(`${C.blue}${C.bold}  Proposal ${i + 1} of ${files.length}${C.reset}`);
+      console.log(`${C.gray}  Skill:  ${C.reset}${C.bold}${proposal.skill}${C.reset}`);
+      if (proposal.source) console.log(`${C.gray}  Source: ${proposal.source}  (${proposal.created_at || "unknown date"})${C.reset}`);
+      console.log("");
+      console.log(`${C.red}  WRONG: ${C.reset}${proposal.wrong}`);
+      console.log(`${C.green}  RIGHT: ${C.reset}${proposal.right}`);
+      console.log(`${C.yellow}  WHY:   ${C.reset}${proposal.why}`);
+      console.log("");
+
+      const { action } = await inquirer.prompt([{
+        type: "list",
+        name: "action",
+        message: "What do you want to do?",
+        prefix: `  ${I.arch}`,
+        choices: [
+          { name: `${C.green}Accept${C.reset} (append to ${proposal.skill}.skill)`, value: "accept" },
+          { name: `${C.blue}Edit${C.reset}   (modify in $EDITOR, then accept)`, value: "edit" },
+          { name: `${C.red}Reject${C.reset} (move to rejected/)`, value: "reject" },
+          { name: `${C.gray}Skip${C.reset}   (leave in queue)`, value: "skip" },
+          { name: `${C.gray}Quit${C.reset}   (stop reviewing)`, value: "quit" },
+        ],
+      }]);
+
+      if (action === "quit") {
+        console.log(`${C.gray}  Stopped. ${files.length - i} proposal${files.length - i !== 1 ? "s" : ""} remaining.${C.reset}\n`);
+        return;
+      }
+      if (action === "skip") { console.log(`${C.gray}  Skipped.${C.reset}\n`); continue; }
+      if (action === "reject") {
+        const rDir = rejectedDir(archDir);
+        fs.mkdirSync(rDir, { recursive: true });
+        fs.renameSync(filePath, path.join(rDir, file));
+        console.log(`${C.red}  ${I.cross} Rejected and archived.${C.reset}\n`);
+        continue;
+      }
+
+      let finalProposal = proposal;
+      if (action === "edit") {
+        const { edited } = await inquirer.prompt([{
+          type: "editor",
+          name: "edited",
+          message: "Edit the proposal JSON:",
+          default: JSON.stringify(proposal, null, 2),
+        }]);
+        try {
+          finalProposal = JSON.parse(edited);
+          if (!finalProposal.skill || !finalProposal.wrong || !finalProposal.right || !finalProposal.why) {
+            console.log(`${C.red}  ${I.warn} Edited proposal is missing required fields. Skipping.${C.reset}\n`);
+            continue;
+          }
+        } catch (err) {
+          console.log(`${C.red}  ${I.warn} Invalid JSON: ${err.message}. Skipping.${C.reset}\n`);
+          continue;
+        }
+      }
+
+      // Accept: append to skill file
+      const skillPath = path.join(archDir, "skills", `${finalProposal.skill}.skill`);
+      if (!fs.existsSync(skillPath)) {
+        const { create } = await inquirer.prompt([{
+          type: "confirm",
+          name: "create",
+          message: `${finalProposal.skill}.skill doesn't exist. Create it?`,
+          default: true,
+          prefix: `  ${I.arch}`,
+        }]);
+        if (!create) { console.log(`${C.gray}  Skipped — skill file not created.${C.reset}\n`); continue; }
+        fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+        fs.writeFileSync(skillPath, `# ${finalProposal.skill}\n\n## Gotchas\n`);
+        log.generate(`Created ${finalProposal.skill}.skill`);
+      }
+
+      const ok = appendGotcha(archDir, finalProposal.skill, finalProposal.wrong, finalProposal.right, finalProposal.why);
+      if (ok) {
+        fs.unlinkSync(filePath);
+        const total = countGotchas(archDir, finalProposal.skill);
+        console.log(`${C.green}  ${I.check} Accepted — added to ${finalProposal.skill}.skill (${total} total)${C.reset}\n`);
+      }
+    }
+    console.log(`${C.green}  ${I.check} Review complete.${C.reset}\n`);
+    return;
+  }
+
   // Non-interactive debrief for AI agents
   if ((args.includes("--debrief") || args.includes("-d")) && args.includes("--json")) {
     const jsonArg = args.filter(a => !a.startsWith("-")).join(" ");

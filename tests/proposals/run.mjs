@@ -272,6 +272,76 @@ test("--propose after rejection returns previously-rejected", () => {
   });
 });
 
+// ── Integration tests (--list-proposals) ──────────────────────────────────
+
+console.log("");
+console.log("  ── Integration tests (--list-proposals) ──────────────────");
+
+test("--list-proposals --json returns array", () => {
+  withTempArchDir((dir) => {
+    // First create a proposal
+    execFileSync(process.execPath, [
+      ARCHKIT, "gotcha", "--propose",
+      "--skill", "stripe",
+      "--wrong", "req.body",
+      "--right", "req.rawBody",
+      "--why", "Stripe needs raw bytes",
+      "--json",
+    ], { cwd: dir, encoding: "utf8" });
+
+    // Now list proposals
+    const out = execFileSync(process.execPath, [
+      ARCHKIT, "gotcha", "--list-proposals", "--json",
+    ], { cwd: dir, encoding: "utf8" });
+    const result = JSON.parse(out.trim());
+    assert.ok(Array.isArray(result), "Expected an array");
+    assert.strictEqual(result.length, 1, "Expected 1 proposal");
+    assert.strictEqual(result[0].skill, "stripe");
+    assert.strictEqual(result[0].wrong, "req.body");
+  });
+});
+
+test("--list-proposals --json returns empty array when no proposals", () => {
+  withTempArchDir((dir) => {
+    const out = execFileSync(process.execPath, [
+      ARCHKIT, "gotcha", "--list-proposals", "--json",
+    ], { cwd: dir, encoding: "utf8" });
+    const result = JSON.parse(out.trim());
+    assert.ok(Array.isArray(result), "Expected an array");
+    assert.strictEqual(result.length, 0, "Expected empty array");
+  });
+});
+
+test("--list-proposals excludes rejected proposals", () => {
+  withTempArchDir((dir) => {
+    // Create a proposal
+    const out1 = execFileSync(process.execPath, [
+      ARCHKIT, "gotcha", "--propose",
+      "--skill", "stripe",
+      "--wrong", "req.body",
+      "--right", "req.rawBody",
+      "--why", "Stripe needs raw bytes",
+      "--json",
+    ], { cwd: dir, encoding: "utf8" });
+    const result1 = JSON.parse(out1.trim());
+    assert.strictEqual(result1.status, "queued");
+
+    // Manually move it to rejected/
+    const proposalPath = path.join(dir, result1.path);
+    const rejDir = path.join(dir, ".arch", "gotcha-proposals", "rejected");
+    fs.mkdirSync(rejDir, { recursive: true });
+    fs.renameSync(proposalPath, path.join(rejDir, `${result1.hash}.json`));
+
+    // List proposals — should be empty
+    const out2 = execFileSync(process.execPath, [
+      ARCHKIT, "gotcha", "--list-proposals", "--json",
+    ], { cwd: dir, encoding: "utf8" });
+    const result2 = JSON.parse(out2.trim());
+    assert.ok(Array.isArray(result2), "Expected an array");
+    assert.strictEqual(result2.length, 0, "Expected empty array — rejected proposals excluded");
+  });
+});
+
 // ── Summary ────────────────────────────────────────────────────────────────
 
 console.log("");
