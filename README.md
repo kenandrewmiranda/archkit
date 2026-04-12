@@ -207,6 +207,8 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit update` | Self-update from GitHub |
 | `archkit init --agent-scaffold` | Stub `.arch/` with AI-fillable templates |
 | `archkit init --install-hooks` | Install pre-commit hook for drift detection |
+| `archkit init --app-type <type>` | Override auto-detected app type |
+| `archkit init --skills <a,b,c>` | Override auto-detected skills |
 
 </details>
 
@@ -237,6 +239,7 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit review --dir src/` | Review entire directory |
 | `archkit review --agent` | JSON output with autofix fields + gotcha suggestions |
 | `archkit review --verify` | Re-check only previously flagged files |
+| `archkit review --json <file>` | Same as `--agent` — JSON output (agent-callable) |
 
 </details>
 
@@ -264,6 +267,7 @@ archkit understands your application type and tailors rules, reviews, and defaul
 |---------|--------------|
 | `archkit stats` | Health dashboard (0-100 score) |
 | `archkit stats --compact` | One-line health summary |
+| `archkit stats --json` | Health data as structured JSON (agent-callable) |
 | `archkit drift [--json]` | Detect stale/orphaned .arch/ files |
 | `archkit sync [src-dir]` | Detect code changes needing .arch/ updates |
 
