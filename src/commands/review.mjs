@@ -417,7 +417,7 @@ function main() {
     }
   }
 
-  const agentMode = args.includes("--agent");
+  const agentMode = args.includes("--agent") || args.includes("--json");
   const allFindings = {};
   let totalErrors = 0;
   let totalWarnings = 0;
