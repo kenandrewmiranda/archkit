@@ -268,6 +268,48 @@ async function main() {
     return;
   }
 
+  // ── Install Hooks Mode ───────────────────────────────────────────────
+  if (args.includes("--install-hooks")) {
+    const gitDir = path.resolve(".git");
+    if (!fs.existsSync(gitDir)) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "not_a_git_repo" }));
+      } else {
+        log.error("Not a git repository — .git/ not found");
+      }
+      process.exit(2);
+    }
+
+    const hooksDir = path.join(gitDir, "hooks");
+    fs.mkdirSync(hooksDir, { recursive: true });
+    const hookPath = path.join(hooksDir, "pre-commit");
+    const hookContent = `#!/bin/sh\n# Installed by archkit init --install-hooks\n# Runs archkit drift to detect .arch/ inconsistencies. Exits non-zero if drift detected.\nexec archkit drift --json > /dev/null\n`;
+    const suggestedAppend = "exec archkit drift --json > /dev/null";
+
+    if (fs.existsSync(hookPath)) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ status: "existing-hook", path: hookPath, suggested_append: suggestedAppend }));
+      } else {
+        log.warn("Pre-commit hook already exists — not overwriting");
+        console.error(`  Add this line to your existing hook:\n`);
+        console.error(`    ${suggestedAppend}\n`);
+      }
+      return;
+    }
+
+    fs.writeFileSync(hookPath, hookContent);
+    try { fs.chmodSync(hookPath, 0o755); } catch { log.warn("Could not chmod +x hook file"); }
+
+    if (jsonMode) {
+      console.log(JSON.stringify({ status: "installed", path: hookPath }));
+    } else {
+      log.ok("Pre-commit hook installed");
+      console.error(`  Path: ${hookPath}`);
+      console.error(`  Runs: archkit drift --json\n`);
+    }
+    return;
+  }
+
   // Check if .arch/ already exists
   if (fs.existsSync(".arch") && !overwrite) {
     if (jsonMode) {
