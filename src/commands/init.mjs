@@ -345,7 +345,7 @@ async function main() {
   const dirStructure = getDirStructure(process.cwd());
 
   log.resolve("Detecting app type...");
-  const appType = detectAppType(stack, dirStructure, pkgJson);
+  let appType = detectAppType(stack, dirStructure, pkgJson);
   log.resolve(`App type: ${APP_TYPES[appType]?.name || appType}`);
 
   log.resolve(`Scanning ${srcDir}/ for features...`);
@@ -353,8 +353,50 @@ async function main() {
   log.resolve(`Found ${features.length} features: ${features.map(f => f.id).join(", ") || "none"}`);
 
   log.resolve("Detecting skills from dependencies...");
-  const skills = detectSkills(pkgJson);
+  let skills = detectSkills(pkgJson);
   log.resolve(`Found ${skills.length} skills: ${skills.join(", ") || "none"}`);
+
+  // Override app type if specified
+  const appTypeIdx = args.indexOf("--app-type");
+  if (appTypeIdx !== -1) {
+    const appTypeFlag = args[appTypeIdx + 1];
+    if (!appTypeFlag || !APP_TYPES[appTypeFlag]) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "invalid_app_type", value: appTypeFlag || null, valid: Object.keys(APP_TYPES) }));
+      } else {
+        log.error(`Unknown app type: ${appTypeFlag}. Valid: ${Object.keys(APP_TYPES).join(", ")}`);
+      }
+      process.exit(2);
+    }
+    appType = appTypeFlag;
+    log.resolve(`App type override: ${APP_TYPES[appType].name}`);
+  }
+
+  // Override skills if specified
+  const skillsIdx = args.indexOf("--skills");
+  if (skillsIdx !== -1) {
+    const skillsFlag = args[skillsIdx + 1];
+    if (!skillsFlag) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "invalid_skills", invalid: [], valid: SKILL_CATALOG.map(s => s.id) }));
+      } else {
+        log.error("--skills requires a comma-separated list of skill IDs");
+      }
+      process.exit(2);
+    }
+    const requestedSkills = skillsFlag.split(",").map(s => s.trim());
+    const invalid = requestedSkills.filter(s => !SKILL_CATALOG.find(sc => sc.id === s));
+    if (invalid.length > 0) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "invalid_skills", invalid, valid: SKILL_CATALOG.map(s => s.id) }));
+      } else {
+        log.error(`Unknown skill(s): ${invalid.join(", ")}. Valid: ${SKILL_CATALOG.map(s => s.id).join(", ")}`);
+      }
+      process.exit(2);
+    }
+    skills = requestedSkills;
+    log.resolve(`Skills override: ${skills.join(", ")}`);
+  }
 
   // Build config
   const cfg = { appName, appType, stack, features, skills, crossRefs: [] };
