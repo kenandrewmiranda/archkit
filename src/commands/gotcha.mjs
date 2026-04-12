@@ -2,15 +2,17 @@
 
 /**
  * arch-gotcha — Capture bad AI-generated patterns into .skill files
- * 
+ *
  * Usage:
  *   archkit gotcha <skill> "<wrong>" "<right>" "<why>"
  *   archkit gotcha --interactive
- *   archkit gotcha --from-diff <file>
- * 
+ *   archkit gotcha --propose --skill <pkg> --wrong "..." --right "..." --why "..."
+ *   archkit gotcha --review
+ *   archkit gotcha --list-proposals [--json]
+ *
  * Examples:
  *   archkit gotcha stripe "req.body" "req.rawBody" "Express parses JSON. Stripe needs raw bytes."
- *   archkit gotcha prisma "new PrismaClient()" "globalThis.prisma ??= new PrismaClient()" "Serverless creates new instance per request. Exhausts connections."
+ *   archkit gotcha --propose --skill prisma --wrong "new PrismaClient()" --right "globalThis.prisma ??= new PrismaClient()" --why "Serverless exhausts connections"
  *   archkit gotcha --interactive
  */
 
