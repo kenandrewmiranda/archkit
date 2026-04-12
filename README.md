@@ -19,7 +19,7 @@ API contracts, guardrails, and rules -- so every line fits your system.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-1.2.0-cyan.svg)]()
+[![Version](https://img.shields.io/badge/version-1.2.1-cyan.svg)]()
 
 [Website](https://thearchkit.com) &bull; [Marketplace](https://market.thearchkit.com) &bull; [Issues](https://github.com/kenandrewmiranda/archkit/issues)
 
