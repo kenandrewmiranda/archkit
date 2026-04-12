@@ -265,6 +265,24 @@ function calculateHealthScore(sys, idx, skills, graphs, apis) {
   return { score, pct, checks };
 }
 
+function buildRecommendations(sys, idx, skills, graphs, apis) {
+  const recs = [];
+  if (!sys.exists) recs.push("Run archkit to generate SYSTEM.md");
+  if (!idx.exists) recs.push("Run archkit to generate INDEX.md");
+  if (idx.exists && idx.crossRefs === 0) recs.push("Add cross-references to INDEX.md (which features depend on which)");
+  if (skills.length > 0) {
+    const empty = skills.filter(s => s.completeness === 0);
+    if (empty.length > 0) recs.push(`Fill in ${empty.length} skeleton skill${empty.length > 1 ? "s" : ""}: ${empty.slice(0, 3).map(s => s.id).join(", ")}${empty.length > 3 ? "..." : ""}`);
+    const noGotchas = skills.filter(s => s.gotchas === 0 && s.completeness > 0);
+    if (noGotchas.length > 0) recs.push(`Add gotchas to: ${noGotchas.slice(0, 3).map(s => s.id).join(", ")} — run: archkit gotcha -i`);
+  }
+  if (apis.length > 0) {
+    const stubs = apis.filter(a => a.isStub);
+    if (stubs.length > 0) recs.push(`Populate ${stubs.length} API stub${stubs.length > 1 ? "s" : ""}: ${stubs.map(a => a.id).join(", ")}`);
+  }
+  return recs;
+}
+
 function displayOverallScore(sys, idx, skills, graphs, apis) {
   console.log(`${C.cyan}${C.bold}  Overall Health Score${C.reset}`);
   console.log("");
@@ -287,21 +305,7 @@ function displayOverallScore(sys, idx, skills, graphs, apis) {
 
   console.log("");
 
-  // Recommendations
-  const recs = [];
-  if (!sys.exists) recs.push("Run archkit to generate SYSTEM.md");
-  if (!idx.exists) recs.push("Run archkit to generate INDEX.md");
-  if (idx.exists && idx.crossRefs === 0) recs.push("Add cross-references to INDEX.md (which features depend on which)");
-  if (skills.length > 0) {
-    const empty = skills.filter(s => s.completeness === 0);
-    if (empty.length > 0) recs.push(`Fill in ${empty.length} skeleton skill${empty.length > 1 ? "s" : ""}: ${empty.slice(0, 3).map(s => s.id).join(", ")}${empty.length > 3 ? "..." : ""}`);
-    const noGotchas = skills.filter(s => s.gotchas === 0 && s.completeness > 0);
-    if (noGotchas.length > 0) recs.push(`Add gotchas to: ${noGotchas.slice(0, 3).map(s => s.id).join(", ")} — run: archkit gotcha -i`);
-  }
-  if (apis.length > 0) {
-    const stubs = apis.filter(a => a.isStub);
-    if (stubs.length > 0) recs.push(`Populate ${stubs.length} API stub${stubs.length > 1 ? "s" : ""}: ${stubs.map(a => a.id).join(", ")}`);
-  }
+  const recs = buildRecommendations(sys, idx, skills, graphs, apis);
 
   if (recs.length > 0) {
     console.log(`  ${C.yellow}${C.bold}Recommendations:${C.reset}`);
@@ -315,13 +319,18 @@ function displayOverallScore(sys, idx, skills, graphs, apis) {
 
 function main() {
   const args = process.argv.slice(2);
+  const jsonMode = args.includes("--json");
   log.stats("Analyzing .arch/ health...");
 
   const archDir = findArchDir();
   if (!archDir) {
-    banner();
-    console.log(`${C.red}  ${I.warn} Cannot find .arch/ directory.${C.reset}`);
-    console.log(`${C.gray}  Run archkit first, or run this from your project root.${C.reset}\n`);
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: "no_arch_dir" }));
+    } else {
+      banner();
+      console.log(`${C.red}  ${I.warn} Cannot find .arch/ directory.${C.reset}`);
+      console.log(`${C.gray}  Run archkit first, or run this from your project root.${C.reset}\n`);
+    }
     process.exit(1);
   }
 
@@ -335,6 +344,13 @@ function main() {
 
   const { pct: healthPct } = calculateHealthScore(sys, idx, skills, graphs, apis);
   log.stats(`Health score: ${healthPct}%`);
+
+  if (jsonMode) {
+    const health = calculateHealthScore(sys, idx, skills, graphs, apis);
+    const recommendations = buildRecommendations(sys, idx, skills, graphs, apis);
+    console.log(JSON.stringify({ health, system: sys, index: idx, skills, graphs, apis, recommendations }));
+    return;
+  }
 
   // Compact mode: one-line summary for git hooks and session start
   if (args.includes("--compact")) {
