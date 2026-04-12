@@ -119,6 +119,74 @@ test("no templates contain literal TODO or TBD", () => {
   }
 });
 
+// ── Integration tests ──────────────────────────────────────────────────────
+
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ARCHKIT = path.resolve(__dirname, "../../bin/archkit.mjs");
+
+function withTempDir(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-scaffold-"));
+  const orig = process.cwd();
+  try { process.chdir(dir); fn(dir); }
+  finally { process.chdir(orig); fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test("--agent-scaffold creates expected files in empty dir", () => {
+  withTempDir((dir) => {
+    const out = execFileSync(process.execPath, [ARCHKIT, "init", "--agent-scaffold", "--json"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    const result = JSON.parse(out);
+    assert.ok(result.created.length >= 3, `Expected >= 3 created files, got ${result.created.length}`);
+    assert.ok(fs.existsSync(path.join(dir, ".arch", "BOUNDARIES.md")), ".arch/BOUNDARIES.md not found");
+    assert.ok(fs.existsSync(path.join(dir, ".arch", "SYSTEM.md")), ".arch/SYSTEM.md not found");
+    assert.ok(fs.existsSync(path.join(dir, ".arch", "skills", "README.md")), ".arch/skills/README.md not found");
+    assert.ok(fs.existsSync(path.join(dir, "CLAUDE.md")), "CLAUDE.md not found");
+  });
+});
+
+test("--agent-scaffold skips existing CLAUDE.md", () => {
+  withTempDir((dir) => {
+    const claudePath = path.join(dir, "CLAUDE.md");
+    const customContent = "# My custom CLAUDE.md\nDo not overwrite me.\n";
+    fs.writeFileSync(claudePath, customContent);
+    const out = execFileSync(process.execPath, [ARCHKIT, "init", "--agent-scaffold", "--json"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    const result = JSON.parse(out);
+    assert.ok(result.skipped.some(f => f === "CLAUDE.md"), `Expected CLAUDE.md in skipped list, got: ${JSON.stringify(result.skipped)}`);
+    assert.strictEqual(fs.readFileSync(claudePath, "utf8"), customContent, "CLAUDE.md content was changed");
+  });
+});
+
+test("--agent-scaffold is idempotent", () => {
+  withTempDir((dir) => {
+    execFileSync(process.execPath, [ARCHKIT, "init", "--agent-scaffold", "--json"], { cwd: dir, encoding: "utf8" });
+    const out2 = execFileSync(process.execPath, [ARCHKIT, "init", "--agent-scaffold", "--json"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    const result2 = JSON.parse(out2);
+    assert.strictEqual(result2.created.length, 0, `Expected 0 created on second run, got ${result2.created.length}`);
+  });
+});
+
+test("BOUNDARIES.md contains AGENT-INSTRUCTIONS markers", () => {
+  withTempDir((dir) => {
+    execFileSync(process.execPath, [ARCHKIT, "init", "--agent-scaffold", "--json"], { cwd: dir, encoding: "utf8" });
+    const content = fs.readFileSync(path.join(dir, ".arch", "BOUNDARIES.md"), "utf8");
+    assert.ok(content.includes("AGENT-INSTRUCTIONS: START"), "BOUNDARIES.md missing AGENT-INSTRUCTIONS: START");
+    assert.ok(content.includes("AGENT-INSTRUCTIONS: END"), "BOUNDARIES.md missing AGENT-INSTRUCTIONS: END");
+  });
+});
+
 // ── Summary ────────────────────────────────────────────────────────────────
 
 console.log("");

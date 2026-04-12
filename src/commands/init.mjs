@@ -218,13 +218,55 @@ function getDirStructure(srcDir, maxDepth = 3) {
 
 // ── Main ────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const srcDir = args.find(a => !a.startsWith("-")) || "src";
   const jsonMode = args.includes("--json");
   const overwrite = args.includes("--overwrite");
 
   if (!jsonMode) banner();
+
+  // ── Agent Scaffold Mode ────────────────────────────────────────────────────
+  if (args.includes("--agent-scaffold")) {
+    const { TEMPLATES } = await import("../data/agent-scaffold-templates.mjs");
+    const base = path.resolve(".arch");
+    const created = [];
+    const skipped = [];
+
+    const files = [
+      { rel: path.join(".arch", "BOUNDARIES.md"), abs: path.join(base, "BOUNDARIES.md"), content: TEMPLATES.BOUNDARIES },
+      { rel: path.join(".arch", "SYSTEM.md"), abs: path.join(base, "SYSTEM.md"), content: TEMPLATES.SYSTEM },
+      { rel: path.join(".arch", "skills", "README.md"), abs: path.join(base, "skills", "README.md"), content: TEMPLATES.SKILLS_README },
+      { rel: "CLAUDE.md", abs: path.resolve("CLAUDE.md"), content: TEMPLATES.CLAUDE_MD },
+    ];
+
+    for (const f of files) {
+      if (fs.existsSync(f.abs)) {
+        skipped.push(f.rel);
+        if (!jsonMode) log.resolve(`Skipped ${f.rel} (already exists)`);
+      } else {
+        fs.mkdirSync(path.dirname(f.abs), { recursive: true });
+        fs.writeFileSync(f.abs, f.content);
+        created.push(f.rel);
+        if (!jsonMode) log.generate(`Created ${f.rel}`);
+      }
+    }
+
+    if (jsonMode) {
+      console.log(JSON.stringify({ created, skipped }));
+    } else {
+      if (created.length > 0) {
+        log.ok(`Scaffolded ${created.length} file${created.length !== 1 ? "s" : ""} — an AI agent can now populate them`);
+      } else {
+        log.ok("All files already exist — nothing to do");
+      }
+      console.error("");
+      console.error("  Next: Ask your AI agent to fill in .arch/BOUNDARIES.md and .arch/SYSTEM.md");
+      console.error("  Or fill them in manually using the AGENT-INSTRUCTIONS as a guide.");
+      console.error("");
+    }
+    return;
+  }
 
   // Check if .arch/ already exists
   if (fs.existsSync(".arch") && !overwrite) {
