@@ -29,4 +29,10 @@ export const GOTCHA_DB = {
   security: [
     { wrong: "checking permissions only in the frontend", right: "enforce authorization server-side on every request", why: "Frontend checks bypassable via devtools. Ref: OWASP A01:2021." },
   ],
+  sqlite: [
+    { wrong: "ALTER TABLE t ADD CHECK (col IN ('a','b'))", right: "BEGIN; CREATE TABLE t_new (...with updated CHECK...); INSERT INTO t_new (col1, col2, ...) SELECT col1, col2, ... FROM t; DROP TABLE t; ALTER TABLE t_new RENAME TO t; COMMIT;", why: "SQLite's ALTER TABLE cannot add or modify CHECK constraints, foreign keys, or column types in place. Full 12-step rebuild required. Always list columns explicitly in INSERT...SELECT. Ref: sqlite.org/lang_altertable.html #7." },
+  ],
+  numerics: [
+    { wrong: "return (current - entry) / entry < threshold  // IEEE 754 noise at exact decimal boundaries", right: "return round((current - entry) / entry, 10) < threshold  // or compare in cents (integer), or use Decimal", why: "IEEE 754 subtract-then-divide produces values like 0.14999999999999991 at what should be exactly 0.15. Rounding to 10 decimals normalizes the noise. Write explicit boundary test cases." },
+  ],
 };
