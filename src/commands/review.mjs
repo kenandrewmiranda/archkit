@@ -38,6 +38,7 @@ import {
 import { checkFrontendWiring } from "./review/frontend-checks.mjs";
 import { checkEventPatterns } from "./review/event-checks.mjs";
 import * as log from "../lib/logger.mjs";
+import { parseSuppressions, validateReason } from "../lib/suppression.mjs";
 
 function banner() {
   commandBanner("arch-review", "Check code against your .arch/ rules and skills");
@@ -462,16 +463,36 @@ function main() {
     if (appType === "content") findings.push(...checkContentRules(code, filepath));
     firstFile = false;
 
+    // Apply suppressions
+    const suppressions = parseSuppressions(code);
+    const archTypes = new Set(["import-hierarchy", "import-boundary", "boundary-violation", "reserved-word"]);
+    const filteredFindings = findings.filter(f => {
+      if (archTypes.has(f.type)) return true; // architecture rules NOT suppressible
+      const supp = suppressions.find(s => s.line === f.line && s.ruleId === f.type);
+      if (!supp) return true;
+      const validation = validateReason(supp.reason);
+      if (validation.ok) return false; // suppress
+      if (validation.weak) {
+        findings.push({
+          type: "weak-suppression",
+          severity: "error",
+          line: f.line,
+          message: `Suppression reason "${supp.reason}" is too vague — explain why this code is correct.`,
+        });
+      }
+      return true;
+    });
+
     if (agentMode) {
-      allFindings[filepath] = findings;
+      allFindings[filepath] = filteredFindings;
     } else {
-      displayFindings(filepath, findings);
+      displayFindings(filepath, filteredFindings);
     }
 
-    totalErrors += findings.filter(f => f.severity === "error").length;
-    totalWarnings += findings.filter(f => f.severity === "warning").length;
-    totalInfos += findings.filter(f => f.severity === "info").length;
-    if (findings.length === 0) cleanFiles++;
+    totalErrors += filteredFindings.filter(f => f.severity === "error").length;
+    totalWarnings += filteredFindings.filter(f => f.severity === "warning").length;
+    totalInfos += filteredFindings.filter(f => f.severity === "info").length;
+    if (filteredFindings.length === 0) cleanFiles++;
   }
 
   // Save results for --verify mode
