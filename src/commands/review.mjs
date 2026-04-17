@@ -28,7 +28,13 @@ import { checkRealtimeRules, checkAIRules, checkDataRules, checkMobileRules, che
 import { checkDatabasePatterns } from "./review/db-checks.mjs";
 import { checkCachePatterns, checkQueuePatterns } from "./review/cache-queue-checks.mjs";
 import { checkApiPatterns } from "./review/api-checks.mjs";
-import { checkFeatureCompleteness } from "./review/completeness-checks.mjs";
+import { checkFeatureCompleteness, checkIncompleteSkeleton } from "./review/completeness-checks.mjs";
+import {
+  checkFloatingPromise,
+  checkMockDataLeftover,
+  checkDeadErrorHandler,
+  checkUntrackedTodo,
+} from "./review/production-checks.mjs";
 import { checkFrontendWiring } from "./review/frontend-checks.mjs";
 import { checkEventPatterns } from "./review/event-checks.mjs";
 import * as log from "../lib/logger.mjs";
@@ -441,6 +447,12 @@ function main() {
       ...checkFeatureCompleteness(code, filepath),
       ...checkFrontendWiring(code, filepath),
       ...checkEventPatterns(code, filepath),
+      // v1.3 production-readiness additions:
+      ...checkFloatingPromise(code, filepath),
+      ...checkMockDataLeftover(code, filepath),
+      ...checkDeadErrorHandler(code, filepath),
+      ...checkUntrackedTodo(code, filepath),
+      ...checkIncompleteSkeleton(code, filepath),
     ];
     if (appType === "realtime") findings.push(...checkRealtimeRules(code, filepath));
     if (appType === "ai") findings.push(...checkAIRules(code, filepath));

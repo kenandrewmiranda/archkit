@@ -61,3 +61,21 @@ export function checkFeatureCompleteness(code, filepath) {
 
   return findings;
 }
+
+export function checkIncompleteSkeleton(code, filepath) {
+  const findings = [];
+  if (!code.includes("AGENT-VALIDATION (required")) return findings;
+  const lines = code.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (/\[\s\]/.test(lines[i])) {
+      findings.push({
+        type: "incomplete-skeleton",
+        severity: "error",
+        line: i + 1,
+        message: "Unvalidated skeleton — verify against docs and tick boxes (or remove the AGENT-VALIDATION block)",
+      });
+      return findings;
+    }
+  }
+  return findings;
+}
