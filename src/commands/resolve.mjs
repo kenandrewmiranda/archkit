@@ -33,6 +33,13 @@ import { parseRequirements, checkCoverage, formatCoverageReport } from "../lib/s
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
+function emitDeprecation(commandName, migration) {
+  if (process.argv.includes("--no-deprecation-warning")) return;
+  process.stderr.write(`[DEPRECATED] \`archkit resolve ${commandName}\` will be removed in v2.0.0.\n`);
+  process.stderr.write(`  Migration: ${migration}\n`);
+  process.stderr.write(`  See: https://github.com/kenandrewmiranda/archkit/issues/20\n`);
+}
+
 function findArchDir() {
   return _findArchDir({ requireFile: "SYSTEM.md" });
 }
@@ -228,6 +235,7 @@ function main() {
 
   switch (cmd) {
     case "context": {
+      emitDeprecation("context", "read .arch/INDEX.md directly for keyword routing.");
       const prompt = cleanArgs.slice(1).join(" ");
       if (!prompt) { output({ error: "Usage: resolve.mjs context \"<prompt text>\"" }, pretty); process.exit(1); }
       output(cmdContext(archDir, prompt), pretty);
@@ -259,6 +267,7 @@ function main() {
       break;
     }
     case "plan": {
+      emitDeprecation("plan", "read .arch/CONTEXT.compact.md directly, or use `archkit resolve preflight <feature> <layer>` for live data.");
       const prompt = cleanArgs.slice(1).join(" ");
       if (!prompt) { output({ error: "Usage: archkit resolve plan \"<prompt text>\"" }, pretty); process.exit(1); }
       output(cmdPlan(archDir, prompt), pretty);
