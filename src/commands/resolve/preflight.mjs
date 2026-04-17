@@ -1,89 +1,137 @@
 import fs from "fs";
 import path from "path";
-import { loadFile, parseIndex, loadSkillGotchas, loadGraphCluster } from "../../lib/parsers.mjs";
+import { execFileSync } from "child_process";
+import { loadFile, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 
 export function cmdPreflight(archDir, featureId, layer) {
   log.resolve(`Preflight check: ${featureId}.${layer}`);
   const indexContent = loadFile(archDir, "INDEX.md");
   const index = parseIndex(indexContent);
-  const checks = [];
-  let pass = true;
 
-  // 1. Does the feature exist in INDEX.md?
+  // 1. Look up feature in INDEX.md
   const nodeInfo = index.nodeCluster[featureId];
-  if (nodeInfo) {
-    checks.push({ check: "Feature exists in INDEX.md", status: "pass", detail: `@${featureId} → [${nodeInfo.cluster}]` });
-  } else {
-    checks.push({ check: "Feature exists in INDEX.md", status: "fail", detail: `@${featureId} not found. Run: archkit extend run scaffold-feature ${featureId}` });
-    pass = false;
+  if (!nodeInfo) {
+    return {
+      error: "unknown_feature",
+      feature: featureId,
+      valid: Object.keys(index.nodeCluster),
+    };
   }
 
-  // 2. Does the .graph file exist?
-  const clusterId = nodeInfo?.cluster || featureId;
-  const graphContent = loadFile(archDir, "clusters", `${clusterId}.graph`);
-  if (graphContent) {
-    checks.push({ check: "Graph cluster exists", status: "pass", detail: `clusters/${clusterId}.graph` });
+  const basePath = nodeInfo.basePath || `src/features/${featureId}/`;
+  const basePathNoTrailingSlash = basePath.replace(/\/+$/, "");
 
-    // 3. Does the specific layer node exist in the graph?
-    const layerSuffix = { controller: "Cont", service: "Ser", repository: "Repo", type: "Type", validation: "Val", test: "Test" };
-    const suffix = layerSuffix[layer] || layer;
-    const Id = featureId.charAt(0).toUpperCase() + featureId.slice(1);
-    const expectedNode = `${Id}${suffix}`;
+  // 2. Git data
+  let gitAvailable = false;
+  let recentCommits = [];
+  let lastTouched = null;
 
-    if (graphContent.includes(expectedNode)) {
-      checks.push({ check: `Node ${expectedNode} exists in graph`, status: "pass" });
-    } else {
-      checks.push({ check: `Node ${expectedNode} exists in graph`, status: "warn", detail: `Not found in ${clusterId}.graph. Add it before generating code.` });
+  try {
+    execFileSync("git", ["rev-parse", "--git-dir"], { stdio: "pipe" });
+    gitAvailable = true;
+
+    try {
+      const logOutput = execFileSync(
+        "git",
+        ["log", "-5", "--format=%H%x09%ad%x09%an%x09%s", "--date=short", "--", basePathNoTrailingSlash],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }
+      );
+
+      const lines = logOutput.trim().split("\n").filter(Boolean);
+      recentCommits = lines.map((line) => {
+        const parts = line.split("\t");
+        const hash = (parts[0] || "").slice(0, 7);
+        const date = parts[1] || "";
+        const author = parts[2] || "";
+        const subject = parts[3] || "";
+        return { hash, date, author, subject };
+      });
+
+      if (recentCommits.length > 0) {
+        const first = recentCommits[0];
+        const daysAgo = Math.floor((Date.now() - new Date(first.date).getTime()) / 86400000);
+        lastTouched = {
+          commit: first.hash,
+          author: first.author,
+          date: first.date,
+          daysAgo,
+        };
+      }
+    } catch (_) {
+      // git log failed — leave recentCommits as empty array
     }
-  } else {
-    checks.push({ check: "Graph cluster exists", status: "fail", detail: `clusters/${clusterId}.graph not found` });
-    pass = false;
+  } catch (_) {
+    // Not a git repo — gitAvailable stays false
   }
 
-  // 4. Resolve the target file path
-  const basePath = nodeInfo?.basePath || `src/features/${featureId}/`;
-  const fileExtensions = { controller: "controller.ts", service: "service.ts", repository: "repository.ts", type: "types.ts", validation: "validation.ts", test: "test.ts" };
-  const targetFile = `${basePath}${featureId}.${fileExtensions[layer] || `${layer}.ts`}`;
-  checks.push({ check: "Target file path", status: "info", detail: targetFile });
+  // 3. Pending gotchas
+  const pendingGotchas = [];
+  const proposalsDir = path.join(archDir, "gotcha-proposals");
 
-  // 5. Check if file already exists on disk
-  const fullPath = path.join(process.cwd(), targetFile);
-  if (fs.existsSync(fullPath)) {
-    checks.push({ check: "File exists on disk", status: "info", detail: "File already exists. This is a modification, not creation." });
-  } else {
-    checks.push({ check: "File exists on disk", status: "info", detail: "File does not exist. This is a new file." });
-  }
+  if (fs.existsSync(proposalsDir)) {
+    const featureSkills = new Set(Object.keys(index.skillFiles));
 
-  // 6. Identify dependencies from the graph
-  const graph = loadGraphCluster(archDir, clusterId);
-  if (graph) {
-    const Id = featureId.charAt(0).toUpperCase() + featureId.slice(1);
-    const layerSuffix = { controller: "Cont", service: "Ser", repository: "Repo" };
-    const nodeId = `${Id}${layerSuffix[layer] || ""}`;
-    const node = graph.nodes.find(n => n.id === nodeId);
-    if (node && node.flow) {
-      checks.push({ check: "Dependencies from graph", status: "info", detail: node.flow });
+    let files = [];
+    try {
+      files = fs.readdirSync(proposalsDir).filter((f) => f.endsWith(".json"));
+    } catch (_) {}
+
+    for (const file of files) {
+      try {
+        const raw = fs.readFileSync(path.join(proposalsDir, file), "utf8");
+        const proposal = JSON.parse(raw);
+        // Include if featureSkills is empty (no skills defined) OR skill matches
+        if (featureSkills.size === 0 || featureSkills.has(proposal.skill)) {
+          const hash = file.replace(/\.json$/, "");
+          pendingGotchas.push({ hash, ...proposal });
+        }
+      } catch (_) {
+        // skip malformed proposals
+      }
     }
   }
 
-  // 7. Check for relevant skills
-  const relevantSkills = [];
-  for (const [skillId, skillPath] of Object.entries(index.skillFiles)) {
-    const skill = loadSkillGotchas(archDir, skillId);
-    if (skill && skill.gotchas.length > 0) {
-      relevantSkills.push({ id: skillId, gotchaCount: skill.gotchas.length });
+  // 4. Drift findings scoped to basePath
+  const driftFindings = [];
+
+  for (const [nodeId, info] of Object.entries(index.nodeCluster)) {
+    const nodePath = info.basePath || `src/features/${nodeId}/`;
+    const paths = nodePath.split(",").map((p) => p.trim());
+    const isMultiPath = paths.length > 1;
+
+    // Only include nodes whose path(s) start with the requested basePath
+    const relevantPaths = paths.filter((p) => {
+      const normalized = p.replace(/\/+$/, "");
+      return normalized.startsWith(basePathNoTrailingSlash) || nodeId === featureId;
+    });
+
+    if (relevantPaths.length === 0) continue;
+
+    for (const p of relevantPaths) {
+      const fullPath = path.resolve(process.cwd(), p);
+      if (!fs.existsSync(fullPath)) {
+        driftFindings.push({
+          type: isMultiPath ? "missing-file" : "missing-source",
+          id: nodeId,
+          detail: `INDEX.md says @${nodeId} → ${p} but it doesn't exist on disk`,
+        });
+      }
     }
   }
-  if (relevantSkills.length > 0) {
-    checks.push({ check: "Skills with gotchas available", status: "info", detail: relevantSkills.map(s => `${s.id}(${s.gotchaCount})`).join(", ") });
-  }
+
+  // 5. Compute pass
+  const passWithoutAction = pendingGotchas.length === 0 && driftFindings.length === 0;
 
   return {
     feature: featureId,
     layer,
-    targetFile,
-    pass,
-    checks,
+    basePath,
+    lastTouched,
+    recentCommits,
+    pendingGotchas,
+    driftFindings,
+    passWithoutAction,
+    gitAvailable,
   };
 }
