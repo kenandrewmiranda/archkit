@@ -30,11 +30,12 @@ export const SKELETONS = {
 {commentPrefix} AGENT-INSTRUCTIONS: END
 
 import { Hono } from "hono";
+import { {feature}Service } from "./{feature}.service";
 
 export const {feature}Controller = new Hono();
 
 {feature}Controller.get("/", async (c) => {
-  {commentPrefix} AGENT: replace with real implementation
+  {commentPrefix} AGENT: replace with real implementation — delegate to {feature}Service
   return c.json({ todo: true });
 });
 `,

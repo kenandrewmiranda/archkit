@@ -244,8 +244,12 @@ function main() {
     }
     case "scaffold": {
       const featureId = cleanArgs[1];
-      if (!featureId) { output({ error: "Usage: resolve.mjs scaffold <featureId>" }, pretty); process.exit(1); }
-      output(cmdScaffold(archDir, featureId), pretty);
+      if (!featureId) { output({ error: "Usage: resolve.mjs scaffold <featureId> [--apply] [--overwrite]" }, pretty); process.exit(1); }
+      const opts = {
+        apply: args.includes("--apply"),
+        overwrite: args.includes("--overwrite"),
+      };
+      output(cmdScaffold(archDir, featureId, opts), pretty);
       break;
     }
     case "lookup": {
