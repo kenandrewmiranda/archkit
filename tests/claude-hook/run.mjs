@@ -100,6 +100,93 @@ test("hook exits 0 silently when no path arg given", () => {
   });
 });
 
+// ── Init --install-hooks Integration ─────────────────────────────────────────
+
+const ARCHKIT_BIN = path.resolve(__dirname, "../../bin/archkit.mjs");
+
+function withGitDir(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-claude-init-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    fn(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("--install-hooks --claude writes both git hook and claude settings", () => {
+  withGitDir((dir) => {
+    const out = execFileSync("node", [ARCHKIT_BIN, "init", "--install-hooks", "--claude", "--json"], {
+      cwd: dir,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10000,
+    });
+    const result = JSON.parse(out.toString("utf8").trim());
+    assert.equal(result.status, "installed", "status should be 'installed'");
+    assert.ok(result.git_hook, "git_hook field should be present");
+    assert.ok(result.claude_hook, "claude_hook field should be present");
+
+    const hookPath = path.join(dir, ".git", "hooks", "pre-commit");
+    assert.ok(fs.existsSync(hookPath), ".git/hooks/pre-commit should exist");
+
+    const settingsPath = path.join(dir, ".claude", "settings.json");
+    assert.ok(fs.existsSync(settingsPath), ".claude/settings.json should exist");
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.ok(
+      Array.isArray(settings.hooks?.PreToolUse) && settings.hooks.PreToolUse.length >= 1,
+      "PreToolUse should have at least 1 entry"
+    );
+  });
+});
+
+test("--install-hooks --claude-only skips git hook", () => {
+  withGitDir((dir) => {
+    execFileSync("node", [ARCHKIT_BIN, "init", "--install-hooks", "--claude-only", "--json"], {
+      cwd: dir,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10000,
+    });
+
+    const hookPath = path.join(dir, ".git", "hooks", "pre-commit");
+    assert.ok(!fs.existsSync(hookPath), ".git/hooks/pre-commit should NOT exist");
+
+    const settingsPath = path.join(dir, ".claude", "settings.json");
+    assert.ok(fs.existsSync(settingsPath), ".claude/settings.json should exist");
+  });
+});
+
+test("--install-hooks --claude merges with existing settings", () => {
+  withGitDir((dir) => {
+    // Pre-create .claude/settings.json with a Bash hook
+    const claudeDir = path.join(dir, ".claude");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const existingSettings = {
+      hooks: {
+        PreToolUse: [
+          { matcher: "Bash", hooks: [{ type: "command", command: "some-other-tool", timeout: 3000 }] },
+        ],
+      },
+    };
+    fs.writeFileSync(path.join(claudeDir, "settings.json"), JSON.stringify(existingSettings, null, 2));
+
+    execFileSync("node", [ARCHKIT_BIN, "init", "--install-hooks", "--claude-only", "--json"], {
+      cwd: dir,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10000,
+    });
+
+    const settingsPath = path.join(dir, ".claude", "settings.json");
+    const merged = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.ok(
+      Array.isArray(merged.hooks?.PreToolUse) && merged.hooks.PreToolUse.length >= 2,
+      `PreToolUse should have >= 2 entries after merge, got ${merged.hooks?.PreToolUse?.length}`
+    );
+    const matchers = merged.hooks.PreToolUse.map(h => h.matcher);
+    assert.ok(matchers.includes("Bash"), "Original Bash hook should be preserved");
+  });
+});
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

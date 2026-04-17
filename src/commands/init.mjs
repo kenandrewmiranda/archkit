@@ -270,42 +270,69 @@ async function main() {
 
   // ── Install Hooks Mode ───────────────────────────────────────────────
   if (args.includes("--install-hooks")) {
-    const gitDir = path.resolve(".git");
-    if (!fs.existsSync(gitDir)) {
-      if (jsonMode) {
-        console.log(JSON.stringify({ error: "not_a_git_repo" }));
-      } else {
-        log.error("Not a git repository — .git/ not found");
+    const claudeMode = args.includes("--claude") || args.includes("--claude-only");
+    const claudeOnly = args.includes("--claude-only");
+    const result = { status: "installed" };
+
+    // Git hook (skipped if --claude-only)
+    if (!claudeOnly) {
+      const gitDir = path.resolve(".git");
+      if (!fs.existsSync(gitDir)) {
+        if (jsonMode) console.log(JSON.stringify({ error: "not_a_git_repo" }));
+        else log.error("Not a git repository — .git/ not found");
+        process.exit(2);
       }
-      process.exit(2);
+      const hooksDir = path.join(gitDir, "hooks");
+      fs.mkdirSync(hooksDir, { recursive: true });
+      const hookPath = path.join(hooksDir, "pre-commit");
+      const hookContent = `#!/bin/sh\n# Installed by archkit init --install-hooks\n# Runs archkit drift to detect .arch/ inconsistencies. Exits non-zero if drift detected.\nexec archkit drift --json > /dev/null\n`;
+      const suggestedAppend = "exec archkit drift --json > /dev/null";
+
+      if (fs.existsSync(hookPath)) {
+        // Legacy behavior for plain --install-hooks (no --claude flags): return old format
+        if (!claudeMode) {
+          if (jsonMode) {
+            console.log(JSON.stringify({ status: "existing-hook", path: hookPath, suggested_append: suggestedAppend }));
+          } else {
+            log.warn("Pre-commit hook already exists — not overwriting");
+            console.error(`  Add this line to your existing hook:\n`);
+            console.error(`    ${suggestedAppend}\n`);
+          }
+          return;
+        }
+        result.git_hook_status = "existing-hook";
+        result.git_hook_suggested_append = suggestedAppend;
+      } else {
+        fs.writeFileSync(hookPath, hookContent);
+        try { fs.chmodSync(hookPath, 0o755); } catch { log.warn("Could not chmod +x hook file"); }
+        result.git_hook = hookPath;
+      }
     }
 
-    const hooksDir = path.join(gitDir, "hooks");
-    fs.mkdirSync(hooksDir, { recursive: true });
-    const hookPath = path.join(hooksDir, "pre-commit");
-    const hookContent = `#!/bin/sh\n# Installed by archkit init --install-hooks\n# Runs archkit drift to detect .arch/ inconsistencies. Exits non-zero if drift detected.\nexec archkit drift --json > /dev/null\n`;
-    const suggestedAppend = "exec archkit drift --json > /dev/null";
-
-    if (fs.existsSync(hookPath)) {
-      if (jsonMode) {
-        console.log(JSON.stringify({ status: "existing-hook", path: hookPath, suggested_append: suggestedAppend }));
-      } else {
-        log.warn("Pre-commit hook already exists — not overwriting");
-        console.error(`  Add this line to your existing hook:\n`);
-        console.error(`    ${suggestedAppend}\n`);
-      }
-      return;
+    // Claude hook (only if --claude or --claude-only)
+    if (claudeMode) {
+      const { mergeClaudeSettings, readClaudeSettings, writeClaudeSettings } = await import("../lib/claude-settings.mjs");
+      const claudeDir = path.resolve(".claude");
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const settingsPath = path.join(claudeDir, "settings.json");
+      const existing = readClaudeSettings(settingsPath);
+      const merged = mergeClaudeSettings(
+        existing,
+        "Edit|Write|MultiEdit",
+        "archkit-claude-hook \"$TOOL_INPUT_PATH\""
+      );
+      writeClaudeSettings(settingsPath, merged);
+      result.claude_hook = settingsPath;
+      result.claude_settings_action = Object.keys(existing).length > 0 ? "merged" : "created";
     }
-
-    fs.writeFileSync(hookPath, hookContent);
-    try { fs.chmodSync(hookPath, 0o755); } catch { log.warn("Could not chmod +x hook file"); }
 
     if (jsonMode) {
-      console.log(JSON.stringify({ status: "installed", path: hookPath }));
+      console.log(JSON.stringify(result));
     } else {
-      log.ok("Pre-commit hook installed");
-      console.error(`  Path: ${hookPath}`);
-      console.error(`  Runs: archkit drift --json\n`);
+      log.ok("Hook(s) installed");
+      if (result.git_hook) console.error(`  Git: ${result.git_hook}`);
+      if (result.claude_hook) console.error(`  Claude: ${result.claude_hook}`);
+      console.error("");
     }
     return;
   }
