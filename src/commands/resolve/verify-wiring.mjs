@@ -5,6 +5,10 @@ import fs from "fs";
 import path from "path";
 import * as log from "../../lib/logger.mjs";
 
+// File extensions this scanner can analyze. Adding new languages requires
+// import/export pattern parsing — see issue tracker for polyglot scanner.
+const SUPPORTED_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs"];
+
 export function cmdVerifyWiring(srcDir) {
   log.resolve("Scanning for unwired components...");
 
@@ -26,6 +30,16 @@ export function cmdVerifyWiring(srcDir) {
   walk(srcDir);
 
   log.resolve(`Found ${files.length} source files`);
+
+  // Detect probable non-JS project: 0 supported files but other source files present
+  if (files.length === 0) {
+    const otherFiles = countNonJsSourceFiles(srcDir);
+    const warning = otherFiles > 0
+      ? `0 files scanned in ${srcDir} — found ${otherFiles} non-JS/TS source file(s). verify-wiring currently supports ${SUPPORTED_EXTENSIONS.join(", ")} only.`
+      : `0 files scanned in ${srcDir} — no source files of supported types (${SUPPORTED_EXTENSIONS.join(", ")}) found.`;
+    log.warn(warning);
+    return { files: 0, exports: 0, unwired: [], warning };
+  }
 
   // Build export map: file -> exported names
   const exports = new Map();
@@ -92,6 +106,25 @@ export function cmdVerifyWiring(srcDir) {
 
   log.resolve(`Found ${unwired.length} potentially unwired components`);
   return { files: files.length, exports: exports.size, unwired };
+}
+
+// Quick pass to detect if the project has source files this scanner can't read.
+// Used to give a more informative warning when 0 supported files are found.
+function countNonJsSourceFiles(srcDir) {
+  const otherSourceExts = [".py", ".go", ".rs", ".rb", ".java", ".kt", ".swift", ".php", ".cs"];
+  let count = 0;
+  function walk(dir) {
+    for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (item.isDirectory() && !item.name.startsWith(".") && item.name !== "node_modules" && item.name !== "dist" && item.name !== "__pycache__") {
+        walk(path.join(dir, item.name));
+      } else if (item.isFile()) {
+        const ext = path.extname(item.name);
+        if (otherSourceExts.includes(ext)) count++;
+      }
+    }
+  }
+  try { walk(srcDir); } catch {}
+  return count;
 }
 
 function resolveImport(fromDir, importPath) {
