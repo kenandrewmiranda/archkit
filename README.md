@@ -19,7 +19,7 @@ API contracts, guardrails, and rules -- so every line fits your system.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-1.2.1-cyan.svg)]()
+[![Version](https://img.shields.io/badge/version-1.3.0-cyan.svg)]()
 
 [Website](https://thearchkit.com) &bull; [Marketplace](https://market.thearchkit.com) &bull; [Issues](https://github.com/kenandrewmiranda/archkit/issues)
 
@@ -207,6 +207,8 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit update` | Self-update from GitHub |
 | `archkit init --agent-scaffold` | Stub `.arch/` with AI-fillable templates |
 | `archkit init --install-hooks` | Install pre-commit hook for drift detection |
+| `archkit init --install-hooks --claude` | Install both git pre-commit hook AND Claude Code PreToolUse hook |
+| `archkit init --install-hooks --claude-only` | Install only Claude Code hook |
 | `archkit init --app-type <type>` | Override auto-detected app type |
 | `archkit init --skills <a,b,c>` | Override auto-detected skills |
 
@@ -218,11 +220,11 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | Command | What it does |
 |---------|--------------|
 | `archkit resolve warmup [--deep]` | Pre-session health check (blockers = stop) |
-| `archkit resolve context "<prompt>"` | Map prompt -> features, skills, files, rules |
-| `archkit resolve preflight <feature> <layer>` | Verify target before generating code |
-| `archkit resolve scaffold <feature>` | New feature checklist with embedded gotchas |
+| ⚠ `archkit resolve context "<prompt>"` | DEPRECATED v1.3, removed v2.0 — read INDEX.md directly |
+| `archkit resolve preflight <feature> <layer>` | ⚡ NEW v1.3 — Live runtime view: recent commits, scoped gotchas, scoped drift |
+| `archkit resolve scaffold <feature> [--apply]` | ⚡ NEW v1.3 — Generates source skeleton with AGENT-VALIDATION blocks (dry-run by default) |
 | `archkit resolve lookup <id>` | Look up any node, skill, or cluster |
-| `archkit resolve plan "<prompt>"` | Ordered implementation plan |
+| ⚠ `archkit resolve plan "<prompt>"` | DEPRECATED v1.3, removed v2.0 — use preflight or read CONTEXT.compact.md |
 | `archkit resolve verify-wiring [src-dir]` | Detect dead code / unwired components |
 | `archkit resolve audit-spec <spec.md> [src-dir]` | Check spec requirement coverage |
 
@@ -242,6 +244,15 @@ archkit understands your application type and tailors rules, reviews, and defaul
 | `archkit review --json <file>` | Same as `--agent` — JSON output (agent-callable) |
 
 </details>
+
+**v1.3 production-readiness checks (catch AI default failure modes):**
+- `floating-promise` — async calls not awaited
+- `mock-data-leftover` — `// mock data`, fake names, `Math.random()` in production
+- `dead-error-handler` — empty catch blocks or log-and-swallow
+- `untracked-todo` — TODO without ticket/owner/date reference
+- `incomplete-skeleton` — generated stub with unticked AGENT-VALIDATION
+
+**Suppression syntax:** `// archkit: ignore <rule-id> — <substantive reason>` on the line above or same line as the violation. Vague reasons ("fixed", "n/a", "see comment") are rejected with a `weak-suppression` finding. Architecture rules (import-hierarchy, boundary-violation, etc.) cannot be suppressed.
 
 <details>
 <summary><b>Knowledge Capture</b></summary>
