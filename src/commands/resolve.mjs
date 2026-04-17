@@ -247,7 +247,8 @@ function main() {
       if (!feature || !layer) { output({ error: "Usage: resolve.mjs preflight <feature> <layer>" }, pretty); process.exit(1); }
       const result = cmdPreflight(archDir, feature, layer);
       output(result, pretty);
-      if (!result.pass) process.exit(1);
+      // v1.3: preflight returns passWithoutAction (informational), not pass
+      // (which would block). Agents check passWithoutAction themselves.
       break;
     }
     case "scaffold": {

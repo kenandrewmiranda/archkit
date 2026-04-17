@@ -1,8 +1,8 @@
 // Production-readiness checks.
 // Flags AI-default failure modes that surface-level generation produces.
 
-const TEST_FILE = /\.(test|spec)\.|__tests__|__mocks__|\/tests?\/|\/scripts?\//i;
-const MOCK_FILE = /\.(test|spec)\.|__tests__|__mocks__|\/(tests?|fixtures?|mocks?|stubs?)\//i;
+const TEST_FILE = /\.(test|spec)\.|__tests__|__mocks__|(?:^|\/)tests?\/|(?:^|\/)scripts?\//i;
+const MOCK_FILE = /\.(test|spec)\.|__tests__|__mocks__|(?:^|\/)(tests?|fixtures?|mocks?|stubs?)\//i;
 
 export function checkFloatingPromise(code, filepath) {
   if (TEST_FILE.test(filepath)) return [];
@@ -22,6 +22,9 @@ export function checkFloatingPromise(code, filepath) {
       const idx = line.indexOf(name);
       const prefix = line.slice(0, idx).trimEnd();
       if (/(await|return|void|=|\?\.|=>|function|async)$/.test(prefix)) continue;
+      // Skip if a .then/.catch/.finally chain follows the call — not floating
+      const callEndRe = new RegExp(`${name}\\s*\\([^)]*\\)\\s*\\.(then|catch|finally)\\s*\\(`);
+      if (callEndRe.test(line)) continue;
       findings.push({
         type: "floating-promise",
         severity: "error",
