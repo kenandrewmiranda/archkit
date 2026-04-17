@@ -83,13 +83,25 @@ function main() {
   }
 
   // 3. Check INDEX.md node base paths against disk
+  // basePath may be a single path or comma-separated list of paths.
+  // Check each path independently so one missing file doesn't mask others.
   const srcRoot = process.cwd();
   for (const [nodeId, info] of Object.entries(index.nodeCluster)) {
     const basePath = info.basePath;
-    if (basePath && !basePath.includes("*")) {
-      const fullPath = path.join(srcRoot, basePath);
+    if (!basePath || basePath.includes("*")) continue;
+
+    const paths = basePath.split(",").map(p => p.trim()).filter(Boolean);
+    const isMultiPath = paths.length > 1;
+
+    for (const p of paths) {
+      const fullPath = path.join(srcRoot, p);
       if (!fs.existsSync(fullPath)) {
-        findings.push({ type: "missing-source", id: nodeId, detail: `INDEX.md says @${nodeId} → ${basePath} but directory doesn't exist on disk` });
+        const type = isMultiPath ? "missing-file" : "missing-source";
+        findings.push({
+          type,
+          id: nodeId,
+          detail: `INDEX.md says @${nodeId} → ${p} but it doesn't exist on disk`,
+        });
       }
     }
   }
