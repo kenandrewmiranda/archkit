@@ -23,6 +23,7 @@ import { createHash } from "node:crypto";
 import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
+import { archkitError } from "../lib/errors.mjs";
 
 function banner() {
   commandBanner("arch-gotcha", "Capture bad AI patterns into .skill files");
@@ -784,6 +785,40 @@ async function cliMode(args) {
     const total = countGotchas(archDir, skillId);
     console.log(`${C.green}  ${I.check} Gotcha added to ${skillId}.skill (${total} total)${C.reset}`);
   }
+}
+
+// ── MCP-friendly runner exports ───────────────────────────────────────────
+
+export async function runGotchaListJson({ archDir }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  const skillsDir = path.join(archDir, "skills");
+  if (!fs.existsSync(skillsDir)) return { skills: [] };
+  const skills = [];
+  for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
+    const id = file.replace(".skill", "");
+    const content = fs.readFileSync(path.join(skillsDir, file), "utf8");
+    const gotchas = (content.match(/^WRONG:/gm) || []).length;
+    skills.push({ id, gotchas });
+  }
+  return { skills };
+}
+
+export async function runGotchaProposeJson({ archDir, skill, wrong, right, why, appType }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  for (const [key, val] of Object.entries({ skill, wrong, right, why })) {
+    if (!val || typeof val !== "string") {
+      throw archkitError("proposal_invalid", `Missing required field: ${key}`, {
+        suggestion: "Provide all of: skill, wrong, right, why.",
+      });
+    }
+  }
+  const hash = proposalHash(skill, wrong, right);
+  const pDir = proposalsDir(archDir);
+  const proposalFile = path.join(pDir, `${hash}.json`);
+  fs.mkdirSync(pDir, { recursive: true });
+  const proposal = { skill, wrong, right, why, ...(appType ? { appType } : {}), source: "mcp", created_at: new Date().toISOString() };
+  fs.writeFileSync(proposalFile, JSON.stringify(proposal, null, 2));
+  return { queued: true, proposalPath: proposalFile };
 }
 
 export { cliMode as main };
