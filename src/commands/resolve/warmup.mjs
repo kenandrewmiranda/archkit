@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { loadFile, parseSystem, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
+import { archkitError } from "../../lib/errors.mjs";
 
 export function cmdWarmup(archDir, deep) {
   log.resolve("Running warmup checks...");
@@ -259,5 +260,21 @@ export function cmdWarmup(archDir, deep) {
         : null,
       emptySkillPacks: emptySkills.map(id => `archkit install archkit-${id}-gotchas`),
     },
+  };
+}
+
+export async function runWarmupJson({ archDir, deep = false }) {
+  if (!archDir) {
+    throw archkitError("no_arch_dir", "No .arch/ directory found", {
+      suggestion: "Run `archkit init` in your project root.",
+    });
+  }
+  const result = cmdWarmup(archDir, deep);
+  return {
+    pass: result.pass,
+    blockers: result.blockers || [],
+    warnings: result.warnings || [],
+    actions: result.actions || [],
+    checks: result.checks || [],
   };
 }
