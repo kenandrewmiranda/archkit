@@ -3,6 +3,7 @@ import path from "path";
 import { execFileSync } from "child_process";
 import { loadFile, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
+import { archkitError } from "../../lib/errors.mjs";
 
 export function cmdPreflight(archDir, featureId, layer) {
   log.resolve(`Preflight check: ${featureId}.${layer}`);
@@ -134,4 +135,12 @@ export function cmdPreflight(archDir, featureId, layer) {
     passWithoutAction,
     gitAvailable,
   };
+}
+
+export async function runPreflightJson({ archDir, cwd = process.cwd(), feature, layer }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  if (!feature) throw archkitError("invalid_input", "feature is required", { suggestion: "Pass a feature name (e.g. 'auth')." });
+  if (!layer) throw archkitError("invalid_input", "layer is required", { suggestion: "Pass a layer (controller/service/repo)." });
+
+  return cmdPreflight(archDir, feature, layer, { cwd });
 }
