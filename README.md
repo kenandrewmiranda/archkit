@@ -79,6 +79,58 @@ archkit --claude
 
 ---
 
+## MCP server (Claude Code, Cursor, Continue)
+
+archkit ships a Model Context Protocol server so AI agents can call archkit's review/resolve/stats tools natively, without shell-outs.
+
+### Install
+
+```bash
+npm install -g archkit  # or per-project --save-dev
+```
+
+This registers two bins: `archkit` and `archkit-mcp`.
+
+### Register with Claude Code
+
+Automatic (recommended):
+
+```bash
+archkit init --install-hooks --claude --mcp
+```
+
+This adds an entry to `~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "archkit": {
+      "command": "archkit-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Manual: copy that block into your Claude Code MCP config yourself.
+
+### Available tools
+
+- `archkit_review` — review files against rules and gotchas
+- `archkit_review_staged` — review git-staged files
+- `archkit_resolve_warmup` — pre-session health check
+- `archkit_resolve_preflight` — verify a feature/layer before coding
+- `archkit_resolve_scaffold` — get a new-feature checklist
+- `archkit_resolve_lookup` — look up a node, skill, or cluster by id
+- `archkit_gotcha_propose` — queue a gotcha proposal
+- `archkit_gotcha_list` — list skills with gotcha counts
+- `archkit_stats` — health dashboard data
+- `archkit_drift` — detect stale `.arch/` files
+
+All tools return structured JSON in MCP `text` content. Errors flow through `isError: true` with the standard archkit envelope (`code`, `message`, `suggestion`, `docsUrl`).
+
+---
+
 ## How It Works
 
 archkit's agent workflow is a six-step loop, each step exposed as an agent-callable command.
