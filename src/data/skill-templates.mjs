@@ -12,6 +12,10 @@ description: Use BEFORE editing or creating files in an archkit-governed project
 Before editing files in this project, invoke this skill with the feature
 and layer you're about to touch.
 
+## How to use
+
+- If \\\`archkit_*\\\` MCP tools appear in your tool list, prefer them over CLI shell-outs. Both produce the same JSON; MCP tools are typed, faster, and surface structured errors directly.
+
 ## Required step
 
 Run: \\\`archkit resolve preflight <feature> <layer> --json\\\`
