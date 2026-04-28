@@ -366,21 +366,21 @@ function resolveReviewFiles({ fileArgs, cwd, archDir, staged, diff, dir, verify 
         suggestion: "Ensure you're in a git repo with staged changes.", cause: err,
       });
     }
-    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx)$/.test(f));
+    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx|py)$/.test(f));
   }
   if (diff) {
     let out;
     try {
-      out = execFileSync("git", ["diff", "--name-only"], { cwd, encoding: "utf8" });
+      out = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACM"], { cwd, encoding: "utf8" });
     } catch (err) {
       throw archkitError("git_not_available", "git --diff failed", {
         suggestion: "Ensure you're in a git repo.", cause: err,
       });
     }
-    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx)$/.test(f));
+    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx|py)$/.test(f));
   }
   if (dir) {
-    return walkDir(dir).filter(f => /\.(js|mjs|ts|tsx|jsx)$/.test(f));
+    return walkDir(dir).filter(f => /\.(js|mjs|ts|tsx|jsx|py)$/.test(f));
   }
   // Resolve fileArgs relative to cwd
   return (fileArgs || []).map(f => path.isAbsolute(f) ? f : path.join(cwd, f));
