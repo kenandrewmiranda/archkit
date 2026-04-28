@@ -2,14 +2,14 @@
 
 /**
  * arch-review — Check code against your .arch/ rules and skills
- * 
+ *
  * Usage:
  *   archkit review <file>                   Review a single file
  *   archkit review <file1> <file2> ...      Review multiple files
  *   archkit review --staged                 Review git staged files
  *   archkit review --diff                   Review modified (unstaged) files
  *   archkit review --dir src/features/      Review all files in a directory
- * 
+ *
  * What it checks:
  *   - SYSTEM.md rules (architecture violations)
  *   - .skill gotchas (known bad patterns)
@@ -19,7 +19,7 @@
 
 import fs from "fs";
 import path from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "node:child_process";
 import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
 import { commandBanner } from "../lib/banner.mjs";
@@ -39,6 +39,7 @@ import { checkFrontendWiring } from "./review/frontend-checks.mjs";
 import { checkEventPatterns } from "./review/event-checks.mjs";
 import * as log from "../lib/logger.mjs";
 import { parseSuppressions, validateReason } from "../lib/suppression.mjs";
+import { archkitError } from "../lib/errors.mjs";
 
 function banner() {
   commandBanner("arch-review", "Check code against your .arch/ rules and skills");
@@ -264,7 +265,7 @@ function getFiles(args) {
 
   if (args.includes("--staged")) {
     try {
-      const staged = execSync("git diff --cached --name-only --diff-filter=ACM", { encoding: "utf8" });
+      const staged = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACM"], { encoding: "utf8" });
       files.push(...staged.trim().split("\n").filter(f => f && (f.endsWith(".ts") || f.endsWith(".tsx") || f.endsWith(".js") || f.endsWith(".mjs") || f.endsWith(".py"))));
     } catch {
       console.log(`${C.red}  ${I.warn} Not a git repository or no staged files.${C.reset}`);
@@ -274,7 +275,7 @@ function getFiles(args) {
 
   if (args.includes("--diff")) {
     try {
-      const diff = execSync("git diff --name-only --diff-filter=ACM", { encoding: "utf8" });
+      const diff = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACM"], { encoding: "utf8" });
       files.push(...diff.trim().split("\n").filter(f => f && /\.(ts|tsx|js|mjs|py)$/.test(f)));
     } catch {
       console.log(`${C.red}  ${I.warn} Not a git repository or no changes.${C.reset}`);
@@ -343,9 +344,171 @@ function displayFindings(filepath, findings) {
   }
 }
 
+// ── Pure JSON runner — used by CLI --json path AND MCP server ───────────
+
+function resolveReviewFiles({ fileArgs, cwd, archDir, staged, diff, dir, verify }) {
+  if (verify) {
+    const lastPath = path.join(archDir, ".last-review.json");
+    if (!fs.existsSync(lastPath)) {
+      throw archkitError("no_previous_review", "No previous review to verify against",
+        { suggestion: "Run `archkit review` first." });
+    }
+    const last = JSON.parse(fs.readFileSync(lastPath, "utf8"));
+    return Object.entries(last.findings || {}).filter(([, f]) => f.length > 0).map(([p]) => p);
+  }
+  if (staged) {
+    let out;
+    try {
+      out = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACM"],
+        { cwd, encoding: "utf8" });
+    } catch (err) {
+      throw archkitError("git_not_available", "git --staged failed", {
+        suggestion: "Ensure you're in a git repo with staged changes.", cause: err,
+      });
+    }
+    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx)$/.test(f));
+  }
+  if (diff) {
+    let out;
+    try {
+      out = execFileSync("git", ["diff", "--name-only"], { cwd, encoding: "utf8" });
+    } catch (err) {
+      throw archkitError("git_not_available", "git --diff failed", {
+        suggestion: "Ensure you're in a git repo.", cause: err,
+      });
+    }
+    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx)$/.test(f));
+  }
+  if (dir) {
+    return walkDir(dir).filter(f => /\.(js|mjs|ts|tsx|jsx)$/.test(f));
+  }
+  // Resolve fileArgs relative to cwd
+  return (fileArgs || []).map(f => path.isAbsolute(f) ? f : path.join(cwd, f));
+}
+
+function walkDir(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory() && entry.name !== "node_modules") out.push(...walkDir(full));
+    else if (entry.isFile()) out.push(full);
+  }
+  return out;
+}
+
+export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, diff, dir, verify }) {
+  if (!archDir) {
+    throw archkitError("no_arch_dir", "No .arch/ directory found", {
+      suggestion: "Run `archkit init` in your project root.",
+      docsUrl: "https://github.com/kenandrewmiranda/archkit#getting-started",
+    });
+  }
+
+  const systemContent = loadFile(archDir, "SYSTEM.md");
+  const { rules, reservedWords } = parseSystem(systemContent);
+  const skills = loadSkills(archDir);
+  const graphs = loadGraphs(archDir);
+  const appType = getAppType(systemContent);
+
+  const files = resolveReviewFiles({ fileArgs, cwd, archDir, staged, diff, dir, verify });
+
+  for (const f of files) {
+    if (!fs.existsSync(f)) {
+      throw archkitError("file_not_found", `File not found: ${f}`, {
+        suggestion: "Pass a path that exists relative to cwd.",
+      });
+    }
+  }
+
+  const allFindings = {};
+  let totalErrors = 0, totalWarnings = 0, totalInfos = 0, cleanFiles = 0;
+
+  for (const filepath of files) {
+    const code = fs.readFileSync(filepath, "utf8");
+    const findings = [
+      ...checkGotchas(code, skills),
+      ...checkArchitectureRules(code, filepath, rules, reservedWords),
+      ...checkFileLocation(filepath, graphs),
+      ...checkImportHierarchy(code, filepath),
+      ...checkDatabasePatterns(code, filepath),
+      ...checkCachePatterns(code, filepath),
+      ...checkQueuePatterns(code, filepath),
+      ...checkApiPatterns(code, filepath),
+      ...checkFeatureCompleteness(code, filepath),
+      ...checkFrontendWiring(code, filepath),
+      ...checkEventPatterns(code, filepath),
+      ...checkFloatingPromise(code, filepath),
+      ...checkMockDataLeftover(code, filepath),
+      ...checkDeadErrorHandler(code, filepath),
+      ...checkUntrackedTodo(code, filepath),
+      ...checkIncompleteSkeleton(code, filepath),
+    ];
+    if (appType === "realtime") findings.push(...checkRealtimeRules(code, filepath));
+    if (appType === "ai") findings.push(...checkAIRules(code, filepath));
+    if (appType === "data") findings.push(...checkDataRules(code, filepath));
+    if (appType === "mobile") findings.push(...checkMobileRules(code, filepath));
+    if (appType === "internal") findings.push(...checkInternalRules(code, filepath));
+    if (appType === "content") findings.push(...checkContentRules(code, filepath));
+
+    const suppressions = parseSuppressions(code);
+    const archTypes = new Set(["import-hierarchy", "import-boundary", "boundary-violation", "reserved-word"]);
+    const filtered = findings.filter(f => {
+      if (archTypes.has(f.type)) return true;
+      const supp = suppressions.find(s => s.line === f.line && s.ruleId === f.type);
+      if (!supp) return true;
+      const validation = validateReason(supp.reason);
+      if (validation.ok) return false;
+      if (validation.weak) {
+        findings.push({
+          type: "weak-suppression", severity: "error", line: f.line,
+          message: `Suppression reason "${supp.reason}" is too vague — explain why this code is correct.`,
+        });
+      }
+      return true;
+    });
+
+    allFindings[filepath] = filtered;
+    totalErrors += filtered.filter(f => f.severity === "error").length;
+    totalWarnings += filtered.filter(f => f.severity === "warning").length;
+    totalInfos += filtered.filter(f => f.severity === "info").length;
+    if (filtered.length === 0) cleanFiles++;
+  }
+
+  // Persist for --verify mode
+  try {
+    fs.writeFileSync(
+      path.join(archDir, ".last-review.json"),
+      JSON.stringify({ timestamp: new Date().toISOString(), files: files.length, errors: totalErrors, warnings: totalWarnings, findings: allFindings })
+    );
+  } catch {}
+
+  // Gotcha suggestions
+  const gotchaSuggestions = [];
+  for (const [filepath, findings] of Object.entries(allFindings)) {
+    if (findings.length === 0) continue;
+    const code = fs.readFileSync(filepath, "utf8");
+    for (const [skillId, skill] of Object.entries(skills)) {
+      if (skill.gotchas.length === 0 && code.toLowerCase().includes(skillId)) {
+        gotchaSuggestions.push({ skill: skillId, file: filepath, hint: `${skillId}.skill has 0 gotchas but ${skillId} is used in this file` });
+      }
+    }
+  }
+
+  return {
+    files: files.length,
+    errors: totalErrors,
+    warnings: totalWarnings,
+    infos: totalInfos,
+    clean: cleanFiles,
+    pass: totalErrors === 0,
+    findings: allFindings,
+    gotchaSuggestions: gotchaSuggestions.length > 0 ? gotchaSuggestions : undefined,
+  };
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
@@ -377,6 +540,34 @@ function main() {
     console.log(`${C.gray}  Run archkit first, or run this from your project root.${C.reset}\n`);
     process.exit(1);
   }
+
+  const isJson = args.includes("--json") || args.includes("--agent");
+
+  if (isJson) {
+    try {
+      const result = await runReviewJson({
+        files: args.filter(a => !a.startsWith("--")),
+        archDir,
+        cwd: process.cwd(),
+        staged: args.includes("--staged"),
+        diff: args.includes("--diff"),
+        dir: args.find((a, i) => args[i - 1] === "--dir"),
+        verify: args.includes("--verify"),
+      });
+      console.log(JSON.stringify(result));
+      process.exit(result.errors > 0 ? 1 : 0);
+    } catch (err) {
+      console.log(JSON.stringify({
+        error: err.code || "internal_error",
+        message: err.message,
+        suggestion: err.suggestion,
+        docsUrl: err.docsUrl,
+      }));
+      process.exit(1);
+    }
+  }
+
+  // Human-readable path
 
   log.review("Loading .arch/ context...");
 
@@ -424,7 +615,6 @@ function main() {
     }
   }
 
-  const agentMode = args.includes("--agent") || args.includes("--json");
   const allFindings = {};
   let totalErrors = 0;
   let totalWarnings = 0;
@@ -483,11 +673,7 @@ function main() {
       return true;
     });
 
-    if (agentMode) {
-      allFindings[filepath] = filteredFindings;
-    } else {
-      displayFindings(filepath, filteredFindings);
-    }
+    displayFindings(filepath, filteredFindings);
 
     totalErrors += filteredFindings.filter(f => f.severity === "error").length;
     totalWarnings += filteredFindings.filter(f => f.severity === "warning").length;
@@ -501,35 +687,9 @@ function main() {
     files: files.length,
     errors: totalErrors,
     warnings: totalWarnings,
-    findings: agentMode ? allFindings : Object.fromEntries(files.map(f => [f, []])),
+    findings: Object.fromEntries(files.map(f => [f, []])),
   };
   try { fs.writeFileSync(path.join(archDir, ".last-review.json"), JSON.stringify(reviewResults)); } catch {}
-
-  if (agentMode) {
-    // Collect gotcha suggestions — packages used in flagged files that have empty skills
-    const gotchaSuggestions = [];
-    for (const [filepath, findings] of Object.entries(allFindings)) {
-      if (findings.length === 0) continue;
-      const code = fs.readFileSync(filepath, "utf8");
-      for (const [skillId, skill] of Object.entries(skills)) {
-        if (skill.gotchas.length === 0 && code.toLowerCase().includes(skillId)) {
-          gotchaSuggestions.push({ skill: skillId, file: filepath, hint: `${skillId}.skill has 0 gotchas but ${skillId} is used in this file` });
-        }
-      }
-    }
-
-    console.log(JSON.stringify({
-      files: files.length,
-      errors: totalErrors,
-      warnings: totalWarnings,
-      infos: totalInfos,
-      clean: cleanFiles,
-      pass: totalErrors === 0,
-      findings: allFindings,
-      gotchaSuggestions: gotchaSuggestions.length > 0 ? gotchaSuggestions : undefined,
-    }));
-    process.exit(totalErrors > 0 ? 1 : 0);
-  }
 
   // Summary
   console.log(`${C.gray}  ${"─".repeat(64)}${C.reset}`);
@@ -560,10 +720,8 @@ function main() {
 export { main };
 
 if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
-  try {
-    main();
-  } catch (err) {
+  main().catch(err => {
     console.error(`\x1b[31m  Error: ${err.message}\x1b[0m`);
     process.exit(1);
-  }
+  });
 }
