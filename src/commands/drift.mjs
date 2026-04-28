@@ -119,7 +119,7 @@ export async function runDriftJson({ archDir, cwd = process.cwd() }) {
   return { stale, summary };
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const jsonMode = args.includes("--json");
 
@@ -130,30 +130,34 @@ function main() {
     process.exit(1);
   }
 
+  if (jsonMode) {
+    try {
+      const result = await runDriftJson({ archDir, cwd: process.cwd() });
+      console.log(JSON.stringify(result));
+      process.exit(0);
+    } catch (err) {
+      console.log(JSON.stringify({
+        error: err.code || "internal_error",
+        message: err.message,
+        suggestion: err.suggestion,
+        docsUrl: err.docsUrl,
+      }));
+      process.exit(1);
+    }
+  }
+
   if (!jsonMode) banner();
   log.resolve("Scanning for architectural drift...");
 
   const findings = detectFindings(archDir, process.cwd());
 
-  // Output
-  const result = {
-    archDir,
-    totalChecks: 4,
-    findings,
-    driftDetected: findings.length > 0,
-  };
-
-  if (jsonMode) {
-    console.log(JSON.stringify(result, null, 2));
+  if (findings.length === 0) {
+    log.ok("No drift detected — .arch/ files are consistent");
   } else {
-    if (findings.length === 0) {
-      log.ok("No drift detected — .arch/ files are consistent");
-    } else {
-      findings.forEach(f => log.warn(`${f.type}: ${f.detail}`));
-      log.error(`${findings.length} drift issue${findings.length > 1 ? "s" : ""} detected`);
-    }
-    console.log("");
+    findings.forEach(f => log.warn(`${f.type}: ${f.detail}`));
+    log.error(`${findings.length} drift issue${findings.length > 1 ? "s" : ""} detected`);
   }
+  console.log("");
 
   process.exit(findings.length > 0 ? 1 : 0);
 }
@@ -161,5 +165,8 @@ function main() {
 export { main };
 
 if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
-  main();
+  main().catch(err => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
 }

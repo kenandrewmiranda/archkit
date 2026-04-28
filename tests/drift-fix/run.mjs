@@ -72,7 +72,7 @@ test("multi-file node with all files present produces no missing-source findings
     (dir) => {
       const r = tryRun(["drift", "--json"], { cwd: dir });
       const result = JSON.parse(r.stdout);
-      const missingFindings = result.findings.filter(f =>
+      const missingFindings = result.stale.filter(f =>
         f.type === "missing-source" || f.type === "missing-file"
       );
       assert.equal(missingFindings.length, 0,
@@ -92,7 +92,7 @@ test("multi-file node with one file missing produces exactly one missing-file fi
     (dir) => {
       const r = tryRun(["drift", "--json"], { cwd: dir });
       const result = JSON.parse(r.stdout);
-      const missingFindings = result.findings.filter(f =>
+      const missingFindings = result.stale.filter(f =>
         f.type === "missing-source" || f.type === "missing-file"
       );
       assert.equal(missingFindings.length, 1,
@@ -114,7 +114,7 @@ test("multi-file node with all files missing produces N missing-file findings", 
     (dir) => {
       const r = tryRun(["drift", "--json"], { cwd: dir });
       const result = JSON.parse(r.stdout);
-      const missingFindings = result.findings.filter(f =>
+      const missingFindings = result.stale.filter(f =>
         f.type === "missing-source" || f.type === "missing-file"
       );
       assert.equal(missingFindings.length, 3,
@@ -134,7 +134,7 @@ test("single-file node still works (regression check)", () => {
     (dir) => {
       const r = tryRun(["drift", "--json"], { cwd: dir });
       const result = JSON.parse(r.stdout);
-      const missingFindings = result.findings.filter(f =>
+      const missingFindings = result.stale.filter(f =>
         f.type === "missing-source" || f.type === "missing-file"
       );
       assert.equal(missingFindings.length, 1,
@@ -154,7 +154,7 @@ test("directory-style basePath (trailing slash) still works", () => {
     (dir) => {
       const r = tryRun(["drift", "--json"], { cwd: dir });
       const result = JSON.parse(r.stdout);
-      const missingFindings = result.findings.filter(f =>
+      const missingFindings = result.stale.filter(f =>
         f.type === "missing-source" || f.type === "missing-file"
       );
       assert.equal(missingFindings.length, 1, "missing directory should produce 1 finding");
