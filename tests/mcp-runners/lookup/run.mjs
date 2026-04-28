@@ -21,7 +21,7 @@ function makeFixture() {
   fs.writeFileSync(path.join(arch, "SYSTEM.md"), "## Rules\n- R\n");
   fs.writeFileSync(path.join(arch, "INDEX.md"), "");
   fs.writeFileSync(path.join(arch, "clusters", "auth.graph"),
-    "[auth]\n  [login] : signs user in\n");
+    "--- auth [feature] ---\nlogin [auth,session] : signs user in\nlogout [auth,session] : ends user session\n---\n");
   fs.writeFileSync(path.join(arch, "skills", "postgres.skill"),
     "## Meta\npackage: postgres\n## Use\nUsed for storage.\n");
   return path.join(tmp, ".arch");

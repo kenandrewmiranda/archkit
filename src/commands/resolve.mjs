@@ -231,12 +231,6 @@ export async function runLookupJson({ archDir, id }) {
       if (structuredNode) {
         return { type: "node", id, cluster: clusterId, ...structuredNode };
       }
-
-      // Fallback: scan raw content for bracket-format node references [id]
-      const bracketPattern = new RegExp(`\\[${id}\\]`, "i");
-      if (cluster.raw && bracketPattern.test(cluster.raw)) {
-        return { type: "node", id, cluster: clusterId };
-      }
     }
   }
 
