@@ -19,6 +19,7 @@
 import fs from "fs";
 import path from "path";
 import { findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { archkitError } from "../lib/errors.mjs";
 import { loadFile, parseSystem, parseIndex, loadGraphCluster, loadSkillGotchas, loadApiDigest } from "../lib/parsers.mjs";
 import { cmdWarmup } from "./resolve/warmup.mjs";
 import { cmdPlan } from "./resolve/plan.mjs";
@@ -202,6 +203,58 @@ function cmdLookup(archDir, id) {
   }
 
   return { type: "not_found", id, suggestion: "Check INDEX.md for available nodes and skills." };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MCP-REUSABLE PURE FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function runLookupJson({ archDir, id }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  if (!id || typeof id !== "string") throw archkitError("invalid_input", "id is required (string)", { suggestion: "Pass a node, skill, or cluster id." });
+
+  // Search cluster files for a matching cluster id or node id
+  const clustersDir = path.join(archDir, "clusters");
+  if (fs.existsSync(clustersDir)) {
+    for (const file of fs.readdirSync(clustersDir).filter(f => f.endsWith(".graph"))) {
+      const clusterId = file.replace(".graph", "");
+      const cluster = loadGraphCluster(archDir, clusterId);
+      if (!cluster) continue;
+
+      // Match as cluster id
+      if (clusterId === id) {
+        return { type: "cluster", id: clusterId, nodes: cluster.nodes, raw: cluster.raw };
+      }
+
+      // Match as a structured node (parsed by loadGraphCluster)
+      const structuredNode = cluster.nodes.find(n => n.id === id);
+      if (structuredNode) {
+        return { type: "node", id, cluster: clusterId, ...structuredNode };
+      }
+
+      // Fallback: scan raw content for bracket-format node references [id]
+      const bracketPattern = new RegExp(`\\[${id}\\]`, "i");
+      if (cluster.raw && bracketPattern.test(cluster.raw)) {
+        return { type: "node", id, cluster: clusterId };
+      }
+    }
+  }
+
+  // Search skills
+  const skillsDir = path.join(archDir, "skills");
+  if (fs.existsSync(skillsDir)) {
+    for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
+      const skillId = file.replace(".skill", "");
+      if (skillId === id) {
+        const skill = loadSkillGotchas(archDir, skillId);
+        return { type: "skill", id: skillId, gotchas: skill ? skill.gotchas : [] };
+      }
+    }
+  }
+
+  throw archkitError("node_not_found", `No node, skill, or cluster found with id: ${id}`, {
+    suggestion: "Run `archkit stats --json` to see available ids.",
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
