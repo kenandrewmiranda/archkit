@@ -6,25 +6,13 @@ import { findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseIndex, parseSystem } from "../lib/parsers.mjs";
 import * as log from "../lib/logger.mjs";
 import { commandBanner } from "../lib/banner.mjs";
+import { archkitError } from "../lib/errors.mjs";
 
 function banner() {
   commandBanner("arch-drift", "Detect stale .arch/ files and architectural drift");
 }
 
-function main() {
-  const args = process.argv.slice(2);
-  const jsonMode = args.includes("--json");
-
-  const archDir = findArchDir({ requireFile: "SYSTEM.md" });
-  if (!archDir) {
-    if (jsonMode) { console.log(JSON.stringify({ error: "No .arch/ directory found" })); }
-    else { banner(); console.log("  No .arch/ directory found.\n"); }
-    process.exit(1);
-  }
-
-  if (!jsonMode) banner();
-  log.resolve("Scanning for architectural drift...");
-
+function detectFindings(archDir, cwd) {
   const findings = [];
 
   // 1. Check INDEX.md nodes against actual .graph files
@@ -61,7 +49,7 @@ function main() {
 
   let pkgDeps = {};
   try {
-    const pkgJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+    const pkgJson = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
     pkgDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
   } catch {}
 
@@ -85,7 +73,6 @@ function main() {
   // 3. Check INDEX.md node base paths against disk
   // basePath may be a single path or comma-separated list of paths.
   // Check each path independently so one missing file doesn't mask others.
-  const srcRoot = process.cwd();
   for (const [nodeId, info] of Object.entries(index.nodeCluster)) {
     const basePath = info.basePath;
     if (!basePath || basePath.includes("*")) continue;
@@ -94,7 +81,7 @@ function main() {
     const isMultiPath = paths.length > 1;
 
     for (const p of paths) {
-      const fullPath = path.join(srcRoot, p);
+      const fullPath = path.join(cwd, p);
       if (!fs.existsSync(fullPath)) {
         const type = isMultiPath ? "missing-file" : "missing-source";
         findings.push({
@@ -111,12 +98,42 @@ function main() {
   if (systemContent) {
     const appNameMatch = systemContent.match(/^## App:\s*(.+)$/m);
     try {
-      const pkgJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+      const pkgJson = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
       if (appNameMatch && pkgJson.name && !pkgJson.name.includes(appNameMatch[1].trim().toLowerCase().replace(/\s+/g, "-"))) {
         findings.push({ type: "name-mismatch", detail: `SYSTEM.md says "${appNameMatch[1].trim()}" but package.json name is "${pkgJson.name}"` });
       }
     } catch {}
   }
+
+  return findings;
+}
+
+export async function runDriftJson({ archDir, cwd = process.cwd() }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+
+  const stale = detectFindings(archDir, cwd);
+  const summary = {
+    total: stale.length,
+    byType: stale.reduce((acc, s) => { acc[s.type] = (acc[s.type] || 0) + 1; return acc; }, {}),
+  };
+  return { stale, summary };
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  const jsonMode = args.includes("--json");
+
+  const archDir = findArchDir({ requireFile: "SYSTEM.md" });
+  if (!archDir) {
+    if (jsonMode) { console.log(JSON.stringify({ error: "No .arch/ directory found" })); }
+    else { banner(); console.log("  No .arch/ directory found.\n"); }
+    process.exit(1);
+  }
+
+  if (!jsonMode) banner();
+  log.resolve("Scanning for architectural drift...");
+
+  const findings = detectFindings(archDir, process.cwd());
 
   // Output
   const result = {
