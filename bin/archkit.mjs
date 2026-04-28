@@ -36,7 +36,10 @@ const commands = {
 // Marketplace convenience aliases — route e.g. `archkit install X` to `archkit market install X`
 const marketAliases = { login: true, logout: true, search: true, install: true, info: true };
 
-if (command && marketAliases[command]) {
+if (command === "mcp") {
+  // archkit mcp  →  archkit-mcp (stdio MCP server)
+  await import(path.resolve(__dirname, "../bin/archkit-mcp.mjs"));
+} else if (command && marketAliases[command]) {
   // Rewrite argv so market.mjs sees the subcommand: [node, script, subcommand, ...rest]
   // No splice needed — market.mjs reads process.argv.slice(2) which already starts with the subcommand
   await import(path.resolve(__dirname, "../src/commands/market.mjs"));
