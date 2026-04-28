@@ -4,6 +4,7 @@ import { loadFile, parseSystem, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 import { SKELETONS } from "../../data/skeleton-templates.mjs";
 import { renderSkeleton } from "../../lib/skeleton-renderer.mjs";
+import { archkitError } from "../../lib/errors.mjs";
 
 export function cmdScaffold(archDir, featureId, opts = {}) {
   const apply = opts.apply === true;
@@ -108,6 +109,12 @@ export function cmdScaffold(archDir, featureId, opts = {}) {
     skipped,
     updated,
   };
+}
+
+export async function runScaffoldJson({ archDir, cwd = process.cwd(), feature }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  if (!feature) throw archkitError("invalid_input", "feature is required", { suggestion: "Pass a feature name." });
+  return cmdScaffold(archDir, feature, { cwd, returnData: true });
 }
 
 function detectSkeletonKey(system) {
