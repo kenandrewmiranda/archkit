@@ -15,6 +15,7 @@ import path from "path";
 import { C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
+import { archkitError } from "../lib/errors.mjs";
 
 function banner() {
   commandBanner("arch-stats", "Context engineering health dashboard");
@@ -315,9 +316,23 @@ function displayOverallScore(sys, idx, skills, graphs, apis) {
   }
 }
 
+// ── MCP-reusable pure function ──────────────────────────────────────────
+
+export async function runStatsJson({ archDir }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  const sys = analyzeSystem(archDir);
+  const idx = analyzeIndex(archDir);
+  const skills = analyzeSkills(archDir);
+  const graphs = analyzeGraphs(archDir);
+  const apis = analyzeApis(archDir);
+  const health = calculateHealthScore(sys, idx, skills, graphs, apis);
+  const recommendations = buildRecommendations(sys, idx, skills, graphs, apis);
+  return { health, system: sys, index: idx, skills, graphs, apis, recommendations };
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const jsonMode = args.includes("--json");
   log.stats("Analyzing .arch/ health...");
@@ -346,9 +361,8 @@ function main() {
   log.stats(`Health score: ${healthPct}%`);
 
   if (jsonMode) {
-    const health = calculateHealthScore(sys, idx, skills, graphs, apis);
-    const recommendations = buildRecommendations(sys, idx, skills, graphs, apis);
-    console.log(JSON.stringify({ health, system: sys, index: idx, skills, graphs, apis, recommendations }));
+    const result = await runStatsJson({ archDir });
+    console.log(JSON.stringify(result));
     return;
   }
 
