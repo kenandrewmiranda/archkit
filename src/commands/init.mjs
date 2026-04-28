@@ -272,10 +272,13 @@ async function main() {
   if (args.includes("--install-hooks")) {
     const claudeMode = args.includes("--claude") || args.includes("--claude-only");
     const claudeOnly = args.includes("--claude-only");
+    const wantsMcp = args.includes("--mcp");
+    // Skip git hook when --claude-only is set, or when only --mcp is requested (no git hook needed)
+    const skipGitHook = claudeOnly || (wantsMcp && !claudeMode);
     const result = { status: "installed" };
 
-    // Git hook (skipped if --claude-only)
-    if (!claudeOnly) {
+    // Git hook (skipped if --claude-only or sole --mcp)
+    if (!skipGitHook) {
       const gitDir = path.resolve(".git");
       if (!fs.existsSync(gitDir)) {
         if (jsonMode) console.log(JSON.stringify({ error: "not_a_git_repo" }));
@@ -326,12 +329,19 @@ async function main() {
       result.claude_settings_action = Object.keys(existing).length > 0 ? "merged" : "created";
     }
 
+    // MCP registration (if --mcp)
+    if (wantsMcp) {
+      installMcpEntry(log);
+      result.mcp = true;
+    }
+
     if (jsonMode) {
       console.log(JSON.stringify(result));
     } else {
       log.ok("Hook(s) installed");
       if (result.git_hook) console.error(`  Git: ${result.git_hook}`);
       if (result.claude_hook) console.error(`  Claude: ${result.claude_hook}`);
+      if (result.mcp) console.error(`  MCP: ~/.claude/mcp.json`);
       console.error("");
     }
     return;
@@ -479,6 +489,42 @@ async function main() {
   console.error(`  Next: Review .arch/SYSTEM.md and fill in .arch/skills/*.skill with your team's gotchas.`);
   console.error(`  Run: archkit resolve warmup to verify the generated context.`);
   console.error("");
+}
+
+function installMcpEntry(log) {
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (!home) {
+    log.warn("Could not determine home directory; skipping MCP registration.");
+    return;
+  }
+  const claudeDir = path.join(home, ".claude");
+  const cfgPath = path.join(claudeDir, "mcp.json");
+  fs.mkdirSync(claudeDir, { recursive: true });
+
+  let cfg = { mcpServers: {} };
+  if (fs.existsSync(cfgPath)) {
+    try {
+      cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      if (!cfg.mcpServers) cfg.mcpServers = {};
+    } catch (err) {
+      log.warn(`Could not parse ${cfgPath}: ${err.message}. Skipping.`);
+      return;
+    }
+  }
+
+  const existing = cfg.mcpServers.archkit;
+  if (existing && existing.command !== "archkit-mcp") {
+    log.warn(`mcp.json already has an 'archkit' entry with a different command (${existing.command}). Leaving it alone.`);
+    return;
+  }
+  if (existing && existing.command === "archkit-mcp") {
+    log.ok(`MCP archkit entry already present in ${cfgPath}`);
+    return;
+  }
+
+  cfg.mcpServers.archkit = { command: "archkit-mcp", args: [] };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  log.ok(`Wrote archkit MCP entry to ${cfgPath}`);
 }
 
 export { main };
