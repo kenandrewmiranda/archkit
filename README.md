@@ -86,20 +86,42 @@ archkit ships a Model Context Protocol server so AI agents can call archkit's re
 ### Install
 
 ```bash
-npm install -g archkit  # or per-project --save-dev
+npm install -g archkit
 ```
 
-This registers two bins: `archkit` and `archkit-mcp`.
+Registers four bins on your `PATH`: `archkit` (CLI), `archkit-mcp` (MCP server), `archkit-claude-hook` (PreToolUse drift guard), `archkit-session-start` (SessionStart context nudge).
 
-### Register with Claude Code
-
-Automatic (recommended):
+### Wire it up to Claude Code
 
 ```bash
+cd <your-project>
 archkit init --install-hooks --claude --mcp
 ```
 
-This adds an entry to `~/.claude/mcp.json`:
+This does three things:
+
+1. Generates `.arch/` from an interactive wizard (or reverse-engineers it from your existing repo).
+2. Writes `.claude/settings.json` with PreToolUse + SessionStart hooks.
+3. Registers archkit as an MCP server via `claude mcp add archkit archkit-mcp --scope user` so Claude Code starts the server on every session.
+
+**Restart Claude Code after running this** — it picks up the MCP server on session start, not mid-session. After restart, `/mcp` should show `archkit ✓ Connected`.
+
+### What the hooks do
+
+- **SessionStart** — when Claude Code attaches to a project that has `.arch/SYSTEM.md`, the hook injects context naming `archkit_resolve_warmup` as the first call for spec/structure questions. Without this, agents tend to read `.arch/*.md` directly and miss the structured digest the MCP tools return.
+- **PreToolUse** — when an Edit/Write/MultiEdit targets a path under `src/features/...` or similar, the hook runs `archkit resolve preflight` and surfaces drift findings to the agent before the edit lands.
+
+### Manual MCP registration
+
+If `archkit init --mcp` fails (e.g. `claude` CLI not on `PATH`), register manually:
+
+```bash
+claude mcp add archkit archkit-mcp --scope user
+```
+
+### Cursor / Continue
+
+Other MCP-capable clients can run the server directly. Add to your client's MCP config:
 
 ```json
 {
@@ -111,8 +133,6 @@ This adds an entry to `~/.claude/mcp.json`:
   }
 }
 ```
-
-Manual: copy that block into your Claude Code MCP config yourself.
 
 ### Available tools
 
