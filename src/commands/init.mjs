@@ -2,6 +2,7 @@
 
 import fs from "fs";
 import path from "path";
+import { execFileSync } from "child_process";
 import { findArchDir, C, ICONS } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
@@ -332,8 +333,9 @@ async function main() {
 
     // MCP registration (if --mcp)
     if (wantsMcp) {
-      installMcpEntry(log);
-      result.mcp = true;
+      const mcpResult = installMcpEntry(log);
+      result.mcp = mcpResult.registered;
+      result.mcp_action = mcpResult.alreadyPresent ? "already-present" : (mcpResult.registered ? "registered" : `skipped:${mcpResult.reason}`);
     }
 
     if (jsonMode) {
@@ -342,7 +344,7 @@ async function main() {
       log.ok("Hook(s) installed");
       if (result.git_hook) console.error(`  Git: ${result.git_hook}`);
       if (result.claude_hook) console.error(`  Claude: ${result.claude_hook}`);
-      if (result.mcp) console.error(`  MCP: ~/.claude/mcp.json`);
+      if (result.mcp) console.error(`  MCP: registered via 'claude mcp add' (user scope)`);
       console.error("");
     }
     return;
@@ -493,39 +495,46 @@ async function main() {
 }
 
 function installMcpEntry(log) {
-  const home = process.env.HOME || process.env.USERPROFILE;
-  if (!home) {
-    log.warn("Could not determine home directory; skipping MCP registration.");
-    return;
+  // Delegate to the canonical Claude Code mechanism: `claude mcp add`.
+  // The legacy ~/.claude/mcp.json path is no longer read by Claude Code v2.x;
+  // its source of truth is ~/.claude.json, written via the CLI.
+  let claudeBin;
+  try {
+    claudeBin = execFileSync("which", ["claude"], { encoding: "utf8", timeout: 3000 }).trim();
+  } catch {
+    log.warn("Claude Code CLI ('claude') not found on PATH. Skipping MCP registration.");
+    log.warn("Install Claude Code, then run: claude mcp add archkit archkit-mcp --scope user");
+    return { registered: false, reason: "no-claude-cli" };
   }
-  const claudeDir = path.join(home, ".claude");
-  const cfgPath = path.join(claudeDir, "mcp.json");
-  fs.mkdirSync(claudeDir, { recursive: true });
+  if (!claudeBin) {
+    log.warn("Claude Code CLI ('claude') not found on PATH. Skipping MCP registration.");
+    return { registered: false, reason: "no-claude-cli" };
+  }
 
-  let cfg = { mcpServers: {} };
-  if (fs.existsSync(cfgPath)) {
-    try {
-      cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-      if (!cfg.mcpServers) cfg.mcpServers = {};
-    } catch (err) {
-      log.warn(`Could not parse ${cfgPath}: ${err.message}. Skipping.`);
-      return;
+  // Already registered? `claude mcp list` prints "archkit:" on its own line.
+  try {
+    const list = execFileSync("claude", ["mcp", "list"], {
+      encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000,
+    });
+    if (/^archkit:/m.test(list)) {
+      log.ok("MCP archkit server already registered with Claude Code");
+      return { registered: true, alreadyPresent: true };
     }
+  } catch {
+    // Listing failed (network, auth) — proceed with add attempt anyway.
   }
 
-  const existing = cfg.mcpServers.archkit;
-  if (existing && existing.command !== "archkit-mcp") {
-    log.warn(`mcp.json already has an 'archkit' entry with a different command (${existing.command}). Leaving it alone.`);
-    return;
+  try {
+    execFileSync("claude", ["mcp", "add", "archkit", "archkit-mcp", "--scope", "user"], {
+      stdio: ["pipe", "pipe", "pipe"], timeout: 10000,
+    });
+    log.ok("Registered archkit MCP server with Claude Code (user scope)");
+    return { registered: true, alreadyPresent: false };
+  } catch (err) {
+    log.warn(`'claude mcp add' failed: ${err.message?.split("\n")[0] || err}`);
+    log.warn("You can register manually: claude mcp add archkit archkit-mcp --scope user");
+    return { registered: false, reason: "add-failed" };
   }
-  if (existing && existing.command === "archkit-mcp") {
-    log.ok(`MCP archkit entry already present in ${cfgPath}`);
-    return;
-  }
-
-  cfg.mcpServers.archkit = { command: "archkit-mcp", args: [] };
-  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-  log.ok(`Wrote archkit MCP entry to ${cfgPath}`);
 }
 
 export { main };

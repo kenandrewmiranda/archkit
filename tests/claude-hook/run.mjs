@@ -235,6 +235,36 @@ test("--install-hooks --claude-only skips git hook", () => {
   });
 });
 
+test("--install-hooks --mcp skips registration cleanly when claude CLI is absent", () => {
+  withGitDir((dir) => {
+    // Build an isolated PATH that contains node/which but not claude — exercises
+    // the graceful-degradation branch of installMcpEntry without breaking spawn.
+    const isolatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-no-claude-"));
+    try {
+      const nodePath = execFileSync("which", ["node"], { encoding: "utf8" }).trim();
+      const whichPath = execFileSync("which", ["which"], { encoding: "utf8" }).trim();
+      fs.symlinkSync(nodePath, path.join(isolatedDir, "node"));
+      fs.symlinkSync(whichPath, path.join(isolatedDir, "which"));
+
+      const out = execFileSync("node", [ARCHKIT_BIN, "init", "--install-hooks", "--claude-only", "--mcp", "--json"], {
+        cwd: dir,
+        env: { ...process.env, PATH: isolatedDir },
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10000,
+      });
+      const result = JSON.parse(out.toString("utf8").trim());
+      assert.equal(result.status, "installed", "init itself should still succeed");
+      assert.equal(result.mcp, false, "mcp.registered should be false when claude CLI is missing");
+      assert.ok(
+        String(result.mcp_action || "").startsWith("skipped:"),
+        `mcp_action should be 'skipped:*', got ${result.mcp_action}`
+      );
+    } finally {
+      fs.rmSync(isolatedDir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("--install-hooks --claude merges with existing settings", () => {
   withGitDir((dir) => {
     // Pre-create .claude/settings.json with a Bash hook

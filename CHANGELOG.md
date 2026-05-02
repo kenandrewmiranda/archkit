@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.2 — 2026-05-02
+
+### Fixed
+- `archkit init --mcp` now registers via `claude mcp add archkit archkit-mcp --scope user` instead of writing directly to `~/.claude/mcp.json`. Claude Code v2.x reads MCP config from `~/.claude.json` (managed by the `claude mcp` CLI), not from the legacy `~/.claude/mcp.json` path. v1.4.0 and v1.4.1 silently registered to the wrong file — `claude mcp list` did not show archkit, and the MCP tools were not available in sessions even when the installer claimed success.
+
+### Behavior
+- If the `claude` CLI is not on `PATH`, `archkit init --mcp` now warns clearly and prints the manual command to run.
+- Idempotent: re-running detects an existing `archkit:` entry in `claude mcp list` and does nothing.
+
 ## v1.4.1 — 2026-05-02
 
 ### Added
