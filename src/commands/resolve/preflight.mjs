@@ -5,7 +5,8 @@ import { loadFile, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 import { archkitError } from "../../lib/errors.mjs";
 
-export function cmdPreflight(archDir, featureId, layer) {
+export function cmdPreflight(archDir, featureId, layer, opts = {}) {
+  const cwd = opts.cwd || process.cwd();
   log.resolve(`Preflight check: ${featureId}.${layer}`);
   const indexContent = loadFile(archDir, "INDEX.md");
   const index = parseIndex(indexContent);
@@ -110,7 +111,7 @@ export function cmdPreflight(archDir, featureId, layer) {
     if (relevantPaths.length === 0) continue;
 
     for (const p of relevantPaths) {
-      const fullPath = path.resolve(process.cwd(), p);
+      const fullPath = path.resolve(cwd, p);
       if (!fs.existsSync(fullPath)) {
         driftFindings.push({
           type: isMultiPath ? "missing-file" : "missing-source",
