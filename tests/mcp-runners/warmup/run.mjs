@@ -35,6 +35,18 @@ await test("runWarmupJson returns pass/blockers/warnings/actions/checks", async 
   fs.rmSync(path.dirname(arch), { recursive: true, force: true });
 });
 
+await test("runWarmupJson surfaces instruction and marketplace fields for MCP agents", async () => {
+  const arch = makeFixture();
+  const result = await runWarmupJson({ archDir: arch, deep: false });
+  assert.equal(typeof result.instruction, "string", "instruction must be present so MCP agents know whether to proceed with codegen");
+  assert.ok(result.instruction.length > 0);
+  assert.equal(typeof result.marketplace, "object");
+  assert.ok(result.marketplace !== null);
+  assert.equal(typeof result.timestamp, "string");
+  assert.equal(typeof result.summary, "object");
+  fs.rmSync(path.dirname(arch), { recursive: true, force: true });
+});
+
 await test("runWarmupJson throws no_arch_dir when archDir is null", async () => {
   try { await runWarmupJson({ archDir: null }); assert.fail("expected throw"); }
   catch (err) { assert.ok(err instanceof ArchkitError); assert.equal(err.code, "no_arch_dir"); }

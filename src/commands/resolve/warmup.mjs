@@ -269,12 +269,5 @@ export async function runWarmupJson({ archDir, deep = false }) {
       suggestion: "Run `archkit init` in your project root.",
     });
   }
-  const result = cmdWarmup(archDir, deep);
-  return {
-    pass: result.pass,
-    blockers: result.blockers || [],
-    warnings: result.warnings || [],
-    actions: result.actions || [],
-    checks: result.checks || [],
-  };
+  return cmdWarmup(archDir, deep);
 }
