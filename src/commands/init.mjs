@@ -314,16 +314,17 @@ async function main() {
 
     // Claude hook (only if --claude or --claude-only)
     if (claudeMode) {
-      const { mergeClaudeSettings, readClaudeSettings, writeClaudeSettings } = await import("../lib/claude-settings.mjs");
+      const { mergeClaudeSettings, addSessionStartHook, readClaudeSettings, writeClaudeSettings } = await import("../lib/claude-settings.mjs");
       const claudeDir = path.resolve(".claude");
       fs.mkdirSync(claudeDir, { recursive: true });
       const settingsPath = path.join(claudeDir, "settings.json");
       const existing = readClaudeSettings(settingsPath);
-      const merged = mergeClaudeSettings(
+      let merged = mergeClaudeSettings(
         existing,
         "Edit|Write|MultiEdit",
         "archkit-claude-hook \"$TOOL_INPUT_PATH\""
       );
+      merged = addSessionStartHook(merged, "archkit-session-start");
       writeClaudeSettings(settingsPath, merged);
       result.claude_hook = settingsPath;
       result.claude_settings_action = Object.keys(existing).length > 0 ? "merged" : "created";

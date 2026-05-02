@@ -6,11 +6,12 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mergeClaudeSettings } from "../../src/lib/claude-settings.mjs";
+import { mergeClaudeSettings, addSessionStartHook } from "../../src/lib/claude-settings.mjs";
 import { ARCHKIT_PROTOCOL_SKILL } from "../../src/data/skill-templates.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.resolve(__dirname, "../../bin/archkit-claude-hook.mjs");
+const SESSION_HOOK = path.resolve(__dirname, "../../bin/archkit-session-start.mjs");
 
 let passed = 0;
 let failed = 0;
@@ -100,6 +101,75 @@ test("hook exits 0 silently when no path arg given", () => {
   });
 });
 
+// ── SessionStart Hook ─────────────────────────────────────────────────────────
+
+test("addSessionStartHook adds entry to empty settings", () => {
+  const result = addSessionStartHook({}, "archkit-session-start");
+  assert.ok(Array.isArray(result.hooks?.SessionStart));
+  assert.equal(result.hooks.SessionStart.length, 1);
+  assert.equal(result.hooks.SessionStart[0].hooks[0].command, "archkit-session-start");
+});
+
+test("addSessionStartHook does not duplicate", () => {
+  const first = addSessionStartHook({}, "archkit-session-start");
+  const second = addSessionStartHook(first, "archkit-session-start");
+  assert.equal(second.hooks.SessionStart.length, 1);
+});
+
+test("addSessionStartHook preserves other SessionStart entries", () => {
+  const existing = {
+    hooks: {
+      SessionStart: [
+        { hooks: [{ type: "command", command: "other-tool", timeout: 3000 }] },
+      ],
+    },
+  };
+  const result = addSessionStartHook(existing, "archkit-session-start");
+  assert.equal(result.hooks.SessionStart.length, 2);
+});
+
+test("session-start hook is silent outside an archkit project", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-sst-empty-"));
+  try {
+    const out = execFileSync("node", [SESSION_HOOK], {
+      cwd: tmp,
+      input: JSON.stringify({ cwd: tmp, hook_event_name: "SessionStart" }),
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
+    assert.equal(out.toString("utf8"), "", "should produce no output without .arch/SYSTEM.md");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("session-start hook emits additionalContext inside an archkit project", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-sst-arch-"));
+  try {
+    fs.mkdirSync(path.join(tmp, ".arch"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".arch", "SYSTEM.md"), "# System\n");
+
+    const out = execFileSync("node", [SESSION_HOOK], {
+      cwd: tmp,
+      input: JSON.stringify({ cwd: tmp, hook_event_name: "SessionStart" }),
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
+    const parsed = JSON.parse(out.toString("utf8"));
+    assert.equal(parsed.hookSpecificOutput?.hookEventName, "SessionStart");
+    assert.ok(
+      parsed.hookSpecificOutput?.additionalContext?.includes("archkit_resolve_warmup"),
+      "additionalContext should mention archkit_resolve_warmup"
+    );
+    assert.ok(
+      parsed.hookSpecificOutput.additionalContext.includes(".arch/"),
+      "additionalContext should mention .arch/"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ── Init --install-hooks Integration ─────────────────────────────────────────
 
 const ARCHKIT_BIN = path.resolve(__dirname, "../../bin/archkit.mjs");
@@ -136,6 +206,15 @@ test("--install-hooks --claude writes both git hook and claude settings", () => 
     assert.ok(
       Array.isArray(settings.hooks?.PreToolUse) && settings.hooks.PreToolUse.length >= 1,
       "PreToolUse should have at least 1 entry"
+    );
+    assert.ok(
+      Array.isArray(settings.hooks?.SessionStart) && settings.hooks.SessionStart.length >= 1,
+      "SessionStart should have at least 1 entry"
+    );
+    const sstCommands = settings.hooks.SessionStart.flatMap(h => h.hooks?.map(hh => hh.command) || []);
+    assert.ok(
+      sstCommands.some(c => c?.includes("archkit-session-start")),
+      "SessionStart should include the archkit-session-start command"
     );
   });
 });

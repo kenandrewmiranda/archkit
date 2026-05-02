@@ -24,6 +24,25 @@ export function mergeClaudeSettings(existing, matcher, command) {
   return settings;
 }
 
+export function addSessionStartHook(existing, command) {
+  const settings = JSON.parse(JSON.stringify(existing || {}));
+  settings.hooks = settings.hooks || {};
+  settings.hooks.SessionStart = settings.hooks.SessionStart || [];
+
+  // Skip if an archkit SessionStart hook is already wired up
+  const dup = settings.hooks.SessionStart.find(h =>
+    h.hooks?.some(hh => hh.command?.includes("archkit-session-start"))
+  );
+  if (dup) return settings;
+
+  settings.hooks.SessionStart.push({
+    hooks: [
+      { type: "command", command, timeout: 5000 },
+    ],
+  });
+  return settings;
+}
+
 export function readClaudeSettings(filepath) {
   if (!fs.existsSync(filepath)) return {};
   try {
