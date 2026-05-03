@@ -16,6 +16,7 @@ import { runLookupJson } from "../commands/resolve.mjs";
 import { runGotchaListJson, runGotchaProposeJson } from "../commands/gotcha.mjs";
 import { runStatsJson } from "../commands/stats.mjs";
 import { runDriftJson } from "../commands/drift.mjs";
+import { runLogDecisionJson } from "../commands/decisions.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
 function findArchDir(cwd) {
@@ -147,6 +148,22 @@ export const tools = {
     handler: async () => {
       const cwd = process.cwd();
       return runDriftJson({ archDir: requireArchDir(cwd), cwd });
+    },
+  },
+
+  archkit_log_decision: {
+    description: "Append an ADR-style decision record to .arch/decisions/ — auto-numbered, dated, and slugified. When to use: WHENEVER a non-trivial architectural choice is made (stack, pattern, library, tradeoff). The .arch/decisions/ directory is the project's institutional memory across LLM context resets — every load-bearing choice belongs here.",
+    inputSchema: z.object({
+      title: z.string().min(1).describe("Short imperative summary of the decision, e.g. 'Use Postgres as primary database'."),
+      context: z.string().min(1).describe("What forces are at play? What problem are we solving? Multi-line markdown."),
+      decision: z.string().min(1).describe("What was decided, in active voice. Multi-line markdown."),
+      consequences: z.string().min(1).describe("What becomes easier, harder, or constrained as a result. Multi-line markdown."),
+      status: z.enum(["proposed", "accepted", "superseded", "deprecated"]).optional().describe("Default 'accepted'."),
+      tags: z.array(z.string().min(1)).optional().describe("Optional categorization, e.g. ['database', 'stack']."),
+    }),
+    handler: async (input) => {
+      const cwd = process.cwd();
+      return runLogDecisionJson({ archDir: requireArchDir(cwd), ...input });
     },
   },
 };

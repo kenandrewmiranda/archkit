@@ -83,7 +83,22 @@ archkit --claude
 
 archkit ships a Model Context Protocol server so AI agents can call archkit's review/resolve/stats tools natively, without shell-outs.
 
-### Install
+### Install — Claude Code plugin (recommended)
+
+If you use Claude Code, install archkit as a plugin so the MCP server, SessionStart hook, and `/archkit-init` wizard land as one atomic unit. Plugin install handles MCP registration for you — no `claude mcp add` step.
+
+```bash
+# (Plugin marketplace URL — set per your distribution channel)
+# In Claude Code: /plugins → add marketplace → install archkit
+```
+
+The plugin includes:
+
+- **MCP server** — all `archkit_*` tools, including the new `archkit_log_decision` for ADR-style decision records
+- **SessionStart hook** — factual context nudge when `.arch/SYSTEM.md` is present
+- **Bundled archetype skeletons** — eight canonical archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data) plus a generic fallback
+
+### Install — npm (Cursor, Continue, CI, or Claude Code without plugins)
 
 ```bash
 npm install -g archkit
@@ -91,7 +106,7 @@ npm install -g archkit
 
 Registers four bins on your `PATH`: `archkit` (CLI), `archkit-mcp` (MCP server), `archkit-claude-hook` (PreToolUse drift guard), `archkit-session-start` (SessionStart context nudge).
 
-### Wire it up to Claude Code
+### Wire it up to Claude Code (npm install path)
 
 ```bash
 cd <your-project>
@@ -105,6 +120,8 @@ This does three things:
 3. Registers archkit as an MCP server via `claude mcp add archkit archkit-mcp --scope user` so Claude Code starts the server on every session.
 
 **Restart Claude Code after running this** — it picks up the MCP server on session start, not mid-session. After restart, `/mcp` should show `archkit ✓ Connected`.
+
+(Skip this step entirely if you installed via the Claude Code plugin — the plugin manifest registers the MCP server and hook automatically.)
 
 ### What the hooks do
 
@@ -146,6 +163,7 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 - `archkit_gotcha_list` — list skills with gotcha counts
 - `archkit_stats` — health dashboard data
 - `archkit_drift` — detect stale `.arch/` files
+- `archkit_log_decision` — append an ADR-style decision record to `.arch/decisions/`
 
 All tools return structured JSON in MCP `text` content. Errors flow through `isError: true` with the standard archkit envelope (`code`, `message`, `suggestion`, `docsUrl`).
 

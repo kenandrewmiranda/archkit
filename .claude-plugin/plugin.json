@@ -1,0 +1,26 @@
+{
+  "name": "archkit",
+  "version": "1.5.0",
+  "description": "Inject architectural thought into one-shot LLM coding. Bundles the archkit MCP server, SessionStart hook, and the /archkit-init project wizard.",
+  "author": {
+    "name": "Ken Miranda",
+    "email": "meetdaxie@gmail.com"
+  },
+  "homepage": "https://thearchkit.com",
+  "repository": "https://github.com/kenandrewmiranda/archkit",
+  "license": "MIT",
+  "keywords": [
+    "context-engineering",
+    "architecture",
+    "scaffolder",
+    "mcp",
+    "claude-code"
+  ],
+  "mcpServers": {
+    "archkit": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/archkit-mcp.mjs"]
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}

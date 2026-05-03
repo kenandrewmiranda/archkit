@@ -1,6 +1,6 @@
 // src/mcp/server.mjs
 // archkit MCP server — stdio transport, no auth, no persistent state.
-// Exposes 10 archkit_* tools defined in ./tools.mjs.
+// Exposes the archkit_* tools defined in ./tools.mjs.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -50,5 +50,5 @@ export async function startMcpServer() {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  process.stderr.write("[archkit-mcp] ready (stdio, 10 tools)\n");
+  process.stderr.write(`[archkit-mcp] ready (stdio, ${Object.keys(tools).length} tools)\n`);
 }

@@ -26,6 +26,7 @@ const commands = {
   review:   "../src/commands/review.mjs",
   stats:    "../src/commands/stats.mjs",
   drift:    "../src/commands/drift.mjs",
+  decisions: "../src/commands/decisions.mjs",
   export:   "../src/commands/export.mjs",
   sync:     "../src/commands/sync.mjs",
   update:   "../src/commands/update.mjs",
