@@ -227,6 +227,24 @@ async function main() {
 
   if (!jsonMode) banner();
 
+  // Discovery nudge: if there's no .arch/ here yet, point greenfield Claude
+  // Code users at the v1.5+ skill-based wizard before they fall into the
+  // legacy reverse-engineering scaffolder. Suppress in JSON mode and when an
+  // explicit "I know what I'm doing" flag is present.
+  const explicitFlags = ["--agent-scaffold", "--overwrite", "--install-hooks", "--mcp", "--claude"];
+  const noArchYet = !fs.existsSync(path.resolve(".arch", "SYSTEM.md"));
+  const userKnows = explicitFlags.some(f => args.includes(f));
+  if (!jsonMode && noArchYet && !userKnows && process.stdout.isTTY) {
+    console.log(`${C.cyan}  ◆ For new projects, the /archkit-init Claude Code skill is the recommended setup path.${C.reset}`);
+    console.log(`${C.gray}    It's PRD-aware and uses the new 9-archetype taxonomy with WebSearch-resolved versions.${C.reset}`);
+    console.log(`${C.gray}    To use it, run:  ${C.reset}${C.green}archkit wizard${C.reset}`);
+    console.log(`${C.gray}    Or in Claude Code, ask Claude to read and execute the skill at the path it prints.${C.reset}`);
+    console.log("");
+    console.log(`${C.gray}    The CLI wizard below is the legacy path — it reverse-engineers .arch/ from existing code,${C.reset}`);
+    console.log(`${C.gray}    which is the right tool when you have a codebase but not for greenfield setup.${C.reset}`);
+    console.log("");
+  }
+
   // ── Agent Scaffold Mode ────────────────────────────────────────────────────
   if (args.includes("--agent-scaffold")) {
     const { TEMPLATES } = await import("../data/agent-scaffold-templates.mjs");

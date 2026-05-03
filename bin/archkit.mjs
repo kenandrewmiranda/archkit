@@ -28,6 +28,7 @@ const commands = {
   drift:    "../src/commands/drift.mjs",
   decisions: "../src/commands/decisions.mjs",
   prd:      "../src/commands/prd.mjs",
+  wizard:   "../src/commands/wizard.mjs",
   export:   "../src/commands/export.mjs",
   sync:     "../src/commands/sync.mjs",
   update:   "../src/commands/update.mjs",

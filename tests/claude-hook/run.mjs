@@ -128,7 +128,11 @@ test("addSessionStartHook preserves other SessionStart entries", () => {
   assert.equal(result.hooks.SessionStart.length, 2);
 });
 
-test("session-start hook is silent outside an archkit project", () => {
+test("session-start hook emits greenfield-setup context outside an archkit project", () => {
+  // v1.5.2: when no .arch/ exists, the hook nudges the agent toward the
+  // /archkit-init wizard skill rather than silently falling through. Without
+  // this, agents discover the legacy `archkit init` CLI scaffolder first and
+  // never find the v1.5+ skill-based wizard.
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-sst-empty-"));
   try {
     const out = execFileSync("node", [SESSION_HOOK], {
@@ -137,7 +141,20 @@ test("session-start hook is silent outside an archkit project", () => {
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 5000,
     });
-    assert.equal(out.toString("utf8"), "", "should produce no output without .arch/SYSTEM.md");
+    const parsed = JSON.parse(out.toString("utf8"));
+    assert.equal(parsed.hookSpecificOutput?.hookEventName, "SessionStart");
+    assert.ok(
+      parsed.hookSpecificOutput?.additionalContext?.includes("archkit_prd_check"),
+      "setup context should mention archkit_prd_check as the first step"
+    );
+    assert.ok(
+      parsed.hookSpecificOutput?.additionalContext?.includes("skills/archkit-init/SKILL.md"),
+      "setup context should reference the wizard SKILL.md path"
+    );
+    assert.ok(
+      parsed.hookSpecificOutput?.additionalContext?.includes("Do NOT use the legacy"),
+      "setup context should explicitly steer away from `archkit init` CLI"
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
