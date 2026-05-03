@@ -152,8 +152,17 @@ test("session-start hook emits greenfield-setup context outside an archkit proje
       "setup context should reference the wizard SKILL.md path"
     );
     assert.ok(
-      parsed.hookSpecificOutput?.additionalContext?.includes("Do NOT use the legacy"),
+      parsed.hookSpecificOutput?.additionalContext?.includes("legacy `archkit init` CLI"),
       "setup context should explicitly steer away from `archkit init` CLI"
+    );
+    // v1.5.3 — phrasing must close the escape hatches v1.5.2 dogfood revealed.
+    assert.ok(
+      parsed.hookSpecificOutput?.additionalContext?.includes("YOU run the wizard yourself"),
+      "setup context should tell the agent to run the wizard themselves, not punt"
+    );
+    assert.ok(
+      parsed.hookSpecificOutput?.additionalContext?.includes("YOU are the runtime"),
+      "setup context should explain there is no separate runtime"
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

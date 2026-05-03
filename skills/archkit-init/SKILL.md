@@ -5,9 +5,11 @@ description: Initialize a new archkit project. Walks the user through picking an
 
 # archkit-init — project foundation wizard
 
+> **You are reading this file because you (the agent) were asked to set up archkit, or because you read this skill at the user's request. Reading this file IS how the wizard runs.** You do not need a slash command, a CLI runner, or any external trigger. You execute the wizard yourself by following the steps below: ask the user the questions the steps name, perform the file writes the steps name, and call the MCP tools the steps name. Use AskUserQuestion for choice prompts, plain chat for clarifying questions, Read for additional context (especially the archetype skeletons), Write/Edit for the `.arch/` seed files, WebSearch for version resolution, and `archkit_log_decision` for the foundation ADR. There is no other invocation mechanism — you ARE the runtime.
+
 This skill is the entry point to archkit. Your job is to help the user pick the right architectural foundation for their project and write a `.arch/` seed they can grow into. The output is intentionally a *seed*, not a complete spec — stickiness comes from accumulated additions over time, not the initial scaffold.
 
-The eight canonical archetype skeletons live at `${CLAUDE_PLUGIN_ROOT}/skills/archkit-init/skeletons/<archetype>.md`. Each skeleton is the source of truth for that archetype's defaults — read the relevant one in full before writing files.
+The eight canonical archetype skeletons live at `${CLAUDE_PLUGIN_ROOT}/skills/archkit-init/skeletons/<archetype>.md` (plugin install) or at `<this-skill-file's-directory>/skeletons/<archetype>.md` (npm install — derive from the file path you used to read this SKILL.md). Each skeleton is the source of truth for that archetype's defaults — read the relevant one in full before writing files.
 
 ## Step 0 — Check for a PRD
 

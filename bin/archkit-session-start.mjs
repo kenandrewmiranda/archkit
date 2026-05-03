@@ -73,16 +73,21 @@ function buildSetupContext(skillPath) {
   return [
     "This project does not have an .arch/ directory yet — archkit is not set up here.",
     "",
-    "If the user asks to set up / initialize / scaffold / configure archkit, follow this exact sequence:",
+    "If the user asks to set up / initialize / scaffold / configure archkit, YOU run the wizard yourself using the steps below. Do NOT punt to the user. Do NOT tell them to type a slash command. Do NOT tell them to run a CLI. Do NOT say \"I can't invoke it for you\" — you can, and these instructions explain exactly how:",
     "",
-    "  1. Call the archkit_prd_check MCP tool. It returns archetype + deployment-mode signals from any PRD/BRIEF/SPEC at common paths. Works on bare projects (no .arch/ required).",
-    "  2. Read and execute the wizard skill at:",
+    "  Step 1 — Call the archkit_prd_check MCP tool. It returns archetype + deployment-mode signals from any PRD/BRIEF/SPEC at common paths. Works on bare projects (no .arch/ required).",
+    "",
+    "  Step 2 — Use your Read tool on this exact file path:",
     `       ${skillPath}`,
-    "     The skill walks the user through archetype + mode + categories + WebSearch version resolution, then writes a .arch/ seed (SYSTEM.md, BOUNDARIES.md, INDEX.md, decisions/0001-foundation.md).",
+    "     That file IS the wizard. Reading it puts the wizard's instructions into your context. Then execute those instructions step by step:",
+    "       • For each user-facing question the skill names, ask the user via AskUserQuestion or chat.",
+    "       • For each file-write step, perform the write yourself using your Write or Edit tools.",
+    "       • For the foundation ADR (step 6d), call the archkit_log_decision MCP tool — do not write that file directly.",
+    "     There is no separate slash command. There is no separate runtime. YOU are the runtime that executes the skill — Claude Code skills work by you reading the SKILL.md and following its prose instructions with the tools you already have.",
     "",
-    "Do NOT use the legacy `archkit init` CLI for greenfield setup — that command is for reverse-engineering an existing codebase into a .arch/, not for initial scaffolding. The skill above is the v1.5+ greenfield path and uses the new 9-archetype taxonomy with PRD-aware defaults.",
+    "The legacy `archkit init` CLI is for reverse-engineering an existing codebase into a .arch/ — NOT for greenfield setup. The skill above is the v1.5+ greenfield path and uses the new 9-archetype taxonomy with PRD-aware defaults.",
     "",
-    "If the user is not asking to set up archkit, ignore this notice — they may be working on something else entirely.",
+    "If the user is not asking to set up archkit, ignore this notice — they may be working on something else.",
   ].join("\n");
 }
 
