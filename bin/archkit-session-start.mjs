@@ -56,7 +56,8 @@ const IN_PROJECT_CONTEXT = [
   "",
   "Before answering questions about this project's spec, structure, conventions, or where code should go, call archkit_resolve_warmup — it returns a structured digest of .arch/ joined across all spec files. Reading .arch/*.md directly returns raw markdown and partial context.",
   "",
-  "Other archkit MCP tools available (12 total):",
+  "Other archkit MCP tools available (13 total):",
+  "  • archkit_init — initialize archkit on greenfield projects (returns the wizard inline). Use when re-initializing or augmenting setup.",
   "  • archkit_resolve_warmup — pre-session health check.",
   "  • archkit_resolve_preflight — verify a feature/layer is wired before edits.",
   "  • archkit_resolve_lookup — resolve symbols against .arch/.",
@@ -69,25 +70,19 @@ const IN_PROJECT_CONTEXT = [
   "  • archkit_prd_check — detect a PRD/BRIEF/SPEC and (when .arch/ exists) check it against SYSTEM.md for archetype/mode drift.",
 ].join("\n");
 
-function buildSetupContext(skillPath) {
+function buildSetupContext() {
+  // Single sentence as of v1.5.4: the archkit_init MCP tool is the canonical
+  // discovery surface and returns the full wizard inline. No need to describe
+  // SKILL.md paths, escape hatches, or runtime mechanics — those were
+  // band-aids in v1.5.0–v1.5.3 over a missing tool. Calling archkit_init
+  // returns wizardInstructions + skeleton index + PRD signal + nextStep hint
+  // in one response.
   return [
     "This project does not have an .arch/ directory yet — archkit is not set up here.",
     "",
-    "If the user asks to set up / initialize / scaffold / configure archkit, YOU run the wizard yourself using the steps below. Do NOT punt to the user. Do NOT tell them to type a slash command. Do NOT tell them to run a CLI. Do NOT say \"I can't invoke it for you\" — you can, and these instructions explain exactly how:",
+    "If the user asks to set up / initialize / scaffold / configure archkit, call the archkit_init MCP tool. It returns the full wizard instructions inline along with PRD scan results, the skeleton index for all 9 archetypes, and a nextStep hint. Drive the wizard conversation from there using the tools the instructions name (AskUserQuestion for choices, Read for archetype skeletons, Write/Edit for the .arch/ seed, archkit_log_decision for the foundation ADR).",
     "",
-    "  Step 1 — Call the archkit_prd_check MCP tool. It returns archetype + deployment-mode signals from any PRD/BRIEF/SPEC at common paths. Works on bare projects (no .arch/ required).",
-    "",
-    "  Step 2 — Use your Read tool on this exact file path:",
-    `       ${skillPath}`,
-    "     That file IS the wizard. Reading it puts the wizard's instructions into your context. Then execute those instructions step by step:",
-    "       • For each user-facing question the skill names, ask the user via AskUserQuestion or chat.",
-    "       • For each file-write step, perform the write yourself using your Write or Edit tools.",
-    "       • For the foundation ADR (step 6d), call the archkit_log_decision MCP tool — do not write that file directly.",
-    "     There is no separate slash command. There is no separate runtime. YOU are the runtime that executes the skill — Claude Code skills work by you reading the SKILL.md and following its prose instructions with the tools you already have.",
-    "",
-    "The legacy `archkit init` CLI is for reverse-engineering an existing codebase into a .arch/ — NOT for greenfield setup. The skill above is the v1.5+ greenfield path and uses the new 9-archetype taxonomy with PRD-aware defaults.",
-    "",
-    "If the user is not asking to set up archkit, ignore this notice — they may be working on something else.",
+    "The legacy `archkit init` CLI is for reverse-engineering an existing codebase — not for greenfield setup. archkit_init is the right tool for new projects.",
   ].join("\n");
 }
 
@@ -104,9 +99,7 @@ process.stdin.on("end", () => {
   if (archDir) {
     additionalContext = IN_PROJECT_CONTEXT;
   } else {
-    const skillPath = resolveSkillPath();
-    if (!fs.existsSync(skillPath)) process.exit(0); // archkit install is incomplete — stay silent
-    additionalContext = buildSetupContext(skillPath);
+    additionalContext = buildSetupContext();
   }
 
   process.stdout.write(JSON.stringify({

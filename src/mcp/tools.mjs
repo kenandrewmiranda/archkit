@@ -18,6 +18,7 @@ import { runStatsJson } from "../commands/stats.mjs";
 import { runDriftJson } from "../commands/drift.mjs";
 import { runLogDecisionJson } from "../commands/decisions.mjs";
 import { runPrdCheckJson } from "../commands/prd.mjs";
+import { runInitJson } from "../commands/init-mcp.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
 function findArchDir(cwd) {
@@ -179,6 +180,17 @@ export const tools = {
       let archDir = null;
       try { archDir = requireArchDir(cwd); } catch { /* ok — PRD check works without .arch/ */ }
       return runPrdCheckJson({ archDir, cwd, prdPath });
+    },
+  },
+
+  archkit_init: {
+    description: "Initialize archkit in a project — THE canonical entry point for greenfield setup. Use this WHENEVER the user asks to set up / initialize / scaffold / configure archkit, or asks how to start with archkit. Returns the full wizard instructions inline (no separate SKILL.md to find), the skeleton index for all 9 archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data, _generic), the result of an internal PRD scan, and a nextStep hint. After calling this tool, you have everything needed to drive the wizard conversation: ask the user the questions the wizardInstructions name, perform the file writes the wizardInstructions name, call other archkit_* MCP tools where named (especially archkit_log_decision for the foundation ADR). Works on both greenfield (no .arch/) and re-init scenarios.",
+    inputSchema: z.object({}),
+    handler: async () => {
+      const cwd = process.cwd();
+      let archDir = null;
+      try { archDir = requireArchDir(cwd); } catch { /* greenfield — that's fine */ }
+      return runInitJson({ cwd, archDir });
     },
   },
 };

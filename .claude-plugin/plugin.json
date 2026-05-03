@@ -1,6 +1,6 @@
 {
   "name": "archkit",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Inject architectural thought into one-shot LLM coding. Bundles the archkit MCP server, SessionStart hook, and the /archkit-init project wizard.",
   "author": {
     "name": "Ken Miranda",

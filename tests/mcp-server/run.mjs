@@ -64,7 +64,7 @@ await log("initialize handshake succeeds", async () => {
   }
 });
 
-await log("tools/list returns all 12 tools", async () => {
+await log("tools/list returns all 13 tools", async () => {
   const tmp = makeFixture();
   try {
     await withClient(tmp, async (client) => {
@@ -74,6 +74,7 @@ await log("tools/list returns all 12 tools", async () => {
         "archkit_drift",
         "archkit_gotcha_list",
         "archkit_gotcha_propose",
+        "archkit_init",
         "archkit_log_decision",
         "archkit_prd_check",
         "archkit_resolve_lookup",

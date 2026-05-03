@@ -143,26 +143,17 @@ test("session-start hook emits greenfield-setup context outside an archkit proje
     });
     const parsed = JSON.parse(out.toString("utf8"));
     assert.equal(parsed.hookSpecificOutput?.hookEventName, "SessionStart");
+    // v1.5.4 — collapsed to a single canonical action: call archkit_init.
+    // The MCP tool itself returns the full wizard inline + PRD signal +
+    // skeleton index + nextStep hint, so the hook no longer needs to
+    // describe SKILL.md paths, escape hatches, or runtime mechanics.
     assert.ok(
-      parsed.hookSpecificOutput?.additionalContext?.includes("archkit_prd_check"),
-      "setup context should mention archkit_prd_check as the first step"
-    );
-    assert.ok(
-      parsed.hookSpecificOutput?.additionalContext?.includes("skills/archkit-init/SKILL.md"),
-      "setup context should reference the wizard SKILL.md path"
+      parsed.hookSpecificOutput?.additionalContext?.includes("archkit_init"),
+      "setup context should name archkit_init as the canonical action"
     );
     assert.ok(
       parsed.hookSpecificOutput?.additionalContext?.includes("legacy `archkit init` CLI"),
-      "setup context should explicitly steer away from `archkit init` CLI"
-    );
-    // v1.5.3 — phrasing must close the escape hatches v1.5.2 dogfood revealed.
-    assert.ok(
-      parsed.hookSpecificOutput?.additionalContext?.includes("YOU run the wizard yourself"),
-      "setup context should tell the agent to run the wizard themselves, not punt"
-    );
-    assert.ok(
-      parsed.hookSpecificOutput?.additionalContext?.includes("YOU are the runtime"),
-      "setup context should explain there is no separate runtime"
+      "setup context should still steer away from the legacy CLI scaffolder"
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
