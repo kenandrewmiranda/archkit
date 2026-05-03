@@ -9,9 +9,24 @@ This skill is the entry point to archkit. Your job is to help the user pick the 
 
 The eight canonical archetype skeletons live at `${CLAUDE_PLUGIN_ROOT}/skills/archkit-init/skeletons/<archetype>.md`. Each skeleton is the source of truth for that archetype's defaults — read the relevant one in full before writing files.
 
+## Step 0 — Check for a PRD
+
+Before anything else, call the `archkit_prd_check` MCP tool. It scans common locations (`PRD.md`, `docs/PRD.md`, `BRIEF.md`, `SPEC.md`, `REQUIREMENTS.md`, etc.) and returns a structured signal payload.
+
+If `prdFound: true`:
+
+1. **Read the PRD in full.** Use the Read tool on `prdPath`. The keyword heuristic returns a useful signal but does not capture nuance — the model needs the actual text to reason well.
+2. **Take note of `recommendedArchetype` and `signals.deploymentMode`.** These are the heuristic's best guesses based on keyword density. They're inputs to the user's choice in steps 1 and 3, not substitutes for it.
+3. **Surface the PRD to the user**: "I found a PRD at `<path>`. Based on its contents I'd recommend the `<recommendedArchetype>` archetype" — then walk through the rest of the wizard with the PRD as context. When you reach step 1 (archetype pick), present `recommendedArchetype` as the suggested default but let the user pick differently.
+4. **If `findings` includes an `archetype_mismatch`** (only happens when `.arch/SYSTEM.md` already exists), surface it before the pre-flight overwrite question — the user may be re-running the wizard *because* the PRD has shifted and that should be acknowledged explicitly.
+
+If `prdFound: false`, proceed normally — the wizard works fine without a PRD; the user will describe the product in step 1.
+
+**Do not skip this step even if the user did not mention a PRD.** Many vibe-coders do have one (or generated one with an LLM earlier) and forgot to mention it. The tool returns quickly when no PRD is present.
+
 ## Pre-flight check
 
-Before anything else:
+After the PRD check:
 
 1. Check whether `.arch/SYSTEM.md` already exists in the user's project root.
 2. If it does, ask the user: "I see you already have a `.arch/` directory. Are you re-initializing (start over and overwrite), augmenting (skip writing files I'd overwrite), or did you mean to do something else?"
@@ -34,6 +49,8 @@ The eight canonical archetypes plus `_generic`:
 - **_generic** — Fallback when shape isn't clear yet or the project is a hybrid
 
 Use the AskUserQuestion tool (or a numbered chat list) to let the user pick. For each option, show a one-line description from above. If the user is unsure, ask 2-3 clarifying questions about what they're building before steering them.
+
+**If step 0 returned a `recommendedArchetype` from a PRD**, present it as the suggested default: "Based on your PRD, `<archetype>` looks right (`<top matched keywords>`). Accept that, or pick differently?" Most users will accept; trust the heuristic when the score is high (5+ matches).
 
 If the user describes a hybrid (e.g. "a SaaS with an AI chatbot inside it"), pick the *dominant* archetype and treat the secondary as a feature inside it. SaaS-with-AI-feature is `saas`, not `ai`. Internal-tool-with-embedded-charts is `internal`, not `data`. Only pick `_generic` when no single archetype dominates.
 
@@ -59,6 +76,8 @@ If the user is unsure, ask:
 - "Is data residency a hard requirement?"
 
 Use answers to recommend a mode but let the user pick.
+
+**If step 0 returned a `signals.deploymentMode`**, surface it: "Your PRD mentions `<keywords like 'self-hosted', 'Kubernetes', 'data residency' OR 'Vercel', 'Supabase', 'Clerk'>` which suggests `<mode>`. Confirm or override?" Only recommend strongly when the PRD's mode signal is unambiguous.
 
 ## Step 4 — Walk the 8 categories
 

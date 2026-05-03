@@ -17,6 +17,7 @@ import { runGotchaListJson, runGotchaProposeJson } from "../commands/gotcha.mjs"
 import { runStatsJson } from "../commands/stats.mjs";
 import { runDriftJson } from "../commands/drift.mjs";
 import { runLogDecisionJson } from "../commands/decisions.mjs";
+import { runPrdCheckJson } from "../commands/prd.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
 function findArchDir(cwd) {
@@ -164,6 +165,20 @@ export const tools = {
     handler: async (input) => {
       const cwd = process.cwd();
       return runLogDecisionJson({ archDir: requireArchDir(cwd), ...input });
+    },
+  },
+
+  archkit_prd_check: {
+    description: "Detect a Product Requirements Document (PRD.md, BRIEF.md, SPEC.md, etc.) at common paths, score archetype signals from its content, and — if .arch/SYSTEM.md exists — surface mismatches between what the PRD asks for and what the system declares. When to use: BEFORE running /archkit-init (the wizard calls this first to pre-fill archetype picks), or whenever the user mentions a PRD / spec / brief / requirements doc, or to audit whether the current architecture still matches the PRD's intent. Does NOT require an .arch/ directory — works on bare projects too.",
+    inputSchema: z.object({
+      prdPath: z.string().optional().describe("Optional explicit path to the PRD. If omitted, common paths are searched (PRD.md, docs/PRD.md, BRIEF.md, SPEC.md, REQUIREMENTS.md, etc.)."),
+    }),
+    handler: async ({ prdPath }) => {
+      const cwd = process.cwd();
+      // archDir is optional for this tool — we want to be useful on bare projects
+      let archDir = null;
+      try { archDir = requireArchDir(cwd); } catch { /* ok — PRD check works without .arch/ */ }
+      return runPrdCheckJson({ archDir, cwd, prdPath });
     },
   },
 };

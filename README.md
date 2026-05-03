@@ -164,6 +164,7 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 - `archkit_stats` — health dashboard data
 - `archkit_drift` — detect stale `.arch/` files
 - `archkit_log_decision` — append an ADR-style decision record to `.arch/decisions/`
+- `archkit_prd_check` — detect a Product Requirements Document and check it against `.arch/SYSTEM.md`
 
 All tools return structured JSON in MCP `text` content. Errors flow through `isError: true` with the standard archkit envelope (`code`, `message`, `suggestion`, `docsUrl`).
 
