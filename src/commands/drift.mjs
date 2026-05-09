@@ -94,13 +94,27 @@ function detectFindings(archDir, cwd) {
   }
 
   // 4. Check SYSTEM.md app name against package.json
+  //    SYSTEM.md app names commonly carry a parenthetical description
+  //    ("arch-infographs (LinkedIn AI Content Pipeline)") — strip those before
+  //    comparison so the parenthetical doesn't break the substring check.
+  //    Also strip an npm scope from package.json (@scope/foo → foo) so a
+  //    scoped package matches an unscoped SYSTEM.md name.
   const systemContent = loadFile(archDir, "SYSTEM.md");
   if (systemContent) {
     const appNameMatch = systemContent.match(/^## App:\s*(.+)$/m);
     try {
       const pkgJson = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
-      if (appNameMatch && pkgJson.name && !pkgJson.name.includes(appNameMatch[1].trim().toLowerCase().replace(/\s+/g, "-"))) {
-        findings.push({ type: "name-mismatch", detail: `SYSTEM.md says "${appNameMatch[1].trim()}" but package.json name is "${pkgJson.name}"` });
+      if (appNameMatch && pkgJson.name) {
+        const rawAppName = appNameMatch[1].trim();
+        const normalized = rawAppName
+          .replace(/\([^)]*\)/g, "")
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "-");
+        const pkgUnscoped = pkgJson.name.replace(/^@[^/]+\//, "");
+        if (normalized && !pkgUnscoped.includes(normalized) && !pkgJson.name.includes(normalized)) {
+          findings.push({ type: "name-mismatch", detail: `SYSTEM.md says "${rawAppName}" but package.json name is "${pkgJson.name}"` });
+        }
       }
     } catch {}
   }
