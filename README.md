@@ -125,8 +125,19 @@ This does three things:
 
 ### What the hooks do
 
-- **SessionStart** — when Claude Code attaches to a project that has `.arch/SYSTEM.md`, the hook injects context naming `archkit_resolve_warmup` as the first call for spec/structure questions. Without this, agents tend to read `.arch/*.md` directly and miss the structured digest the MCP tools return.
-- **PreToolUse** — when an Edit/Write/MultiEdit targets a path under `src/features/...` or similar, the hook runs `archkit resolve preflight` and surfaces drift findings to the agent before the edit lands.
+archkit ships four hooks. The first names archkit; the next three are what v1.6 calls the **continuous-guardrail layer** — they fire on every prompt, every tool call, and every assistant turn so the agent's habits get nudged toward archkit even on long-running sessions where the SessionStart context has decayed out of working memory.
+
+- **SessionStart** — on attach to a project that has `.arch/SYSTEM.md`, injects a tools digest pointing the agent at `archkit_resolve_warmup` as the first call for spec/structure questions. Greenfield projects (no `.arch/`) get a setup nudge to call `archkit_init`.
+- **UserPromptSubmit** *(v1.6)* — before each user prompt is processed, keyword-matches the prompt against `.arch/INDEX.md`. If two or more keywords hit a feature node or skill, prepends a routing reminder and a specific call-to-action (`archkit_resolve_lookup` with the matched symbol). Highest-leverage hook for the v1.6 utilization goal because it fires before the agent reasons.
+- **PostToolUse** *(v1.6)* — after every tool call, increments the session-stats counter (the data behind the utilization metric). For Edit/Write/MultiEdit on source files inside `src/`, runs `archkit_review` inline and surfaces the top findings as additional context.
+- **Stop** *(v1.6)* — after every assistant turn, surfaces the current archkit utilization rate (per-task primary + per-session secondary), re-injects a compact form of `.arch/BOUNDARIES.md` (NEVER lines only) to keep rules fresh after Claude Code's context compression, scans the response for boundary violations (SQL string concat, hardcoded credentials, unvalidated `req.body`), and auto-drafts proposed ADRs from decision-language to `.arch/decisions/proposed/<hash>.json` for human review.
+
+The v1.6 utilization goal — agents should consult `archkit_resolve_preflight` or `archkit_resolve_lookup` *before* the first edit on a task. Compound metric:
+
+- **Per-task** (primary, target ≥75%): of editing tasks in a session, what fraction called preflight/lookup before the first Edit? A task starts on each user prompt; it's "instrumented" only if the preflight call happens *before* the first edit, not after.
+- **Per-session** (secondary): archkit MCP calls divided by the count of Edit + Read + Glob + Grep calls. Noisier signal that scales with session length.
+
+Both numbers are surfaced by the Stop hook every turn. Below target → the hook adds a specific reminder pointing at the next preflight to call.
 
 ### Manual MCP registration
 

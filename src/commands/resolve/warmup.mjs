@@ -141,6 +141,19 @@ export function cmdWarmup(archDir, deep) {
     }
   }
 
+  // 5b. Pending ADR proposals (v1.6 — auto-drafted by Stop hook from
+  //     decision-language in assistant turns; require human triage).
+  const proposedDir = path.join(archDir, "decisions", "proposed");
+  let pendingDecisionProposals = 0;
+  if (fs.existsSync(proposedDir)) {
+    pendingDecisionProposals = fs.readdirSync(proposedDir).filter(f => f.endsWith(".json")).length;
+    if (pendingDecisionProposals > 0) {
+      checks.push({ id: "W014", check: "Pending ADR proposals", status: "warn", detail: `${pendingDecisionProposals} pending` });
+      warnings.push(`${pendingDecisionProposals} proposed ADR(s) auto-drafted from recent decisions. Review at .arch/decisions/proposed/.`);
+      actions.push(`Review ${pendingDecisionProposals} proposal(s) at .arch/decisions/proposed/. For each: read the JSON, decide accept/edit/reject, call archkit_log_decision to promote, then delete the proposal file.`);
+    }
+  }
+
   // ── DEEP MODE CHECKS (--deep flag) ────────────────────────────────────
 
   if (deep) {
@@ -246,6 +259,7 @@ export function cmdWarmup(archDir, deep) {
       emptySkills: emptySkills.length,
       staleSkills: staleSkills.length,
       pendingTodoGotchas: pendingGotchas.reduce((s, p) => s + p.count, 0),
+      pendingDecisionProposals,
     },
     blockers,
     warnings,

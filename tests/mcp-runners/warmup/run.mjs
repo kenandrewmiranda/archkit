@@ -52,6 +52,26 @@ await test("runWarmupJson throws no_arch_dir when archDir is null", async () => 
   catch (err) { assert.ok(err instanceof ArchkitError); assert.equal(err.code, "no_arch_dir"); }
 });
 
+await test("runWarmupJson surfaces pendingDecisionProposals from .arch/decisions/proposed/ (v1.6)", async () => {
+  const arch = makeFixture();
+  // No proposed dir → 0
+  const r0 = await runWarmupJson({ archDir: arch, deep: false });
+  assert.equal(r0.summary.pendingDecisionProposals, 0, "missing dir → 0");
+
+  // Drop two proposal files
+  const proposed = path.join(arch, "decisions", "proposed");
+  fs.mkdirSync(proposed, { recursive: true });
+  fs.writeFileSync(path.join(proposed, "abc123def456.json"), "{}");
+  fs.writeFileSync(path.join(proposed, "987fed654321.json"), "{}");
+
+  const r2 = await runWarmupJson({ archDir: arch, deep: false });
+  assert.equal(r2.summary.pendingDecisionProposals, 2);
+  assert.ok(r2.actions.some(a => /Review 2 proposal/.test(a)), "actions should prompt review");
+  assert.ok(r2.warnings.some(w => /proposed ADR/.test(w)), "warnings should mention proposals");
+
+  fs.rmSync(path.dirname(arch), { recursive: true, force: true });
+});
+
 console.log("");
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
