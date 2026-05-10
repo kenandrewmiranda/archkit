@@ -23,10 +23,12 @@ cd examples/task-manager && node ../../bin/archkit.mjs review src/features/tasks
 
 # Run resolve commands
 cd examples/task-manager && node ../../bin/archkit.mjs resolve warmup --pretty
-cd examples/task-manager && node ../../bin/archkit.mjs resolve context "add task assignment" --pretty
+cd examples/task-manager && node ../../bin/archkit.mjs resolve preflight tasks controller --pretty
 ```
 
 ## Results Summary
+
+> **Snapshot taken 2026-03-31, pre-v1.4 archkit.** These numbers are a historical benchmark, not current state. Re-run after material changes to `archkit_review`'s app-type-aware checking before treating them as authoritative.
 
 See each demo's `RESULTS.md` for detailed findings. High-level:
 
@@ -36,4 +38,4 @@ See each demo's `RESULTS.md` for detailed findings. High-level:
 | chat-app | 4 | 0 | 4 | 0% |
 | doc-qa | 6 | 0 | 6 | 0% |
 
-**Key finding:** `archkit review` catches SaaS/layered architecture violations well (gotcha patterns, cross-feature imports, DB-in-controller, business logic leak) but has no checks for realtime or AI architecture violations. The review command needs app-type-aware checks.
+**Key finding (as of snapshot):** `archkit review` catches SaaS/layered architecture violations well (gotcha patterns, cross-feature imports, DB-in-controller, business logic leak) but has no checks for realtime or AI architecture violations. The review command needs app-type-aware checks.

@@ -1,5 +1,7 @@
 # task-manager — Review Results
 
+> **Snapshot taken 2026-03-31, pre-v1.4 archkit.** Historical benchmark only — re-run before treating these findings as current.
+
 ## What Was Tested
 
 SaaS app with layered architecture (Controller → Service → Repository). 4 source files with 5 intentional violations.

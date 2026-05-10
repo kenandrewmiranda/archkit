@@ -1,5 +1,7 @@
 # chat-app — Review Results
 
+> **Snapshot taken 2026-03-31, pre-v1.4 archkit.** Historical benchmark only — re-run before treating these findings as current.
+
 ## What Was Tested
 
 Realtime chat app with Gateway/Handler/Domain pattern. 3 source files with 4 intentional violations.

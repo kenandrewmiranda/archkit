@@ -1,5 +1,73 @@
 # Changelog
 
+## v1.6.2 — 2026-05-10
+
+### Docs
+- CHANGELOG backfilled with v1.5.0–v1.6.1 entries (was missing the entire v1.5 line and v1.6.0/v1.6.1).
+- Removed `docs/roadmap/mcp-server.md` — a 2026-04-18 roadmap for the MCP server, which shipped 10 days later in v1.4.0. The historical "why we shipped MCP" reasoning lives in the v1.4.0 CHANGELOG entry; the roadmap doc was pure future-confusion bait.
+- Fixed `examples/README.md` to use a real CLI command (`resolve preflight tasks controller`) instead of the non-existent `resolve context`.
+- Annotated `examples/*/RESULTS.md` and the examples summary table as **2026-03-31 / pre-v1.4 snapshots** so future readers don't misread them as current detection rates.
+
+## v1.6.1 — 2026-05-09
+
+### Fixed
+- `drift`: name-mismatch check no longer false-positives on SYSTEM.md app names that carry a parenthetical description (`"arch-infographs (LinkedIn AI Content Pipeline)"`). Now strips parentheticals before normalization, and matches both scoped and unscoped npm package names. Surfaced by arch-infographs dogfood under v1.6.0.
+
+## v1.6.0 — 2026-05-09
+
+### Added — continuous-guardrail layer (3 new hooks)
+- **Stop hook** (`archkit-stop-hook`): fires after every assistant turn. Surfaces the v1.6 utilization metric, re-injects a compact form of `.arch/BOUNDARIES.md` (NEVER lines only) so rules survive Claude Code's context compression, scans the response for boundary violations, and auto-drafts proposed ADRs from decision-language to `.arch/decisions/proposed/<hash>.json`.
+- **PostToolUse hook** (`archkit-posttooluse-hook`): fires after every tool call. Increments the session-stats utilization counter and, for Edit/Write/MultiEdit on source files in `src/`, runs `archkit_review` inline and surfaces the top findings as additional context.
+- **UserPromptSubmit hook** (`archkit-userpromptsubmit-hook`): fires before each user prompt is processed — the highest-leverage hook for the v1.6 utilization goal. Starts a new "task window" in session stats, keyword-matches the prompt against `.arch/INDEX.md`, and prepends matched feature/skill routing with a specific call-to-action (`archkit_resolve_lookup`) when ≥2 keywords hit.
+- **Compound utilization metric** — per-task primary (target ≥75% of editing tasks consult archkit before first edit) + per-session secondary (archkit calls / Edit+Read+Glob+Grep). Surfaced every turn by Stop hook.
+- `archkit_resolve_warmup` now reports `summary.pendingDecisionProposals` and surfaces a triage action when proposals are pending in `.arch/decisions/proposed/`.
+- Three new libs: `src/lib/session-stats.mjs`, `src/lib/decision-detector.mjs`, `src/lib/boundary-patterns.mjs`. Three universal NEVER detectors ship in v1.6.0: SQL string concatenation, hardcoded credential prefixes (sk-, AKIA, ghp_, AIza, npm_), and `req.body`/`req.query`/`req.params` without a validator hint nearby.
+
+### Why
+- v1.5 made archkit-aware setup work but the dogfood finding on arch-infographs was that LLMs are one-shot by nature: agents made multiple non-trivial architectural decisions (network mode, embedding dedupe threshold, routing precedence) without logging any ADRs. CLAUDE.md's "non-negotiable" prose did nothing because agents never reached for `archkit_log_decision` mid-flow. v1.6 replaces agent self-discipline with deterministic hooks that fire automatically every turn / every edit / every prompt.
+
+### Tests
+- 89 new tests across 6 suites. Synthetic decision-language corpus (30 positives + 30 negatives) shows 100/100 precision/recall — caveat: corpus and regex co-tuned. Real-world calibration is a v1.6.x follow-up.
+
+### Out of scope (deferred)
+- Plain-text password storage detection, stack-traces-to-client detection, HTTP-without-timeout detection — too FP-prone without window-checking. v1.6.x patches.
+- Per-archetype boundary patterns beyond universals — v1.6.x.
+- Auto-acceptance of proposed ADRs — must require human review.
+
+## v1.5.4 — 2026-05-03
+
+### Added
+- `archkit_init` MCP tool: the canonical greenfield entry point. Returns the full wizard instructions inline plus PRD scan results, the skeleton index for all 9 archetypes, and a `nextStep` hint — in one response. Replaces the v1.5.0–v1.5.3 chain of escape-hatch nudges that tried to steer agents toward a separate SKILL.md.
+
+### Why
+- Earlier v1.5.x dogfood showed that prose nudges in hook output don't reliably trigger agent behavior. The structural fix is an MCP tool whose description matches user intent ("set up / initialize / scaffold archkit") so the discovery problem becomes a tool-call problem instead of a prompt-engineering problem.
+
+## v1.5.3 — 2026-05-03
+
+### Fixed
+- Greenfield SessionStart hook: closed remaining v1.5.2 escape hatches that let agents discover the legacy `archkit init` CLI before the v1.5 wizard skill. Updated `skills/archkit-init/SKILL.md` header to match.
+
+## v1.5.2 — 2026-05-03
+
+### Fixed
+- Greenfield discovery: SessionStart hook now steers Claude toward the v1.5 wizard skill (`skills/archkit-init/SKILL.md`) instead of the legacy `archkit init` CLI scaffolder. The CLI stays available for reverse-engineering existing codebases; greenfield setup is wizard-driven.
+
+## v1.5.1 — 2026-05-03
+
+### Added
+- `archkit_prd_check` MCP tool: detects a PRD/BRIEF/SPEC at common paths (`PRD.md`, `BRIEF.md`, `SPEC.md`, `docs/prd.md`, etc.) and, when `.arch/` exists, scores the PRD's archetype + deployment-mode signals against `SYSTEM.md` to surface mismatches.
+- Wizard is now PRD-aware: its first action is to call `archkit_prd_check` so it can pre-fill archetype suggestions if a PRD exists.
+
+## v1.5.0 — 2026-05-03
+
+### Added
+- **Claude Code plugin packaging** (`.claude-plugin/plugin.json`): archkit ships as a single atomic install — MCP server, SessionStart hook, and the `/archkit-init` wizard skill all install together via Claude Code's plugin mechanism. npm install path remains the canonical surface for Cursor / Continue / CI / Claude Code without plugins.
+- **`/archkit-init` slash-command wizard skill** (`skills/archkit-init/SKILL.md`): seven-step interactive setup that runs in the chat pane (no terminal context-switch). Resolves the v1.4.x audience question — vibe-coders are the primary user, and the wizard meets them where they already are.
+- **Decisions ADRs** (`.arch/decisions/`): new top-level directory in archkit projects for human-authored architecture decision records. `archkit_log_decision` MCP tool appends a new ADR with consistent metadata.
+
+### Why
+- v1.4.x dogfood revealed that even with the SessionStart hook nudging toward MCP tools, the *initial setup* moment for a new project was still terminal-driven and vibe-coder-hostile. Plugin packaging + chat-pane wizard collapses install + setup into one frictionless flow.
+
 ## v1.4.2 — 2026-05-02
 
 ### Fixed

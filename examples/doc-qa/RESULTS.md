@@ -1,5 +1,7 @@
 # doc-qa — Review Results
 
+> **Snapshot taken 2026-03-31, pre-v1.4 archkit.** Historical benchmark only — re-run before treating these findings as current.
+
 ## What Was Tested
 
 AI-powered document Q&A app with Hexagonal + Pipeline pattern. 3 source files (2 chains, 1 prompt template) with 6 intentional violations.
