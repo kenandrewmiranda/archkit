@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.6.3 — 2026-05-19
+
+### Fixed
+- `drift` + `resolve warmup` W010: `parseIndex` now handles multi-node `## Nodes → Clusters → Files` lines like `@A @B @C → @cluster → .arch/clusters/cluster.graph`. Previously it captured only the first `@node`, set `cluster = nodeId` (since `[brackets]` were absent), and stored the literal `"@cluster → ..."` string as `basePath` — producing simultaneous false `orphaned-index-node`, `orphaned-graph`, and `missing-source` findings on every cluster line.
+- `parseIndex` cross-refs no longer require a parenthesized reason — bare `@A → @B` lines (which `archkit_stats` already counts) are now picked up too, so W010 stops contradicting stats on the same file.
+- `drift`: paths under `.arch/` or ending in `.graph`/`.skill`/`.api` are no longer checked as source files. Those are .arch/ artifacts and were already covered by the `orphaned-*` checks against directory contents.
+- Surfaced by arch-infographs dogfood: 11 spurious findings on every drift run, with stats/warmup/lookup all simultaneously reporting the same graphs as healthy.
+
 ## v1.6.2 — 2026-05-10
 
 ### Docs

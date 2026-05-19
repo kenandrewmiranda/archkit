@@ -82,16 +82,37 @@ export function parseIndex(content) {
       const skill = right.trim();
       keywords.forEach(k => { keywordSkills[k] = skill; });
     } else if (section === "nc") {
-      // Format: @node = [cluster] → base/path/  OR  @node = [cluster] → base/path/
-      // The left side has the node ref, right side may have [cluster] → path or just a path
-      const nodeMatch = left.match(/@(\w+)/);
-      const clusterMatch = (left + " " + right).match(/\[(\w+)\]/);
-      // Extract path: everything after the last → or after [cluster]
-      const pathFromRight = right.replace(/\[(\w+)\]\s*(?:→|->)*\s*/, "").trim();
-      if (nodeMatch) {
-        nodeCluster[nodeMatch[1]] = {
-          cluster: clusterMatch ? clusterMatch[1] : nodeMatch[1],
-          basePath: pathFromRight || `src/features/${nodeMatch[1]}/`,
+      // Supported formats for "## Nodes → Clusters → Files":
+      //   A) @node = [cluster] → base/path/                              (scaffold default)
+      //   A-list) @node = [cluster] → file1, file2                        (multi-file)
+      //   B) @A @B @C → @cluster → clusters/cluster.graph                 (multi-node)
+      //   C) @node → path                                                  (no cluster declared)
+      // Splitting on → arrows gives us the segments to identify nodes, cluster, and path.
+      const segments = line.split(/\s*(?:→|->)+\s*/).map(s => s.trim()).filter(Boolean);
+      if (segments.length < 2) continue;
+
+      const nodeIds = [...segments[0].matchAll(/@(\w+)/g)].map(m => m[1]);
+      if (nodeIds.length === 0) continue;
+
+      const bracketMatch = line.match(/\[(\w+)\]/);
+      let clusterId;
+      let basePath;
+
+      if (bracketMatch) {
+        clusterId = bracketMatch[1];
+        basePath = segments[segments.length - 1].replace(/\[\w+\]\s*/g, "").trim();
+      } else if (segments.length >= 3 && /^@\w+$/.test(segments[1])) {
+        clusterId = segments[1].slice(1);
+        basePath = segments.slice(2).join(" → ").trim();
+      } else {
+        clusterId = nodeIds[0];
+        basePath = segments.slice(1).join(" → ").trim();
+      }
+
+      for (const nodeId of nodeIds) {
+        nodeCluster[nodeId] = {
+          cluster: clusterId,
+          basePath: basePath || `src/features/${nodeId}/`,
         };
       }
     } else if (section === "sf") {
@@ -100,9 +121,10 @@ export function parseIndex(content) {
         skillFiles[skillMatch[1]] = right.trim();
       }
     } else if (section === "cr" && !line.startsWith("#")) {
-      const refMatch = line.match(/@(\w+)\s*(?:→|->)+\s*@(\w+)\s*\(([^)]+)\)/);
+      // Parenthesized reason is optional — stats counts bare `@A → @B` lines too.
+      const refMatch = line.match(/@(\w+)\s*(?:→|->)+\s*@(\w+)(?:\s*\(([^)]+)\))?/);
       if (refMatch) {
-        crossRefs.push({ from: refMatch[1], to: refMatch[2], reason: refMatch[3] });
+        crossRefs.push({ from: refMatch[1], to: refMatch[2], reason: refMatch[3] || "" });
       }
     }
   }

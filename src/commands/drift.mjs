@@ -81,6 +81,11 @@ function detectFindings(archDir, cwd) {
     const isMultiPath = paths.length > 1;
 
     for (const p of paths) {
+      // Paths into .arch/ (graph/skill/api artifacts) are validated by the
+      // orphaned-* checks against actual directory contents — don't double-flag
+      // them as missing source files.
+      if (p.startsWith(".arch/") || /\.(graph|skill|api)$/.test(p)) continue;
+
       const fullPath = path.join(cwd, p);
       if (!fs.existsSync(fullPath)) {
         const type = isMultiPath ? "missing-file" : "missing-source";
