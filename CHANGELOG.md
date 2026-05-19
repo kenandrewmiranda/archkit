@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.6.4 — 2026-05-19
+
+### Fixed
+- `review` no longer applies JS/TS-ecosystem heuristics to non-JS source files. The seven affected check modules (`api`, `db`, `cache`, `queue`, `frontend-wiring`, `event`, `floating-promise`) are now gated by file extension and, for ambiguous files, by a new `## Stack:` field parsed from `SYSTEM.md`.
+- Concretely: `ModelContext.fetch(...)` in a `.swift` file no longer produces a phantom `http-client` warning suggesting `AbortSignal.timeout(5000)`; Swift's `.from(_:)` static factory no longer triggers a `db-efficiency` warning suggesting a Drizzle `.where(...).limit(50)` chain. Same fix covers `.kt`, `.go`, `.py`, `.rs`, `.rb`, `.dart`, `.cs`, and other native-language extensions.
+- JS/TS reviews are unchanged — real `fetch()` calls and Drizzle `select().from(table)` queries are still flagged.
+- Surfaced by a Swift/SwiftUI/SwiftData dogfood report (see commit message). Root cause was that `src/commands/review.mjs` ran every check module on every file with no language gate.
+
+### Added
+- `parseSystem()` now extracts a `## Stack:` field alongside the existing `Type`/`Pattern`/`Conv` fields. Used by the language gate for files with ambiguous extensions.
+- `src/commands/review/language.mjs`: `classifyStack(stack)` and `shouldRunJsEcosystemChecks(filepath, stack)` helpers. Behavior preserved when no stack is declared.
+
+### Tests
+- 16 new tests in `tests/language-gating/` covering both the bug-report scenarios (Swift) and the no-regression cases (TypeScript).
+
 ## v1.6.3 — 2026-05-19
 
 ### Fixed

@@ -37,6 +37,7 @@ import {
 } from "./review/production-checks.mjs";
 import { checkFrontendWiring } from "./review/frontend-checks.mjs";
 import { checkEventPatterns } from "./review/event-checks.mjs";
+import { shouldRunJsEcosystemChecks } from "./review/language.mjs";
 import * as log from "../lib/logger.mjs";
 import { parseSuppressions, validateReason } from "../lib/suppression.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -405,7 +406,7 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
   }
 
   const systemContent = loadFile(archDir, "SYSTEM.md");
-  const { rules, reservedWords } = parseSystem(systemContent);
+  const { rules, reservedWords, stack } = parseSystem(systemContent);
   const skills = loadSkills(archDir);
   const graphs = loadGraphs(archDir);
   const appType = getAppType(systemContent);
@@ -425,19 +426,20 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
 
   for (const filepath of files) {
     const code = fs.readFileSync(filepath, "utf8");
+    const runJs = shouldRunJsEcosystemChecks(filepath, stack);
     const findings = [
       ...checkGotchas(code, skills),
       ...checkArchitectureRules(code, filepath, rules, reservedWords),
       ...checkFileLocation(filepath, graphs),
       ...checkImportHierarchy(code, filepath),
-      ...checkDatabasePatterns(code, filepath),
-      ...checkCachePatterns(code, filepath),
-      ...checkQueuePatterns(code, filepath),
-      ...checkApiPatterns(code, filepath),
+      ...(runJs ? checkDatabasePatterns(code, filepath) : []),
+      ...(runJs ? checkCachePatterns(code, filepath) : []),
+      ...(runJs ? checkQueuePatterns(code, filepath) : []),
+      ...(runJs ? checkApiPatterns(code, filepath) : []),
       ...checkFeatureCompleteness(code, filepath),
-      ...checkFrontendWiring(code, filepath),
-      ...checkEventPatterns(code, filepath),
-      ...checkFloatingPromise(code, filepath),
+      ...(runJs ? checkFrontendWiring(code, filepath) : []),
+      ...(runJs ? checkEventPatterns(code, filepath) : []),
+      ...(runJs ? checkFloatingPromise(code, filepath) : []),
       ...checkMockDataLeftover(code, filepath),
       ...checkDeadErrorHandler(code, filepath),
       ...checkUntrackedTodo(code, filepath),
@@ -572,7 +574,7 @@ async function main() {
   log.review("Loading .arch/ context...");
 
   const systemContent = loadFile(archDir, "SYSTEM.md");
-  const { rules, reservedWords } = parseSystem(systemContent);
+  const { rules, reservedWords, stack } = parseSystem(systemContent);
   const skills = loadSkills(archDir);
   const graphs = loadGraphs(archDir);
 
@@ -626,20 +628,21 @@ async function main() {
     log.review(`Checking ${filepath}`);
     if (firstFile) log.review("Validating import hierarchy...");
     const code = fs.readFileSync(filepath, "utf8");
+    const runJs = shouldRunJsEcosystemChecks(filepath, stack);
     const findings = [
       ...checkGotchas(code, skills),
       ...checkArchitectureRules(code, filepath, rules, reservedWords),
       ...checkFileLocation(filepath, graphs),
       ...checkImportHierarchy(code, filepath),
-      ...checkDatabasePatterns(code, filepath),
-      ...checkCachePatterns(code, filepath),
-      ...checkQueuePatterns(code, filepath),
-      ...checkApiPatterns(code, filepath),
+      ...(runJs ? checkDatabasePatterns(code, filepath) : []),
+      ...(runJs ? checkCachePatterns(code, filepath) : []),
+      ...(runJs ? checkQueuePatterns(code, filepath) : []),
+      ...(runJs ? checkApiPatterns(code, filepath) : []),
       ...checkFeatureCompleteness(code, filepath),
-      ...checkFrontendWiring(code, filepath),
-      ...checkEventPatterns(code, filepath),
+      ...(runJs ? checkFrontendWiring(code, filepath) : []),
+      ...(runJs ? checkEventPatterns(code, filepath) : []),
       // v1.3 production-readiness additions:
-      ...checkFloatingPromise(code, filepath),
+      ...(runJs ? checkFloatingPromise(code, filepath) : []),
       ...checkMockDataLeftover(code, filepath),
       ...checkDeadErrorHandler(code, filepath),
       ...checkUntrackedTodo(code, filepath),

@@ -15,12 +15,13 @@ export function loadFile(archDir, ...segments) {
  * Returns { rules, reservedWords, pattern, convention }.
  */
 export function parseSystem(content) {
-  if (!content) return { rules: [], reservedWords: {}, pattern: "", convention: "", type: "" };
+  if (!content) return { rules: [], reservedWords: {}, pattern: "", convention: "", type: "", stack: "" };
   const rules = [];
   const reservedWords = {};
   let pattern = "";
   let convention = "";
   let type = "";
+  let stack = "";
 
   const lines = content.split("\n");
   let section = "";
@@ -28,6 +29,7 @@ export function parseSystem(content) {
     if (line.startsWith("## Pattern:")) { pattern = line.replace("## Pattern:", "").trim(); continue; }
     if (line.startsWith("## Conv:")) { convention = line.replace("## Conv:", "").trim(); continue; }
     if (line.startsWith("## Type:")) { type = line.replace("## Type:", "").trim(); continue; }
+    if (line.startsWith("## Stack:")) { stack = line.replace("## Stack:", "").trim(); continue; }
     if (line.startsWith("## Rules")) { section = "rules"; continue; }
     if (line.startsWith("## Reserved")) { section = "rw"; continue; }
     if (line.startsWith("## ")) { section = ""; continue; }
@@ -40,7 +42,7 @@ export function parseSystem(content) {
       reservedWords[k.trim()] = rest.join(" = ").trim();
     }
   }
-  return { rules, reservedWords, pattern, convention, type };
+  return { rules, reservedWords, pattern, convention, type, stack };
 }
 
 /**
