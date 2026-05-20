@@ -47,9 +47,9 @@ function requireArchDir(cwd) {
 
 export const tools = {
   archkit_review: {
-    description: "Review one or more files against archkit rules and gotchas, returning structured findings with severities. When to use: AFTER editing code, BEFORE committing.",
+    description: "Review one or more named files against archkit rules and gotchas. Returns structured findings (errors / warnings / infos) keyed by filepath, plus a pass:boolean. Each finding has a `type` (rule family) you can disable project-wide via .arch/config.json → review.disable (e.g. \"http-client\", \"db-efficiency\"); architecture families (import-hierarchy, import-boundary, boundary-violation, reserved-word) cannot be disabled. Non-JS files (.swift, .kt, .go, .py, .rs, .rb, ...) skip JS-ecosystem heuristics automatically. When to use: AFTER editing specific code paths, BEFORE committing. For \"check everything I'm about to commit,\" prefer archkit_review_staged.",
     inputSchema: z.object({
-      files: z.array(z.string().min(1)).min(1),
+      files: z.array(z.string().min(1)).min(1).describe("Paths (relative to cwd or absolute) to review. Must exist on disk."),
     }),
     handler: async ({ files }) => {
       const cwd = process.cwd();
@@ -58,7 +58,7 @@ export const tools = {
   },
 
   archkit_review_staged: {
-    description: "Review all git-staged files against archkit rules. When to use: as a pre-commit safety net, or when the user mentions staging.",
+    description: "Review the git INDEX (files added with `git add` — not unstaged working-tree edits, not the last commit) against archkit rules. Resolves files via `git diff --cached --name-only --diff-filter=ACM`, then keeps any path whose extension is a known code file: JS/TS (.js .jsx .ts .tsx .mjs .cjs .vue .svelte .astro) AND non-JS (.swift .kt .kts .java .scala .go .rs .py .rb .php .ex .exs .cs .fs .vb .c .h .cpp .cc .hpp .m .mm .dart .lua .pl .r .jl .clj .cljs .sh .bash .zsh .ps1). Lockfiles, images, markdown, and binaries are skipped. If files:0 in the result, nothing in that allowlist is currently in the git index — re-run `git add` first. Same .arch/config.json → review.disable rules apply. When to use: as a pre-commit safety net, or when the user mentions staging / committing.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -67,9 +67,9 @@ export const tools = {
   },
 
   archkit_resolve_warmup: {
-    description: "Run pre-session health checks on the .arch/ context system. Returns blockers, warnings, and actions. When to use: at the START of a coding session, or whenever context drift is suspected.",
+    description: "Run health checks on the .arch/ context system. Default (deep:false): structural checks only — SYSTEM.md present, INDEX.md parseable, clusters/ and skills/ readable, no obvious file-vs-index mismatches. Fast (<200ms typical) and safe to call repeatedly. deep:true adds: (W011) cross-references package.json deps against skill coverage to flag major packages with no .skill file; (W012) scans .arch/apis/*.api for unpopulated [VERSION]/[BASE_URL] stubs that would force the LLM to fall back on training data; (W013) validates .arch/extensions/registry.json for orphaned entries. Deep mode reads more files and is appropriate at session start or after dependency churn. Returns { pass, mode, checks[], blockers[], warnings[], actions[] }. When to use: at the START of a coding session (default); after `npm install` or major refactors (deep:true); whenever context drift is suspected.",
     inputSchema: z.object({
-      deep: z.boolean().optional(),
+      deep: z.boolean().optional().describe("If true, also run W011 (package.json↔skills coverage), W012 (.api stub detection), W013 (extension registry integrity). Default false."),
     }),
     handler: async ({ deep }) => {
       const cwd = process.cwd();
@@ -78,10 +78,10 @@ export const tools = {
   },
 
   archkit_resolve_preflight: {
-    description: "Verify a feature/layer combination exists and is correctly wired before generating code. When to use: BEFORE writing or modifying code in a feature path.",
+    description: "Verify a feature/layer combination exists and is correctly wired in .arch/ before generating code. The set of valid `feature` values is derived from .arch/INDEX.md — specifically the node→cluster mapping under '## Nodes' (each entry like `[feature.layer] : cluster-name` registers the feature). When an unknown `feature` is passed, the response contains `error: \"unknown_feature\"` and a `valid: [...]` array listing every feature id INDEX.md currently knows about — read that array to pick the right name. `layer` is a free-form architecture layer (controller / service / repository / types / validation / test / ui / etc.) matched against the same INDEX.md entries; mismatches are reported but do not error. The handler also returns recent git history for the feature's basePath, related skills, and matching cluster nodes. When to use: BEFORE writing or modifying code in a feature path, to confirm the feature actually exists in .arch/ and learn its conventions.",
     inputSchema: z.object({
-      feature: z.string().min(1),
-      layer: z.string().min(1),
+      feature: z.string().min(1).describe("Feature id as it appears in .arch/INDEX.md (e.g. \"auth\", \"billing\"). Unknown ids return the full valid list."),
+      layer: z.string().min(1).describe("Architecture layer for the file you're about to touch (e.g. \"controller\", \"service\", \"repository\", \"types\")."),
     }),
     handler: async ({ feature, layer }) => {
       const cwd = process.cwd();
@@ -90,9 +90,9 @@ export const tools = {
   },
 
   archkit_resolve_scaffold: {
-    description: "Return the scaffolding checklist for a new feature: which files to create, in what order, with what naming conventions. When to use: when starting a new feature, BEFORE creating files.",
+    description: "Return the scaffolding checklist for a new feature: which files to create, in what order, with what naming conventions, drawn from .arch/INDEX.md and the matching cluster .graph. The `feature` argument may be either an id that already exists in INDEX.md (returns the wiring for that feature) or a new id (returns a generic scaffold derived from SYSTEM.md conventions). When to use: when starting a new feature, BEFORE creating files — never guess directory layout from training data when this tool can give you the project's actual convention.",
     inputSchema: z.object({
-      feature: z.string().min(1),
+      feature: z.string().min(1).describe("Feature id to scaffold. May be new or existing."),
     }),
     handler: async ({ feature }) => {
       const cwd = process.cwd();
@@ -101,9 +101,9 @@ export const tools = {
   },
 
   archkit_resolve_lookup: {
-    description: "Look up a single node, skill, or cluster by id and return its details. When to use: when you need to know what a referenced symbol or package is for.",
+    description: "Look up a single id in .arch/ — matches against node ids in INDEX.md, skill ids (filename without .skill), and cluster ids (filename without .graph). Returns the matching record with its source file, basePath, and any related metadata. When to use: when a referenced symbol, package, or cluster name shows up in code or conversation and you need to know what archkit considers it.",
     inputSchema: z.object({
-      id: z.string().min(1),
+      id: z.string().min(1).describe("Node / skill / cluster id (e.g. \"auth.service\", \"stripe\", \"billing\")."),
     }),
     handler: async ({ id }) => {
       const cwd = process.cwd();
@@ -112,13 +112,13 @@ export const tools = {
   },
 
   archkit_gotcha_propose: {
-    description: "Queue a new gotcha proposal capturing a wrong/right pattern with a why explanation. When to use: when you discover a pattern that should be enforced or warned about in future sessions.",
+    description: "Queue a new gotcha — a wrong/right code pattern with a why explanation — onto the named skill's pending proposals. Does NOT write to the .skill file directly; proposals land in .arch/proposals/ and are merged later via `archkit gotcha accept`. The `wrong` and `right` fields are matched as literal substrings by archkit review, so include enough surrounding context to be unique but not so much that minor formatting differences break the match. When to use: when you discover a pattern that should be enforced or warned about in future sessions (a bug you just fixed, a footgun the user pointed out, a convention the codebase enforces but isn't documented).",
     inputSchema: z.object({
-      skill: z.string().min(1),
-      wrong: z.string().min(1),
-      right: z.string().min(1),
-      why: z.string().min(1),
-      appType: z.string().optional(),
+      skill: z.string().min(1).describe("Skill id (filename without .skill) this gotcha belongs to. Must exist in .arch/skills/."),
+      wrong: z.string().min(1).describe("The bad pattern, as a literal substring review will grep for."),
+      right: z.string().min(1).describe("The correct replacement."),
+      why: z.string().min(1).describe("One- or two-sentence explanation of the failure mode — why `wrong` is wrong."),
+      appType: z.string().optional().describe("Optional archetype scoping (saas, ecommerce, realtime, data, ai, mobile, internal, content) so the gotcha only fires for matching projects."),
     }),
     handler: async (input) => {
       const cwd = process.cwd();
@@ -127,7 +127,7 @@ export const tools = {
   },
 
   archkit_gotcha_list: {
-    description: "List all skills with their gotcha counts. When to use: to see what gotchas already exist before proposing a new one, or to identify skills with weak coverage.",
+    description: "List every .skill file with its gotcha count and a sample of the wrong patterns. Use this to (a) avoid duplicating a gotcha that already exists before calling archkit_gotcha_propose, and (b) spot skills with zero gotchas — those skills are present but contribute nothing to review's pattern matching.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -136,7 +136,7 @@ export const tools = {
   },
 
   archkit_stats: {
-    description: "Get a health dashboard for the .arch/ context system: SYSTEM/INDEX coverage, skills, graphs, APIs, and prioritized recommendations. When to use: to assess archkit setup completeness or pick what to improve next.",
+    description: "Return a health dashboard for .arch/: counts of skills/clusters/nodes/APIs/decisions, SYSTEM.md and INDEX.md completeness, gotcha density per skill, and a prioritized `recommendations` list for what to improve next. Read-only. When to use: to assess archkit setup completeness, decide which skill to flesh out, or report progress to the user.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -145,7 +145,7 @@ export const tools = {
   },
 
   archkit_drift: {
-    description: "Detect stale .arch/ files (e.g. skills referencing removed packages, missing imports). When to use: as a periodic maintenance check or when the codebase has changed significantly.",
+    description: "Detect mismatches between .arch/ and the live codebase: skills referencing packages that no longer exist in package.json, INDEX.md entries pointing at deleted basePaths, cluster .graph nodes whose source files are gone, name/scope mismatches. Returns findings with severity and suggested actions; does NOT modify files. When to use: as a periodic maintenance check, after a refactor, after dependency removal, or whenever review starts surfacing rules that feel outdated.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();

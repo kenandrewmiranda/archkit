@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.6.5 — 2026-05-20
+
+### Fixed
+- `archkit_review_staged` / `archkit review --staged` were returning `{files: 0, pass: true}` for any project whose source files aren't JavaScript, TypeScript, or Python. Root cause: the staged-file collector filtered `git diff --cached --name-only` output against a hardcoded `.ts/.tsx/.js/.mjs/.py` allowlist, dropping every Swift / Kotlin / Go / Rust / Ruby / Java / etc. file on the floor before review even started. The git-index detection itself was fine.
+- Extension allowlist now covers all languages the project's language gate (v1.6.4, `src/commands/review/language.mjs`) already knows about: every JS-ecosystem extension *plus* `.swift .kt .kts .java .scala .go .rs .py .rb .php .ex .exs .cs .fs .vb .c .h .cpp .cc .hpp .m .mm .dart .lua .pl .r .jl .clj .cljs .sh .bash .zsh .ps1`. Per-file JS-ecosystem gating still skips JS-only heuristics on non-JS files — no nonsense findings.
+- Same fix applies to `--diff` and `--dir` (which had the same hardcoded regex).
+- Surfaced by the v1.6.2 iOS-dev dogfood (Swift / SwiftUI / SwiftData, 10 commits, ~30 reviews) — `archkit_review_staged` reported zero files on every commit despite real staged changes.
+
+### Added
+- **Project-level review suppression via `.arch/config.json`**. New schema:
+  ```json
+  { "review": { "disable": ["http-client", "db-efficiency"] } }
+  ```
+  Each entry must match a finding's `type` field as displayed in review output (`http-client`, `db-efficiency`, `cache`, `queue`, `convention`, `gotcha`, …). Architecture-correctness families (`import-hierarchy`, `import-boundary`, `boundary-violation`, `reserved-word`, `weak-suppression`) are intentionally non-disablable. Malformed or missing config degrades silently to "no disables."
+- Stacks with v1.6.4's language gate: the gate handles "wrong language" (don't run JS-ecosystem heuristics on Swift); the new config handles "right language, wrong rule for our codebase" (Drizzle project that has standardized away from `.where(...).limit(50)` advice). Together they close the noise loop the iOS dogfood named.
+- Design rationale: [`docs/decisions/0001-review-suppression-config-schema.md`](docs/decisions/0001-review-suppression-config-schema.md).
+
+### Changed
+- **MCP tool descriptions audited and expanded** so the LLM doesn't have to guess at semantics:
+  - `archkit_review_staged`: now defines "staged" as the git index (`git diff --cached --diff-filter=ACM`), lists every file extension it picks up, and explains the `files:0` failure mode.
+  - `archkit_resolve_warmup`: now spells out exactly what `deep:true` adds (W011 package.json↔skills coverage, W012 `.api` stub detection, W013 extension registry integrity) vs. the default structural-only mode.
+  - `archkit_resolve_preflight`: now explains that valid `feature` values come from `.arch/INDEX.md`'s node→cluster mapping, and that an unknown-feature response returns the full `valid: [...]` array to pick from.
+  - `archkit_review`, `archkit_resolve_scaffold`, `archkit_resolve_lookup`, `archkit_gotcha_propose`, `archkit_gotcha_list`, `archkit_stats`, `archkit_drift` — descriptions also expanded with concrete inputs/outputs and when-to-use anchors. Per-field `.describe(...)` hints added where useful.
+- Surfaced by the same iOS dogfood: the user reported "thin descriptions" as one of the three top friction points, naming those three tools specifically.
+
 ## v1.6.4 — 2026-05-19
 
 ### Fixed

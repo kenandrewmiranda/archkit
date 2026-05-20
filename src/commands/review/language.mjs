@@ -79,3 +79,17 @@ export function shouldRunJsEcosystemChecks(filepath, stack) {
   if (cls === "non-js") return false;
   return true;
 }
+
+// Union of code-file extensions that archkit review will pick up from
+// git --staged / --diff / --dir scans. Per-file JS-ecosystem gating decides
+// which checks actually run; this set is just the membership filter that
+// keeps lockfiles, images, binaries, and markdown out of the review pass.
+//
+// Adding a new language? Add it to JS_EXTS or NON_JS_EXTS above — they're
+// both included here automatically.
+export const REVIEWABLE_EXTS = new Set([...JS_EXTS, ...NON_JS_EXTS]);
+
+export function isReviewableFile(filepath) {
+  if (!filepath) return false;
+  return REVIEWABLE_EXTS.has(path.extname(filepath).toLowerCase());
+}

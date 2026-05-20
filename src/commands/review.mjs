@@ -37,7 +37,7 @@ import {
 } from "./review/production-checks.mjs";
 import { checkFrontendWiring } from "./review/frontend-checks.mjs";
 import { checkEventPatterns } from "./review/event-checks.mjs";
-import { shouldRunJsEcosystemChecks } from "./review/language.mjs";
+import { shouldRunJsEcosystemChecks, isReviewableFile } from "./review/language.mjs";
 import * as log from "../lib/logger.mjs";
 import { parseSuppressions, validateReason } from "../lib/suppression.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -63,6 +63,41 @@ function loadSkills(archDir) {
     skills[id] = { content, gotchas };
   }
   return skills;
+}
+
+// ── .arch/config.json — project-level review knobs ─────────────────────
+//
+// Schema (all optional):
+//   {
+//     "review": {
+//       "disable": ["http-client", "db-efficiency"]   // rule-family ids (the `type` field on findings)
+//     }
+//   }
+//
+// Architecture-correctness families (import-hierarchy, import-boundary,
+// boundary-violation, reserved-word, weak-suppression) are intentionally
+// non-disablable — they exist to catch the failures the config can't safely
+// silence. Inline `// archkit: ignore <type> — reason` still works for
+// per-line exceptions on everything else.
+const NON_DISABLABLE = new Set([
+  "import-hierarchy", "import-boundary", "boundary-violation",
+  "reserved-word", "weak-suppression",
+]);
+
+function loadProjectConfig(archDir) {
+  const configPath = path.join(archDir, "config.json");
+  if (!fs.existsSync(configPath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf8")) || {};
+  } catch {
+    return {};
+  }
+}
+
+function disabledTypes(config) {
+  const list = config?.review?.disable;
+  if (!Array.isArray(list)) return new Set();
+  return new Set(list.filter(t => typeof t === "string" && !NON_DISABLABLE.has(t)));
 }
 
 function loadGraphs(archDir) {
@@ -267,7 +302,7 @@ function getFiles(args) {
   if (args.includes("--staged")) {
     try {
       const staged = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACM"], { encoding: "utf8" });
-      files.push(...staged.trim().split("\n").filter(f => f && (f.endsWith(".ts") || f.endsWith(".tsx") || f.endsWith(".js") || f.endsWith(".mjs") || f.endsWith(".py"))));
+      files.push(...staged.trim().split("\n").filter(f => f && isReviewableFile(f)));
     } catch {
       console.log(`${C.red}  ${I.warn} Not a git repository or no staged files.${C.reset}`);
     }
@@ -277,7 +312,7 @@ function getFiles(args) {
   if (args.includes("--diff")) {
     try {
       const diff = execFileSync("git", ["diff", "--name-only", "--diff-filter=ACM"], { encoding: "utf8" });
-      files.push(...diff.trim().split("\n").filter(f => f && /\.(ts|tsx|js|mjs|py)$/.test(f)));
+      files.push(...diff.trim().split("\n").filter(f => f && isReviewableFile(f)));
     } catch {
       console.log(`${C.red}  ${I.warn} Not a git repository or no changes.${C.reset}`);
     }
@@ -292,7 +327,7 @@ function getFiles(args) {
         for (const item of fs.readdirSync(d, { withFileTypes: true })) {
           if (item.isDirectory() && !item.name.startsWith(".") && item.name !== "node_modules") {
             walk(path.join(d, item.name));
-          } else if (item.isFile() && /\.(ts|tsx|js|mjs|py)$/.test(item.name)) {
+          } else if (item.isFile() && isReviewableFile(item.name)) {
             files.push(path.join(d, item.name));
           }
         }
@@ -367,7 +402,7 @@ function resolveReviewFiles({ fileArgs, cwd, archDir, staged, diff, dir, verify 
         suggestion: "Ensure you're in a git repo with staged changes.", cause: err,
       });
     }
-    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx|py)$/.test(f));
+    return out.split("\n").filter(Boolean).filter(f => isReviewableFile(f));
   }
   if (diff) {
     let out;
@@ -378,10 +413,10 @@ function resolveReviewFiles({ fileArgs, cwd, archDir, staged, diff, dir, verify 
         suggestion: "Ensure you're in a git repo.", cause: err,
       });
     }
-    return out.split("\n").filter(Boolean).filter(f => /\.(js|mjs|ts|tsx|jsx|py)$/.test(f));
+    return out.split("\n").filter(Boolean).filter(f => isReviewableFile(f));
   }
   if (dir) {
-    return walkDir(dir).filter(f => /\.(js|mjs|ts|tsx|jsx|py)$/.test(f));
+    return walkDir(dir).filter(f => isReviewableFile(f));
   }
   // Resolve fileArgs relative to cwd
   return (fileArgs || []).map(f => path.isAbsolute(f) ? f : path.join(cwd, f));
@@ -410,6 +445,8 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
   const skills = loadSkills(archDir);
   const graphs = loadGraphs(archDir);
   const appType = getAppType(systemContent);
+  const projectConfig = loadProjectConfig(archDir);
+  const disabled = disabledTypes(projectConfig);
 
   const files = resolveReviewFiles({ fileArgs, cwd, archDir, staged, diff, dir, verify });
 
@@ -456,6 +493,7 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
     const archTypes = new Set(["import-hierarchy", "import-boundary", "boundary-violation", "reserved-word"]);
     const filtered = findings.filter(f => {
       if (archTypes.has(f.type)) return true;
+      if (disabled.has(f.type)) return false;
       const supp = suppressions.find(s => s.line === f.line && s.ruleId === f.type);
       if (!supp) return true;
       const validation = validateReason(supp.reason);
@@ -577,8 +615,13 @@ async function main() {
   const { rules, reservedWords, stack } = parseSystem(systemContent);
   const skills = loadSkills(archDir);
   const graphs = loadGraphs(archDir);
+  const projectConfig = loadProjectConfig(archDir);
+  const disabled = disabledTypes(projectConfig);
 
   log.review(`Loaded ${rules.length} rules | ${Object.keys(skills).length} skills | ${Object.keys(graphs).length} graphs`);
+  if (disabled.size > 0) {
+    log.review(`Suppressed rule families (from .arch/config.json): ${[...disabled].join(", ")}`);
+  }
 
   log.review("Detecting app type from SYSTEM.md...");
   const appType = getAppType(systemContent);
@@ -661,6 +704,7 @@ async function main() {
     const archTypes = new Set(["import-hierarchy", "import-boundary", "boundary-violation", "reserved-word"]);
     const filteredFindings = findings.filter(f => {
       if (archTypes.has(f.type)) return true; // architecture rules NOT suppressible
+      if (disabled.has(f.type)) return false; // project-level disable from .arch/config.json
       const supp = suppressions.find(s => s.line === f.line && s.ruleId === f.type);
       if (!supp) return true;
       const validation = validateReason(supp.reason);
