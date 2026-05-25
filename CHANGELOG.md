@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.7.1 — 2026-05-25
+
+v1.8 foundation (items A + B from [docs/roadmap/v1.8.md](docs/roadmap/v1.8.md)). Promotes v1.7's `nextStep` quick-win pattern into a hard contract across every MCP tool, and adds a contract-enforcing test suite that fails CI when a new tool lands without it. Pure additive — every new field is optional, no existing caller breaks.
+
+### Added — silent-success + nextStep contract on every MCP tool
+
+All 19 `archkit_*` tools now return a `nextStep: string` field (imperative, names the next tool or action) on success. Tools whose primary domain field can come back as an empty array also return a paired `<field>Note` explaining what was checked and why it's empty — replacing the silent-zero / silent-pass dead-end that v1.7's quick wins partially closed on three tools.
+
+Tools that already had `nextStep` in v1.7 (carried forward unchanged): `archkit_boundary_check`, `archkit_resolve_preflight`, `archkit_goal_intake`, `archkit_init`. Tools that gained it in v1.7.1:
+
+- `archkit_drift`: empty `stale: []` now paired with `scanned: { indexNodes, graphFiles, skillFiles }` + `staleNote` ("Checked N nodes, M graphs, K skills — all consistent") + `nextStep` ("No drift to fix" / specific remediation per finding type).
+- `archkit_review` + `archkit_review_staged`: `files: 0` now paired with `filesNote` distinguishing "nothing staged" from "staged files all filtered out" from "no path passed"; `nextStep` adapts to errors / warnings / clean.
+- `archkit_gotcha_list`: empty `skills: []` paired with `skillsNote` ("no .arch/skills/ directory" vs "exists but empty"); also flags skills with 0 gotchas as a partial-empty case.
+- `archkit_gotcha_propose`: `nextStep` reminds the human-review gate (`archkit gotcha --review`) — proposals don't auto-merge.
+- `archkit_stats`: `recommendationsNote` when health is good; `nextStep` quotes the top recommendation.
+- `archkit_resolve_warmup`: `nextStep` derives from blockers (when failing) or first action (when warning) or clean ("call preflight before editing").
+- `archkit_resolve_preflight`: unknown-feature error path now carries `nextStep` listing valid ids or pointing at scaffold.
+- `archkit_resolve_scaffold`: dry-run and apply paths both carry `nextStep`; error path for unsupported app type explains the workaround.
+- `archkit_resolve_lookup`: per-result-type `nextStep` (cluster → "call preflight on a node"; node → "call preflight before editing"; skill → "read the file before writing code", or "add gotchas" when empty).
+- `archkit_log_decision`: confirms ADR number + relative path; suggests follow-on log calls for related choices.
+- `archkit_prd_check`: branched `nextStep` for "no PRD found" vs "PRD aligns" vs "archetype mismatch — reconcile."
+- `archkit_goal_list`: `goalsNote` distinguishes "no goals yet" from "all done"; `nextStep` points at intake or the in-flight goal's payload.
+- `archkit_goal_show`: `nextStep` quotes required-reading count + exit-criteria count and names the complete tool.
+- `archkit_goal_payload`: budget-aware `nextStep` (paste instruction when under budget, trim instruction when over).
+- `archkit_goal_complete`: `nextStep` mirrors `nextGoal` semantics (paste-next when queued, "all done" when empty).
+
+### Added — `tests/silent-success-audit/run.mjs` contract enforcer
+
+Spawns the MCP server in a temp fixture, calls every registered tool with minimal-valid input, and fails if any response is missing `nextStep`, or if a known-empty domain field (`stale`, `skills`, `recommendations`, `violations` via `rules:0` hint, `files:0` via `filesNote`) lacks its explanatory note. Hard-fails if a new tool lands in `src/mcp/tools.mjs` without a case in the audit — adding a tool now forces adding a test case in the same PR. Brings the suite count to 45.
+
+### Fixed
+
+- **Goal frontmatter parser**: `parseGoal()` in `src/lib/goals.mjs` was overwriting scalar values with `[]` whenever a key's value was empty (`source-ask: ` with nothing after the colon parsed as `[]` instead of `""`), causing `.trim()` to throw inside `renderPayload`. Now buffers list items per key and only promotes scalar → array when at least one `- item` line is actually found. Surfaced by the new audit suite when `archkit_goal_intake` was called without a `sourceAsk`.
+
+### Migration
+
+None required. Every new field is additive. Existing callers continue to parse the same `pass`, `findings`, `stale`, etc. fields they did before.
+
+### Source
+
+Continues the conference-feedback work (2026-05-25): dead-end indicators on every output. v1.7.0 was the proof-of-concept on three tools; v1.7.1 is the universal contract. Next up: v1.8 work item C — `archkit doctor` (aggregates the audit findings into a single user-facing check) and item D (telemetry-driven tool decomposition).
+
 ## v1.7.0 — 2026-05-25
 
 Bundles the four highest-priority arch-poly dogfood remediations alongside a new **CGR (Clear Goal Run)** workflow that operationalizes one-goal-per-session discipline.

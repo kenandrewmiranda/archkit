@@ -57,19 +57,30 @@ export function parseGoal(content) {
       meta[key] = raw;
     }
   }
-  // Block-style arrays: lines like `- item` immediately after a `key:` line
+  // Block-style arrays: lines like `- item` immediately after a `key:` line.
+  // Buffer items per key and only promote the scalar to an array when at
+  // least one item is found — otherwise an empty `key:` line wrongly
+  // overwrites the scalar parsed above with [] and downstream `.trim()` /
+  // string-coercion crashes (caught by tests/silent-success-audit).
   const lines = m[1].split("\n");
   let currentKey = null;
+  let buffer = [];
+  const flush = () => {
+    if (currentKey && buffer.length > 0) meta[currentKey] = buffer;
+    currentKey = null;
+    buffer = [];
+  };
   for (const line of lines) {
     const keyMatch = line.match(/^(\w[\w-]*):\s*$/);
-    if (keyMatch) { currentKey = keyMatch[1]; meta[currentKey] = []; continue; }
+    if (keyMatch) { flush(); currentKey = keyMatch[1]; continue; }
     if (currentKey && line.match(/^\s*-\s+/)) {
       const item = line.replace(/^\s*-\s+/, "").trim();
-      if (item) meta[currentKey].push(item);
+      if (item) buffer.push(item);
     } else if (currentKey && !line.startsWith(" ")) {
-      currentKey = null;
+      flush();
     }
   }
+  flush();
   return { meta, body: m[2] };
 }
 

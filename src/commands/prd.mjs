@@ -277,6 +277,9 @@ export async function runPrdCheckJson({ archDir, cwd, prdPath }) {
       suggestion: prdPath
         ? `No PRD found at ${prdPath}.`
         : `No PRD found at any common location. If you have one, point at it: archkit prd check --path <path>. Common locations searched: ${PRD_CANDIDATES.slice(0, 5).join(", ")}, ...`,
+      nextStep: prdPath
+        ? `Verify the path is correct, or call again without prdPath to scan common locations.`
+        : `Ask the user where the PRD lives, then re-call with prdPath. Or proceed without one — archkit_init still works with no PRD.`,
     };
   }
 
@@ -295,6 +298,15 @@ export async function runPrdCheckJson({ archDir, cwd, prdPath }) {
 
   const recommendedArchetype = signals.archetypeRanking[0]?.archetype || null;
 
+  const mismatch = findings.find(f => f.type === "archetype_mismatch");
+  const nextStep = !archDir
+    ? recommendedArchetype
+      ? `Call archkit_init to scaffold .arch/; surface '${recommendedArchetype}' as the recommended archetype in step 1.`
+      : `Call archkit_init to start the wizard; PRD signal is weak so ask the user to confirm archetype.`
+    : mismatch
+      ? `Reconcile the archetype mismatch: either re-run /archkit-init with the PRD's recommended archetype, or update PRD wording so signals match the declared system.`
+      : `PRD aligns with SYSTEM.md. No action needed.`;
+
   return {
     prdFound: true,
     prdPath: absPrd,
@@ -309,6 +321,7 @@ export async function runPrdCheckJson({ archDir, cwd, prdPath }) {
     declaredArchetype,
     declaredMode,
     findings,
+    nextStep,
   };
 }
 

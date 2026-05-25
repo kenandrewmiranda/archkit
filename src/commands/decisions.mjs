@@ -145,6 +145,7 @@ export async function runLogDecisionJson({ archDir, title, context, decision, co
     relativePath: path.relative(process.cwd(), filepath),
     status: resolvedStatus,
     title: title.trim(),
+    nextStep: `Decision ${number} logged at ${path.relative(process.cwd(), filepath)}. Reference this ADR in the PR/commit; call archkit_log_decision again for any follow-on choice.`,
   };
 }
 

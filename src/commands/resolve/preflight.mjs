@@ -57,10 +57,14 @@ export function cmdPreflight(archDir, featureId, layer, opts = {}) {
   // 1. Look up feature in INDEX.md
   const nodeInfo = index.nodeCluster[featureId];
   if (!nodeInfo) {
+    const valid = Object.keys(index.nodeCluster);
     return {
       error: "unknown_feature",
       feature: featureId,
-      valid: Object.keys(index.nodeCluster),
+      valid,
+      nextStep: valid.length > 0
+        ? `Re-call with one of the known feature ids: ${valid.slice(0, 5).join(", ")}${valid.length > 5 ? "…" : ""}.`
+        : `INDEX.md has no node→cluster entries yet. Add the feature to .arch/INDEX.md under '## Nodes', or call archkit_resolve_scaffold to bootstrap.`,
     };
   }
 

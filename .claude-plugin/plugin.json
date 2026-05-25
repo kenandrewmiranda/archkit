@@ -1,6 +1,6 @@
 {
   "name": "archkit",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Inject architectural thought into one-shot LLM coding. Bundles the archkit MCP server, four guardrail hooks (SessionStart, Stop, PostToolUse, UserPromptSubmit), and the /archkit-init project wizard.",
   "author": {
     "name": "Ken Miranda",

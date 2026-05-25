@@ -68,19 +68,33 @@ export function runGoalList({ archDir }) {
       done.push({ slug: name.replace(/\.md$/, "") });
     }
   }
-  return {
-    active: active.map((g) => ({
-      slug: g.slug,
-      title: g.meta.title || g.slug,
-      status: g.meta.status || "planned",
-      created: g.meta.created || "",
-    })),
-    done,
-  };
+  const activeList = active.map((g) => ({
+    slug: g.slug,
+    title: g.meta.title || g.slug,
+    status: g.meta.status || "planned",
+    created: g.meta.created || "",
+  }));
+  const goalsNote = activeList.length === 0 && done.length === 0
+    ? `No goals exist in .arch/goals/ yet. CGR hasn't been used in this project.`
+    : activeList.length === 0
+      ? `All goals complete (${done.length} archived). No active work.`
+      : undefined;
+  const nextStep = activeList.length === 0 && done.length === 0
+    ? `Call archkit_goal_intake with the user's ask decomposed into 1..N goals to begin CGR.`
+    : activeList.length === 0
+      ? `Queue is empty. Call archkit_goal_intake with the next ask, or proceed without CGR.`
+      : `Continue ${activeList[0].slug}. Call archkit_goal_payload ${activeList[0].slug} to re-render the /goal payload if needed.`;
+  return { active: activeList, done, goalsNote, nextStep };
 }
 
 export function runGoalPayload({ archDir, slug }) {
-  return renderPayload(archDir, slug);
+  const out = renderPayload(archDir, slug);
+  return {
+    ...out,
+    nextStep: out.withinBudget
+      ? `Tell the user: run /clear, then paste the payload after /goal.`
+      : `Payload is over the 3800-char budget. Trim required-reading or files-to-touch in .arch/goals/${slug}.md, then re-call.`,
+  };
 }
 
 export function runGoalComplete({ archDir, slug, notes }) {
@@ -97,6 +111,9 @@ export function runGoalComplete({ archDir, slug, notes }) {
           instruction: `Run /clear, then paste the payload above after /goal.`,
         }
       : null,
+    nextStep: next
+      ? `Tell the user: run /clear, then paste nextGoal.payload after /goal to begin ${next.slug}.`
+      : `All goals complete. Tell the user the CGR queue is empty and ask what to tackle next.`,
   };
 }
 

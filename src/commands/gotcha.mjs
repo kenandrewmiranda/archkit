@@ -792,7 +792,13 @@ async function cliMode(args) {
 export async function runGotchaListJson({ archDir }) {
   if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
   const skillsDir = path.join(archDir, "skills");
-  if (!fs.existsSync(skillsDir)) return { skills: [] };
+  if (!fs.existsSync(skillsDir)) {
+    return {
+      skills: [],
+      skillsNote: `No .arch/skills/ directory in this project — no skills means review can't pattern-match against known WRONG/RIGHT examples.`,
+      nextStep: `Create .arch/skills/<package>.skill files for libraries this project uses (Stripe, Prisma, etc.); then call archkit_gotcha_propose to queue WRONG/RIGHT/WHY entries.`,
+    };
+  }
   const skills = [];
   for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
     const id = file.replace(".skill", "");
@@ -800,7 +806,18 @@ export async function runGotchaListJson({ archDir }) {
     const gotchas = (content.match(/^WRONG:/gm) || []).length;
     skills.push({ id, gotchas });
   }
-  return { skills };
+  const empty = skills.filter(s => s.gotchas === 0);
+  const skillsNote = skills.length === 0
+    ? `.arch/skills/ exists but contains no .skill files yet.`
+    : empty.length > 0
+      ? `${empty.length} of ${skills.length} skill(s) have 0 gotchas: ${empty.slice(0, 5).map(s => s.id).join(", ")}${empty.length > 5 ? "…" : ""} — these contribute nothing to review.`
+      : undefined;
+  const nextStep = skills.length === 0
+    ? `Add .skill files (one per dependency you want review to enforce), then call archkit_gotcha_propose with WRONG/RIGHT/WHY patterns.`
+    : empty.length > 0
+      ? `Call archkit_gotcha_propose for the empty skills so review has patterns to grep.`
+      : `Catalog looks healthy. Call archkit_gotcha_propose whenever you fix a new wrong-pattern.`;
+  return { skills, skillsNote, nextStep };
 }
 
 export async function runGotchaProposeJson({ archDir, skill, wrong, right, why, appType }) {
@@ -818,7 +835,11 @@ export async function runGotchaProposeJson({ archDir, skill, wrong, right, why, 
   fs.mkdirSync(pDir, { recursive: true });
   const proposal = { skill, wrong, right, why, ...(appType ? { appType } : {}), source: "mcp", created_at: new Date().toISOString() };
   fs.writeFileSync(proposalFile, JSON.stringify(proposal, null, 2));
-  return { queued: true, proposalPath: proposalFile };
+  return {
+    queued: true,
+    proposalPath: proposalFile,
+    nextStep: `Proposal queued. A human must run \`archkit gotcha --review\` (interactive) to accept/edit/reject it before it lands in ${skill}.skill.`,
+  };
 }
 
 export { cliMode as main };

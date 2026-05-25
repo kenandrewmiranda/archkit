@@ -223,13 +223,25 @@ export async function runLookupJson({ archDir, id }) {
 
       // Match as cluster id
       if (clusterId === id) {
-        return { type: "cluster", id: clusterId, nodes: cluster.nodes, raw: cluster.raw };
+        return {
+          type: "cluster",
+          id: clusterId,
+          nodes: cluster.nodes,
+          raw: cluster.raw,
+          nextStep: `Cluster ${clusterId} has ${cluster.nodes.length} node(s). Call archkit_resolve_preflight <node-id> <layer> before editing any of them.`,
+        };
       }
 
       // Match as a structured node (parsed by loadGraphCluster)
       const structuredNode = cluster.nodes.find(n => n.id === id);
       if (structuredNode) {
-        return { type: "node", id, cluster: clusterId, ...structuredNode };
+        return {
+          type: "node",
+          id,
+          cluster: clusterId,
+          ...structuredNode,
+          nextStep: `Node ${id} lives in cluster ${clusterId}. Call archkit_resolve_preflight ${id} <layer> before editing.`,
+        };
       }
     }
   }
@@ -241,7 +253,15 @@ export async function runLookupJson({ archDir, id }) {
       const skillId = file.replace(".skill", "");
       if (skillId === id) {
         const skill = loadSkillGotchas(archDir, skillId);
-        return { type: "skill", id: skillId, gotchas: skill ? skill.gotchas : [] };
+        const gotchas = skill ? skill.gotchas : [];
+        return {
+          type: "skill",
+          id: skillId,
+          gotchas,
+          nextStep: gotchas.length === 0
+            ? `Skill ${skillId}.skill has 0 gotchas. Call archkit_gotcha_propose to add WRONG/RIGHT/WHY entries so review can enforce them.`
+            : `Read .arch/skills/${skillId}.skill before writing ${skillId}-related code; follow its ${gotchas.length} WRONG/RIGHT pattern(s).`,
+        };
       }
     }
   }

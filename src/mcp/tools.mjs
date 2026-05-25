@@ -248,7 +248,12 @@ export const tools = {
           suggestion: known.length > 0 ? `Active goals: ${known.join(", ")}` : "No active goals — call archkit_goal_intake first.",
         });
       }
-      return { slug, meta: goal.meta, body: goal.body, filepath: goal.filepath };
+      const exit = Array.isArray(goal.meta["exit-criteria"]) ? goal.meta["exit-criteria"] : [];
+      const required = Array.isArray(goal.meta["required-reading"]) ? goal.meta["required-reading"] : [];
+      const nextStep = required.length > 0
+        ? `Read required-reading files (${required.slice(0, 3).join(", ")}${required.length > 3 ? "…" : ""}), then work the ${exit.length} exit criterion/criteria. Mark done via archkit_goal_complete ${slug}.`
+        : `Work the ${exit.length} exit criterion/criteria. Mark done via archkit_goal_complete ${slug}.`;
+      return { slug, meta: goal.meta, body: goal.body, filepath: goal.filepath, nextStep };
     },
   },
 

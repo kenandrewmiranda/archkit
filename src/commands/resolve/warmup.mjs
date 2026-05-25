@@ -247,6 +247,12 @@ export function cmdWarmup(archDir, deep) {
     log.error("Warmup FAILED — fix blockers before proceeding");
   }
 
+  const nextStep = !pass
+    ? `Fix blockers before generating code: ${blockers.slice(0, 2).join("; ")}${blockers.length > 2 ? "…" : ""}`
+    : actions.length > 0
+      ? `Address: ${actions[0]}`
+      : `Warmup green. Call archkit_resolve_preflight before editing a feature, or proceed if you already know the target.`;
+
   return {
     pass,
     mode: deep ? "deep" : "quick",
@@ -268,6 +274,7 @@ export function cmdWarmup(archDir, deep) {
     instruction: pass
       ? "Warmup PASSED. You may proceed with code generation. Load the appropriate lens (research/implement/review) for your current task."
       : "Warmup FAILED. DO NOT generate code. Fix the blockers listed above first.",
+    nextStep,
     marketplace: {
       hint: emptySkills.length > 0 || totalGotchas < 20
         ? `Enhance your setup: archkit search "<relevant-package>" — community skill packs with 106+ gotchas at market.thearchkit.com`

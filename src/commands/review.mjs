@@ -544,6 +544,24 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
     }
   }
 
+  // Silent-success indicator: distinguish "no files matched the staged filter"
+  // from "files reviewed and clean." The former is often a setup problem
+  // (nothing staged, or staged files all excluded by extension).
+  const filesNote = files.length === 0
+    ? (staged
+        ? `0 reviewable files in the git index. Either nothing is staged, or staged files don't match archkit's code-file allowlist. Run \`git add\` first or pass explicit files.`
+        : (diff
+            ? `0 reviewable files in the working-tree diff. Make a change first or pass explicit files.`
+            : `0 files matched the request — pass at least one path that exists on disk.`))
+    : undefined;
+  const nextStep = files.length === 0
+    ? `No files reviewed — ${staged ? "stage code files with `git add`, then re-call." : "pass at least one file path."}`
+    : totalErrors > 0
+      ? `Fix the ${totalErrors} error(s) listed in findings, then re-call ${staged ? "archkit_review_staged" : "archkit_review"}.`
+      : totalWarnings > 0
+        ? `Review ${totalWarnings} warning(s) — fix or suppress with \`// archkit: ignore <type> — <reason>\`; commit when satisfied.`
+        : `Clean — commit when ready.`;
+
   return {
     files: files.length,
     errors: totalErrors,
@@ -552,6 +570,8 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
     clean: cleanFiles,
     pass: totalErrors === 0,
     findings: allFindings,
+    filesNote,
+    nextStep,
     gotchaSuggestions: gotchaSuggestions.length > 0 ? gotchaSuggestions : undefined,
   };
 }

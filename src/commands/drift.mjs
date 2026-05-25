@@ -135,7 +135,25 @@ export async function runDriftJson({ archDir, cwd = process.cwd() }) {
     total: stale.length,
     byType: stale.reduce((acc, s) => { acc[s.type] = (acc[s.type] || 0) + 1; return acc; }, {}),
   };
-  return { stale, summary };
+
+  // Silent-success indicator: name what was scanned even when no drift is found.
+  const indexContent = loadFile(archDir, "INDEX.md");
+  const index = indexContent ? parseIndex(indexContent) : { nodeCluster: {} };
+  const clustersDir = path.join(archDir, "clusters");
+  const skillsDir = path.join(archDir, "skills");
+  const scanned = {
+    indexNodes: Object.keys(index.nodeCluster).length,
+    graphFiles: fs.existsSync(clustersDir) ? fs.readdirSync(clustersDir).filter(f => f.endsWith(".graph")).length : 0,
+    skillFiles: fs.existsSync(skillsDir) ? fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill")).length : 0,
+  };
+  const staleNote = stale.length === 0
+    ? `Checked ${scanned.indexNodes} index node(s), ${scanned.graphFiles} graph(s), ${scanned.skillFiles} skill(s) — all consistent with the source tree.`
+    : undefined;
+  const nextStep = stale.length === 0
+    ? `No drift to fix. Re-run after refactors or dependency removals.`
+    : `Resolve drift: missing-source/missing-file → restore the file or update INDEX.md basePath; orphaned-index-node → add the .graph or remove the INDEX.md entry; orphaned-skill → remove the .skill or re-add the dep.`;
+
+  return { stale, summary, scanned, staleNote, nextStep };
 }
 
 async function main() {

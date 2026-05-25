@@ -327,7 +327,13 @@ export async function runStatsJson({ archDir }) {
   const apis = analyzeApis(archDir);
   const health = calculateHealthScore(sys, idx, skills, graphs, apis);
   const recommendations = buildRecommendations(sys, idx, skills, graphs, apis);
-  return { health, system: sys, index: idx, skills, graphs, apis, recommendations };
+  const recommendationsNote = recommendations.length === 0
+    ? `No improvements suggested — .arch/ is well-maintained at this snapshot.`
+    : undefined;
+  const nextStep = recommendations.length > 0
+    ? `Act on the top recommendation: "${recommendations[0]}"`
+    : `Health is good (${health.pct}%). Re-run after adding skills/clusters or whenever review noise feels off.`;
+  return { health, system: sys, index: idx, skills, graphs, apis, recommendations, recommendationsNote, nextStep };
 }
 
 // ── Main ────────────────────────────────────────────────────────────────

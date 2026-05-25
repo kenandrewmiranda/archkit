@@ -24,6 +24,7 @@ export function cmdScaffold(archDir, featureId, opts = {}) {
       error: "no_templates_for_app_type",
       detail: `No scaffold templates available for app type "${appTypeKey}". v1.3 ships SaaS only; other app types coming in v1.3.x.`,
       requestedAppType: appTypeKey,
+      nextStep: `Update SYSTEM.md ## Type: to a supported archetype (saas), or scaffold the feature by hand following SYSTEM.md conventions.`,
     };
   }
 
@@ -68,6 +69,7 @@ export function cmdScaffold(archDir, featureId, opts = {}) {
       appType: appTypeKey,
       wouldCreate: plannedFiles.map(f => ({ path: f.path, type: f.type, size: f.size })),
       wouldUpdate: [indexUpdate],
+      nextStep: `Dry run — create the ${plannedFiles.length} listed file(s) and append the INDEX.md entry yourself (or re-call CLI with --apply). Then run archkit_resolve_preflight ${featureId} <layer> before editing.`,
     };
   }
 
@@ -108,6 +110,9 @@ export function cmdScaffold(archDir, featureId, opts = {}) {
     created,
     skipped,
     updated,
+    nextStep: created.length > 0
+      ? `Scaffolded ${created.length} file(s). Run archkit_resolve_preflight ${featureId} <layer> before editing, then implement the layers.`
+      : `No new files created (all ${skipped.length} skipped as existing). Re-call with overwrite:true if intentional, else proceed with archkit_resolve_preflight ${featureId} <layer>.`,
   };
 }
 
