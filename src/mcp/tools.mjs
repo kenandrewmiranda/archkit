@@ -20,6 +20,7 @@ import { runLogDecisionJson } from "../commands/decisions.mjs";
 import { runPrdCheckJson } from "../commands/prd.mjs";
 import { runInitJson } from "../commands/init-mcp.mjs";
 import { runBoundaryCheckJson } from "../commands/boundary.mjs";
+import { runDoctorJson } from "../commands/doctor.mjs";
 import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload } from "../commands/goal.mjs";
 import { loadGoal } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -287,6 +288,15 @@ export const tools = {
     handler: async ({ slug, notes }) => {
       const cwd = process.cwd();
       return runGoalComplete({ archDir: requireArchDir(cwd), slug, notes });
+    },
+  },
+
+  archkit_doctor: {
+    description: "Workflow logistic gauge — aggregates archkit_resolve_warmup + archkit_drift findings AND adds three new intent checks that ask whether .arch/ is actually load-bearing: (1) skills with zero real WRONG/RIGHT/WHY gotchas (present on disk but contributing nothing to archkit_review), (2) BAN directives in BOUNDARIES.md whose source-glob matches no file in the working tree (warning, not error — could be future-protecting, could be stale), (3) active CGR goals in .arch/goals/ with vacuous exit-criteria (<8 chars or generic phrases like \"ship it\", \"done\") or no required-reading. Returns { pass, checks:[{id,name,status,detail}], blockers, warnings, summary, intent, sources, nextStep }. Different from warmup: warmup runs at session start and is structural (\"can I trust .arch/ at all?\"); doctor runs on demand and is intent-checking (\"does the configured surface actually fire?\"). When to use: as a periodic health check before a long session, after BOUNDARIES.md edits, after adding skills, or when archkit-driven reviews start feeling like noise.",
+    inputSchema: z.object({}),
+    handler: async () => {
+      const cwd = process.cwd();
+      return runDoctorJson({ archDir: requireArchDir(cwd), cwd });
     },
   },
 

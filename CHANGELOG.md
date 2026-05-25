@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.7.2 — 2026-05-25
+
+v1.8 work item C from [docs/roadmap/v1.8.md](docs/roadmap/v1.8.md). Adds `archkit doctor` — the workflow logistic gauge that aggregates structural + intent checks into a single envelope, exposed as both CLI (`archkit doctor`) and MCP tool (`archkit_doctor`). Pure additive; no existing caller breaks.
+
+### Added — `archkit doctor` / `archkit_doctor`
+
+Wraps `archkit_resolve_warmup` (quick mode) + `archkit_drift` and layers three new intent checks that ask whether `.arch/` is actually load-bearing:
+
+- **D-INTENT-1 — skill gotcha coverage**: flags `.skill` files that exist on disk but carry zero real `WRONG:/RIGHT:/WHY:` patterns (skeleton placeholders like `WRONG: [example]` are subtracted). These files contribute nothing to `archkit review` and are pure dead-end.
+- **D-INTENT-2 — BOUNDARIES.md BAN coverage**: walks the working tree (capped 5000 code files, skipping `node_modules`/`.git`/`dist`/etc.) and flags `BAN: source -> target` directives whose `source` glob matches no file. Could be future-protecting, could be stale — surfaced for human triage instead of silently ignored.
+- **D-INTENT-3 — CGR goal quality**: scans active goals in `.arch/goals/` and flags any with vacuous `exit-criteria` (<8 chars, or generic phrases like "ship it", "done", "fix") or no `required-reading`. A weak goal trains the agent that exit-criteria don't mean anything.
+
+Response shape: `{ pass, checks:[{id,name,status,detail}], blockers, warnings, warningsNote, summary, intent:{emptySkills, unappliedBans, weakGoals}, sources:{warmup, drift}, nextStep }`. Carries the v1.7.1 silent-success contract: clean state sets `warningsNote` ("Ran N aggregated check(s) — all clean"); a non-clean state populates `warnings[]` with `[warmup]` / `[drift]` / `[intent]` source prefixes; missing-source drift escalates to `blockers[]` and `pass: false`.
+
+Why `doctor` and not "more warmup checks"? Warmup runs at session start and is structural ("can I trust .arch/ at all?"). Doctor runs on demand and is intent-checking ("does the rich content of .arch/ actually fire?"). Different question, different cadence — doctor doesn't belong in the session-start hot path.
+
+Files: [`src/commands/doctor.mjs`](src/commands/doctor.mjs) (runner + CLI), [`src/mcp/tools.mjs`](src/mcp/tools.mjs) (`archkit_doctor` registration, brings tool count to 20), [`bin/archkit.mjs`](bin/archkit.mjs) (`archkit doctor` subcommand dispatch). Composition fix: doctor dynamic-imports `drift.mjs` with `ARCHKIT_RUN` temporarily cleared, so drift's CLI-dispatch auto-fire convention doesn't fire during composition; localized to a 10-line `loadDrift()` helper, no other commands touched.
+
+### Added — `tests/doctor/run.mjs`
+
+Seven cases: `no_arch_dir` throw path; clean-state pass + `warningsNote` present + every check `status:pass`; each of the three intent checks fires the expected `D-INTENT-*` warning and populates `intent.*`; missing-source drift escalates to `blocker` with `pass:false`; `nextStep` is non-empty and ≤280 chars across all matrices. The silent-success audit also gained an `archkit_doctor` case so the universal contract from v1.7.1 covers the new tool.
+
+### Migration
+
+None. All new fields are additive. `tests/mcp-server/run.mjs` updated its hardcoded 19 → 20 tool-count assertion to track the new registration.
+
 ## v1.7.1 — 2026-05-25
 
 v1.8 foundation (items A + B from [docs/roadmap/v1.8.md](docs/roadmap/v1.8.md)). Promotes v1.7's `nextStep` quick-win pattern into a hard contract across every MCP tool, and adds a contract-enforcing test suite that fails CI when a new tool lands without it. Pure additive — every new field is optional, no existing caller breaks.

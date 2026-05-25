@@ -171,6 +171,7 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_goal_show", { slug: "audit-goal" }],
         ["archkit_goal_payload", { slug: "audit-goal" }],
         ["archkit_goal_complete", { slug: "audit-goal" }],
+        ["archkit_doctor", {}],
         ["archkit_init", {}],
       ];
 

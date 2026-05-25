@@ -36,6 +36,7 @@ const commands = {
   market:   "../src/commands/market.mjs",
   "boundary-check": "../src/commands/boundary.mjs",
   goal:     "../src/commands/goal.mjs",
+  doctor:   "../src/commands/doctor.mjs",
 };
 
 // Marketplace convenience aliases — route e.g. `archkit install X` to `archkit market install X`
