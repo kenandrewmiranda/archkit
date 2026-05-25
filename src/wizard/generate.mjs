@@ -3,6 +3,19 @@ import path from "path";
 import { C, ICONS, divider } from "../lib/shared.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
 import { genSystemMd, genIndexMd, genGraph, genInfraGraph, genEventsGraph, genSkillFile, genApiStub, genReadme, genBoundariesMd, genCompactContext } from "../lib/generators.mjs";
+import { hasJsTsStack } from "../lib/stack-detect.mjs";
+
+// arch-poly dogfood (Python-only): `archkit resolve verify-wiring src/` returns
+// "0 files scanned, found N non-JS/TS source files" — dead weight when mandated
+// in CLAUDE.md / skill rules. On non-JS stacks, strip verify-wiring references
+// from generated guidance entirely.
+function stripVerifyWiring(text) {
+  return text
+    .replace(/`archkit review --staged` \+ `archkit resolve verify-wiring src\/`/g, "`archkit review --staged`")
+    .replace(/\n# (?:catch|zero|Check for) [^\n]*\narchkit resolve verify-wiring src\/[^\n]*\n?/g, "")
+    .replace(/\narchkit resolve verify-wiring src\/[^\n]*\n?/g, "")
+    .replace(/ALL four must pass/g, "ALL three must pass");
+}
 import { heading, subheading, info, success, tip, tree, filePreview } from "./helpers.mjs";
 import * as log from "../lib/logger.mjs";
 import { estimateTokens, tokenBudgetWarning } from "../lib/tokens.mjs";
@@ -368,8 +381,9 @@ archkit stats --compact                   # health check
 ALL four must pass. If any fails, the work is not complete.
 `;
 
-    fs.writeFileSync(path.join(claudeRulesDir, "superpowers-integration.md"), superpowersRule);
-    written.push({ path: ".claude/rules/superpowers-integration.md", size: superpowersRule.length });
+    const superpowersRuleFinal = hasJsTsStack(cfg) ? superpowersRule : stripVerifyWiring(superpowersRule);
+    fs.writeFileSync(path.join(claudeRulesDir, "superpowers-integration.md"), superpowersRuleFinal);
+    written.push({ path: ".claude/rules/superpowers-integration.md", size: superpowersRuleFinal.length });
     console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/rules/superpowers-integration.md ${C.dim}(alwaysApply — superpowers hooks)${C.reset}`);
 
     // Exploration rule — use archkit before raw file scanning
@@ -568,8 +582,9 @@ The warmup JSON includes \`marketplace.emptySkillPacks\` with suggested install 
 Browse all packs: https://market.thearchkit.com
 `;
 
-    fs.writeFileSync(path.join(protocolDir, "SKILL.md"), protocolSkill);
-    written.push({ path: ".claude/skills/archkit-protocol/SKILL.md", size: protocolSkill.length });
+    const protocolSkillFinal = hasJsTsStack(cfg) ? protocolSkill : stripVerifyWiring(protocolSkill);
+    fs.writeFileSync(path.join(protocolDir, "SKILL.md"), protocolSkillFinal);
+    written.push({ path: ".claude/skills/archkit-protocol/SKILL.md", size: protocolSkillFinal.length });
     console.log(`  ${C.green}${ICONS.check}${C.reset} .claude/skills/archkit-protocol/SKILL.md ${C.dim}(workflow integration)${C.reset}`);
 
     // 4. .claude/settings.json — hooks that enforce archkit in every session

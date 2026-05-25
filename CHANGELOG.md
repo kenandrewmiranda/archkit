@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.7.0 — 2026-05-25
+
+Bundles the four highest-priority arch-poly dogfood remediations alongside a new **CGR (Clear Goal Run)** workflow that operationalizes one-goal-per-session discipline.
+
+### Added
+
+- **CGR — Clear Goal Run workflow**. New artifact directory `.arch/goals/<slug>.md` plus the goal lifecycle: planned → in-progress → done (archived to `.arch/goals/done/`). New CLI: `archkit goal list | show <slug> | payload <slug> | complete <slug> | intake --json '<json>'`. The intake step decomposes a sprawling user ask into 1..N discrete goals and emits a copy-pasteable payload per goal (≤3800 chars — the Claude Code slash-command limit) that the user pastes after `/goal` in a fresh `/clear`-ed session. Goal files are the source of truth; payloads just point to them, so context stays compact. Every CLI verb has an MCP twin so agents using the MCP bridge have full parity: `archkit_goal_intake`, `archkit_goal_list`, `archkit_goal_show`, `archkit_goal_payload`, `archkit_goal_complete` (5 new tools). Library: [`src/lib/goals.mjs`](src/lib/goals.mjs), CLI: [`src/commands/goal.mjs`](src/commands/goal.mjs).
+
+- **`archkit boundary-check` — machine-enforced BOUNDARIES.md**. Parses `BAN: source-glob -> target-glob` directives from `.arch/BOUNDARIES.md` (standalone bullets, or embedded inside an existing `NEVER ...` line as `(BAN: src -> target)`), then walks staged / unstaged / explicit files for imports that violate any rule. Languages: JS/TS (`import` + `require`) and Python (`from … import …` + bare `import`); other languages return no violations rather than false positives. `--staged` and `--diff` modes scope findings to changed hunks. Also exposed as MCP tool `archkit_boundary_check({ staged?, diff?, files? })`. Closes the loop on the arch-poly observation that BOUNDARIES.md was the most valuable `.arch/` artifact but had zero enforcement. Files: [`src/lib/boundary-parser.mjs`](src/lib/boundary-parser.mjs), [`src/lib/import-detector.mjs`](src/lib/import-detector.mjs), [`src/commands/boundary.mjs`](src/commands/boundary.mjs).
+
+- **Required-reading injection on `resolve preflight`**. `archkit resolve preflight <feature> <layer>` now returns a `requiredReading: [".arch/skills/<x>.skill", ...]` field listing skill files relevant to the feature (matched by feature-id, cluster-graph `$skill` reference, or INDEX.md keyword). The CLI also prints `Required reading: ...` as a literal prefix line before the JSON output, so the agent driving the tool pulls those skill files into context before writing code. This is the fix that would have caught arch-poly's `yes_bid → yes_bid_dollars` API quirk — `kalshi.skill` existed on disk, but nothing surfaced it during the work. `archkit_resolve_preflight` MCP tool description also updated to call out the new field.
+
+- **`scripts/check-version-sync.mjs`** + `npm run check:versions` + `prepublishOnly` hook. Fails non-zero if `package.json` and `.claude-plugin/plugin.json` versions diverge. (Pre-fix: `plugin.json` was stuck at v1.6.2 while `package.json` shipped v1.6.5.)
+
+- **Dead-end / silent-success indicators (conference-feedback quick wins)**. Every v1.7 tool now distinguishes "checked and found nothing" from "didn't really do anything," and every response carries a `nextStep` field for agents:
+  - `archkit_boundary_check`: when `rules: 0` (BOUNDARIES.md has no machine-enforceable BAN directives), the response includes a `hint` explaining how to enable enforcement; a new `unappliedRules` array flags BAN rules whose source-glob matched no scanned file (could be stale, could be legitimately not in this run). Every result carries `nextStep`: "fix the violation," "add BAN directives," or "no action needed."
+  - `archkit_resolve_preflight`: new `requiredReadingNote` field explains *why* `requiredReading` is empty (no skill files in project yet, vs. checked N skills and none matched). New `skillCatalogSize` counter. New `nextStep` field guides the agent: read the listed skills → write code, or resolve drift first, or proceed to review.
+  - `archkit_goal_payload`: error on unknown slug now lists active goal slugs and suggests `archkit_goal_intake` if the queue is empty (matching `archkit_goal_show`'s existing recovery hint).
+- CLI side: `archkit resolve preflight` prints `Required reading:` and `Next:` lines to **stderr** so stdout stays pure JSON for downstream parsers; agents and humans grepping tool output get the one-liners without breaking JSON.parse on the stdout.
+
+### Fixed
+
+- **`review --staged` no longer reports pre-existing findings on untouched lines** (arch-poly's #3 priority — the biggest signal/noise win). New helper `getDiffHunkLines()` parses `git diff --cached -U0` output into per-file changed-line sets, and `filterFindingsByHunks()` drops findings whose `.line` falls outside those sets. Applied in both `--staged` and `--diff` modes, and in both JSON (`--agent`) and human-readable paths. Findings without a `.line` field (file-level) still pass through. File: [`src/commands/review/staged-hunks.mjs`](src/commands/review/staged-hunks.mjs).
+
+- **Wizard no longer mandates `verify-wiring` on non-JS projects**. Generated `SYSTEM.md`, `.claude/rules/superpowers-integration.md`, and `.claude/skills/archkit-protocol/SKILL.md` now omit the `archkit resolve verify-wiring src/` line when the project's declared stack contains no JS/TS framework (Python-only / Go-only / Swift-only / Rust-only / etc.). The verify-wiring command itself still warns loudly on 0-file scans (shipped in v1.6.x); this change stops *prescribing* the command in the first place when the stack makes it dead weight. New helper: [`src/lib/stack-detect.mjs`](src/lib/stack-detect.mjs) with `hasJsTsStack(cfg)`. Surfaced by arch-poly (Python-only Kalshi trading bot).
+
+- **`.claude-plugin/plugin.json` synced to `package.json` version** (was v1.6.2, now v1.7.0). Both ship as one unit (npm package + Claude Code plugin) and must move in lockstep going forward — enforced by the new check script.
+
+### Source: arch-poly dogfood (2026-05)
+
+5-day stress test on a Python Kalshi prediction-market trading bot. Killer insight: `boundary-check` + skill injection on `preflight`, taken together, would have caught the production bug that motivated this release (the bot parsed Kalshi's `yes_bid` field as integer cents after the API switched to `yes_bid_dollars` decimal strings). The `kalshi.skill` file had the exact WRONG/RIGHT pattern that would have flagged it — but it never reached context because nothing surfaced it. v1.7's pair fix closes that gap.
+
+### Tests + pre-existing failures cleaned up
+
+Full test sweep at release time: **all 44 suites green** (5 new v1.7 suites + 39 regression suites including the entire `mcp-runners/` family). Three pre-existing failure modes that surfaced during pre-release validation were resolved as part of this release:
+
+- **ajv module corruption** — `tests/mcp-server` and most `tests/mcp-runners/*` suites failed with `dataType_1.getJSONTypes is not a function` (and several siblings depending on call path) due to a partial `node_modules/ajv` install. Resolved by `rm -rf node_modules && npm install` — package-lock.json was intact, the install state wasn't.
+- **`tests/mcp-server` stale tool-list assertion** — the suite asserted exactly 13 MCP tools; v1.7 adds 4 (boundary-check + 3 goal tools = 17). Updated the assertion list to the new canonical set.
+- **`tests/mcp-init` testing removed behavior** — the suite verified direct writes to `~/.claude/mcp.json`, which `src/commands/init.mjs:515` deliberately removed in favor of delegating to `claude mcp add` (Claude Code v2.x no longer reads that path). Rewrote the suite to use a fake `claude` binary on PATH and assert the CLI is invoked with the right arguments — covering the happy path, the idempotent re-run, and the no-CLI-on-PATH fallback.
+
 ## v1.6.5 — 2026-05-20
 
 ### Fixed

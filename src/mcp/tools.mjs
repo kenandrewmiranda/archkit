@@ -19,6 +19,9 @@ import { runDriftJson } from "../commands/drift.mjs";
 import { runLogDecisionJson } from "../commands/decisions.mjs";
 import { runPrdCheckJson } from "../commands/prd.mjs";
 import { runInitJson } from "../commands/init-mcp.mjs";
+import { runBoundaryCheckJson } from "../commands/boundary.mjs";
+import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload } from "../commands/goal.mjs";
+import { loadGoal } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
 function findArchDir(cwd) {
@@ -78,7 +81,7 @@ export const tools = {
   },
 
   archkit_resolve_preflight: {
-    description: "Verify a feature/layer combination exists and is correctly wired in .arch/ before generating code. The set of valid `feature` values is derived from .arch/INDEX.md — specifically the node→cluster mapping under '## Nodes' (each entry like `[feature.layer] : cluster-name` registers the feature). When an unknown `feature` is passed, the response contains `error: \"unknown_feature\"` and a `valid: [...]` array listing every feature id INDEX.md currently knows about — read that array to pick the right name. `layer` is a free-form architecture layer (controller / service / repository / types / validation / test / ui / etc.) matched against the same INDEX.md entries; mismatches are reported but do not error. The handler also returns recent git history for the feature's basePath, related skills, and matching cluster nodes. When to use: BEFORE writing or modifying code in a feature path, to confirm the feature actually exists in .arch/ and learn its conventions.",
+    description: "Verify a feature/layer combination exists and is correctly wired in .arch/ before generating code. The set of valid `feature` values is derived from .arch/INDEX.md — specifically the node→cluster mapping under '## Nodes' (each entry like `[feature.layer] : cluster-name` registers the feature). When an unknown `feature` is passed, the response contains `error: \"unknown_feature\"` and a `valid: [...]` array listing every feature id INDEX.md currently knows about — read that array to pick the right name. `layer` is a free-form architecture layer (controller / service / repository / types / validation / test / ui / etc.) matched against the same INDEX.md entries; mismatches are reported but do not error. The handler also returns recent git history for the feature's basePath and pending gotcha proposals. **Important**: the response includes a `requiredReading: [\".arch/skills/<x>.skill\", ...]` array listing skill files relevant to this feature (matched by id, cluster-graph reference, or keyword). When non-empty, READ those skill files before writing code — they capture API quirks and known wrong-patterns that won't show up in the source tree. When to use: BEFORE writing or modifying code in a feature path, to confirm the feature exists, learn its conventions, and pull in any relevant skill context.",
     inputSchema: z.object({
       feature: z.string().min(1).describe("Feature id as it appears in .arch/INDEX.md (e.g. \"auth\", \"billing\"). Unknown ids return the full valid list."),
       layer: z.string().min(1).describe("Architecture layer for the file you're about to touch (e.g. \"controller\", \"service\", \"repository\", \"types\")."),
@@ -180,6 +183,105 @@ export const tools = {
       let archDir = null;
       try { archDir = requireArchDir(cwd); } catch { /* ok — PRD check works without .arch/ */ }
       return runPrdCheckJson({ archDir, cwd, prdPath });
+    },
+  },
+
+  archkit_boundary_check: {
+    description: "Enforce structured `BAN: source-glob -> target-glob` directives parsed from .arch/BOUNDARIES.md against either the git index (staged: true), the working tree diff (diff: true), or an explicit `files` list. For each import statement on a changed line, the tool checks whether the source file matches any rule's source-glob AND the imported module matches that rule's target-glob — a match is a violation. Languages supported: JS/TS/MJS/CJS/JSX/TSX (import + require) and Python (from-import + bare import). Other languages return zero violations rather than false positives. Response shape: { files, rules, violations: [{file, line, imported, rule, source}], warnings, pass:boolean }. Use case: pre-commit / pre-review enforcement of architectural import boundaries (e.g. `BAN: copilot/* -> execution/*` from arch-poly's dogfood). This is the machine-enforcement counterpart to BOUNDARIES.md prose rules — agents and humans should rely on this rather than reading BOUNDARIES.md and self-checking.",
+    inputSchema: z.object({
+      staged: z.boolean().optional().describe("Check git-staged files (git diff --cached). Findings scoped to staged hunks."),
+      diff: z.boolean().optional().describe("Check unstaged working-tree changes. Findings scoped to changed hunks."),
+      files: z.array(z.string()).optional().describe("Explicit list of file paths to check (relative to cwd). Used when neither staged nor diff is true. Whole-file scan, no hunk filtering."),
+    }),
+    handler: async ({ staged, diff, files }) => {
+      const cwd = process.cwd();
+      const args = [];
+      if (staged) args.push("--staged");
+      else if (diff) args.push("--diff");
+      else if (files) args.push(...files);
+      return runBoundaryCheckJson({ archDir: requireArchDir(cwd), cwd, args });
+    },
+  },
+
+  archkit_goal_intake: {
+    description: "CGR (Clear Goal Run): accept a structured decomposition of a sprawling user ask into one or more discrete goals, persist them to .arch/goals/<slug>.md, and return a copy-pasteable payload (<=3800 chars) per goal that the user pastes after `/goal` in a fresh /clear'ed session. Call this AS SOON AS the user types a multi-goal or unclear ask in a fresh session — BEFORE writing code. You (the agent) do the decomposition: split the ask into 1..N discrete goals, give each a kebab-case slug, a one-line title, 2-5 exitCriteria, and optionally filesToTouch + requiredReading (paths like .arch/skills/<x>.skill that capture API quirks). archkit writes the files and returns payload strings — the user pastes payloads[0].payload after /goal to begin the first goal. If the ask is one goal, pass a single-element goals array. If the ask is ambiguous, ASK the user to clarify before calling this. Workflow: intake -> /clear + paste payload 0 -> work goal 0 -> archkit_goal_complete -> /clear + paste payload 1 -> ...",
+    inputSchema: z.object({
+      sourceAsk: z.string().optional().describe("The user's original ask (first ~500 chars). Stored with each goal for backtrace."),
+      goals: z.array(z.object({
+        slug: z.string().optional().describe("Kebab-case unique id. Auto-generated from title if omitted."),
+        title: z.string().min(1).describe("One-line goal title."),
+        why: z.string().optional().describe("Optional 1-3 sentence motivation."),
+        exitCriteria: z.array(z.string()).min(1).describe("Concrete completion conditions. Goal is done when ALL are met."),
+        filesToTouch: z.array(z.string()).optional().describe("Best-guess files this goal will modify."),
+        requiredReading: z.array(z.string()).optional().describe("Paths the agent must read first, e.g. .arch/skills/kalshi.skill."),
+        dependsOn: z.array(z.string()).optional().describe("Other goal slugs that must complete first."),
+        body: z.string().optional().describe("Optional markdown body; auto-generated if omitted."),
+      })).min(1).describe("One or more goals. Order matters — payloads[0] is the first goal the user starts."),
+    }),
+    handler: async ({ sourceAsk, goals }) => {
+      const cwd = process.cwd();
+      return runGoalIntake({ archDir: requireArchDir(cwd), cwd, sourceAsk, goals });
+    },
+  },
+
+  archkit_goal_list: {
+    description: "List active and completed CGR goals in .arch/goals/. Use to check what's already in flight before calling archkit_goal_intake (avoid duplicating an existing goal), or to find the next goal's slug after completing one.",
+    inputSchema: z.object({}),
+    handler: async () => {
+      const cwd = process.cwd();
+      return runGoalList({ archDir: requireArchDir(cwd) });
+    },
+  },
+
+  archkit_goal_show: {
+    description: "Read a CGR goal's full structured content (frontmatter + markdown body) in one round-trip — alternative to calling archkit_goal_list then Reading the returned filepath. Use when you need the goal's exit-criteria, required-reading, files-to-touch, or body to decide what to work on. Returns { slug, meta:{title, status, created, 'exit-criteria':[], 'required-reading':[], 'files-to-touch':[], 'depends-on':[], 'source-ask':...}, body, filepath }. Returns error 'unknown_goal' if the slug is not in .arch/goals/ (also lists currently-active slugs to choose from).",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug (matches the filename at .arch/goals/<slug>.md)."),
+    }),
+    handler: async ({ slug }) => {
+      const cwd = process.cwd();
+      const archDir = requireArchDir(cwd);
+      const goal = loadGoal(archDir, slug);
+      if (!goal) {
+        const known = runGoalList({ archDir }).active.map(g => g.slug);
+        throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+          suggestion: known.length > 0 ? `Active goals: ${known.join(", ")}` : "No active goals — call archkit_goal_intake first.",
+        });
+      }
+      return { slug, meta: goal.meta, body: goal.body, filepath: goal.filepath };
+    },
+  },
+
+  archkit_goal_payload: {
+    description: "Re-render the copy-paste payload (<=3800 chars) for an existing CGR goal — use when the user lost the payload, wants to re-paste it, or you need to inspect it before instructing /clear + /goal. archkit_goal_intake returns payloads at creation time and archkit_goal_complete returns the NEXT goal's payload; this tool covers the in-between case of fetching a specific goal's payload on demand. Returns { payload:string, length:number, withinBudget:boolean }.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to render a payload for."),
+    }),
+    handler: async ({ slug }) => {
+      const cwd = process.cwd();
+      const archDir = requireArchDir(cwd);
+      const goal = loadGoal(archDir, slug);
+      if (!goal) {
+        const active = runGoalList({ archDir }).active.map(g => g.slug);
+        throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+          suggestion: active.length > 0
+            ? `Active goals: ${active.join(", ")}. Call archkit_goal_payload with one of those slugs.`
+            : `No active goals. Call archkit_goal_intake first to decompose the user's ask into goals.`,
+        });
+      }
+      return runGoalPayload({ archDir, slug });
+    },
+  },
+
+  archkit_goal_complete: {
+    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's copy-paste payload (or nextGoal:null when the queue is empty). Use this at the end of a goal session, right before instructing the user to /clear and paste the next payload. Optional `notes` is appended as completion-notes frontmatter.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to complete."),
+      notes: z.string().optional().describe("Optional 1-2 sentence completion notes."),
+    }),
+    handler: async ({ slug, notes }) => {
+      const cwd = process.cwd();
+      return runGoalComplete({ archDir: requireArchDir(cwd), slug, notes });
     },
   },
 

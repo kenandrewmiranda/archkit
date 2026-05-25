@@ -5,6 +5,49 @@ import { loadFile, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 import { archkitError } from "../../lib/errors.mjs";
 
+// arch-poly dogfood: .arch/skills/<x>.skill files capture API quirks
+// (e.g. Kalshi switching `yes_bid` to `yes_bid_dollars`) but never reach
+// the agent's context unless something surfaces them. Preflight is the
+// natural surface — it runs before any code change on a known feature.
+//
+// Match a skill to a feature when any of:
+//   1. skill id == feature id (e.g. feature "kalshi" + skill "kalshi")
+//   2. skill id appears as `$skill` in the feature's cluster graph
+//   3. the skill's INDEX.md keywords match the feature id (loose substring)
+function findRequiredSkills({ archDir, featureId, clusterId, index }) {
+  const matches = new Set();
+  const skillIds = Object.keys(index.skillFiles || {});
+
+  // (1) direct id match
+  if (skillIds.includes(featureId)) matches.add(featureId);
+
+  // (2) cluster graph mentions
+  if (clusterId) {
+    const graphPath = path.join(archDir, "clusters", `${clusterId}.graph`);
+    if (fs.existsSync(graphPath)) {
+      const graph = fs.readFileSync(graphPath, "utf8");
+      for (const sid of skillIds) {
+        if (graph.includes(`$${sid}`)) matches.add(sid);
+      }
+    }
+  }
+
+  // (3) keyword → skill table mentions the feature id
+  for (const [kw, sid] of Object.entries(index.keywordSkills || {})) {
+    if (kw.includes(featureId) || featureId.includes(kw)) {
+      if (skillIds.includes(sid)) matches.add(sid);
+    }
+  }
+
+  // Resolve to paths relative to project root.
+  // index.skillFiles values are typically already `.arch/skills/x.skill`.
+  return [...matches].map((sid) => {
+    const declared = index.skillFiles[sid];
+    if (declared && declared.includes(".skill")) return declared;
+    return `.arch/skills/${sid}.skill`;
+  });
+}
+
 export function cmdPreflight(archDir, featureId, layer, opts = {}) {
   const cwd = opts.cwd || process.cwd();
   log.resolve(`Preflight check: ${featureId}.${layer}`);
@@ -122,18 +165,44 @@ export function cmdPreflight(archDir, featureId, layer, opts = {}) {
     }
   }
 
-  // 5. Compute pass
+  // 5. Required reading — surface relevant skill files (arch-poly fix).
+  // Differentiate "no skills exist in the project" from "skills exist but none
+  // matched this feature" — silent-success was a v1.7 dead-end pattern.
+  const skillCatalogSize = Object.keys(index.skillFiles || {}).length;
+  const requiredReading = findRequiredSkills({
+    archDir,
+    featureId,
+    clusterId: nodeInfo.cluster,
+    index,
+  });
+  const requiredReadingNote =
+    requiredReading.length > 0
+      ? `Read the listed skill file(s) before generating code.`
+      : skillCatalogSize === 0
+        ? `No skill files in .arch/skills/ yet — consider adding ${featureId}.skill to capture API quirks and WRONG/RIGHT patterns for this feature.`
+        : `Checked ${skillCatalogSize} skill file(s); none matched this feature by id, cluster-graph reference, or keyword. If a skill is relevant, link it by adding $${featureId} to .arch/clusters/${nodeInfo.cluster}.graph or a keyword entry to INDEX.md.`;
+
+  // 6. Compute pass + next-step guidance
   const passWithoutAction = pendingGotchas.length === 0 && driftFindings.length === 0;
+  const nextStep = !passWithoutAction
+    ? `Resolve pending gotchas and drift findings before generating code. Drift first (structural), then triage gotcha proposals.`
+    : requiredReading.length > 0
+      ? `Read required-reading skill(s), then write code following their WRONG/RIGHT patterns.`
+      : `Proceed with the change. Run \`archkit review --staged\` before committing.`;
 
   return {
     feature: featureId,
     layer,
     basePath,
+    requiredReading,
+    requiredReadingNote,
+    skillCatalogSize,
     lastTouched,
     recentCommits,
     pendingGotchas,
     driftFindings,
     passWithoutAction,
+    nextStep,
     gitAvailable,
   };
 }

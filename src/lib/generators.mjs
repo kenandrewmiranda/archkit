@@ -4,6 +4,7 @@ import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
 import { genBoundariesMd } from "../data/boundaries.mjs";
 import { GOTCHA_DB } from "../data/gotcha-db.mjs";
 import { PACKAGE_DOCS } from "../data/package-docs.mjs";
+import { hasJsTsStack } from "./stack-detect.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GENERATORS
@@ -76,7 +77,9 @@ export function genSystemMd(cfg) {
   o += `- BEFORE any task execution: \`archkit resolve warmup\`\n`;
   o += `- BEFORE each feature task: \`archkit resolve preflight <feature> <layer>\`\n`;
   o += `- BEFORE each commit: \`archkit review --staged\`\n`;
-  o += `- AFTER completing a plan: \`archkit resolve verify-wiring src/\`\n`;
+  if (hasJsTsStack(cfg)) {
+    o += `- AFTER completing a plan: \`archkit resolve verify-wiring src/\`\n`;
+  }
   o += `- AT session end: \`archkit gotcha --debrief\` (or report via --json)\n`;
   if (cfg.includeDelegation !== false) {
     o += `\n## Delegation Principle\n`;

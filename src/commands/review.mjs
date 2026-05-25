@@ -38,6 +38,7 @@ import {
 import { checkFrontendWiring } from "./review/frontend-checks.mjs";
 import { checkEventPatterns } from "./review/event-checks.mjs";
 import { shouldRunJsEcosystemChecks, isReviewableFile } from "./review/language.mjs";
+import { getDiffHunkLines, filterFindingsByHunks } from "./review/staged-hunks.mjs";
 import * as log from "../lib/logger.mjs";
 import { parseSuppressions, validateReason } from "../lib/suppression.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -458,6 +459,12 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
     }
   }
 
+  // arch-poly fix: scope --staged / --diff findings to the actually-changed
+  // lines so we don't repeatedly cry wolf about pre-existing TODOs.
+  const hunkLinesMap = (staged || diff)
+    ? getDiffHunkLines(cwd, { staged: !!staged })
+    : new Map();
+
   const allFindings = {};
   let totalErrors = 0, totalWarnings = 0, totalInfos = 0, cleanFiles = 0;
 
@@ -507,11 +514,14 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
       return true;
     });
 
-    allFindings[filepath] = filtered;
-    totalErrors += filtered.filter(f => f.severity === "error").length;
-    totalWarnings += filtered.filter(f => f.severity === "warning").length;
-    totalInfos += filtered.filter(f => f.severity === "info").length;
-    if (filtered.length === 0) cleanFiles++;
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(cwd, filepath);
+    const scoped = filterFindingsByHunks(filtered, hunkLinesMap.get(absPath));
+
+    allFindings[filepath] = scoped;
+    totalErrors += scoped.filter(f => f.severity === "error").length;
+    totalWarnings += scoped.filter(f => f.severity === "warning").length;
+    totalInfos += scoped.filter(f => f.severity === "info").length;
+    if (scoped.length === 0) cleanFiles++;
   }
 
   // Persist for --verify mode
@@ -634,7 +644,16 @@ async function main() {
     process.exit(0);
   }
 
+  const isStaged = args.includes("--staged");
+  const isDiff = args.includes("--diff");
+  const hunkLinesMap = (isStaged || isDiff)
+    ? getDiffHunkLines(process.cwd(), { staged: isStaged })
+    : new Map();
+
   log.review(`Reviewing ${files.length} file${files.length > 1 ? "s" : ""}...`);
+  if (hunkLinesMap.size > 0) {
+    log.review(`Scoping findings to changed hunks only (${isStaged ? "--staged" : "--diff"} mode)`);
+  }
   log.review(`Matching against ${Object.values(skills).reduce((s, sk) => s + sk.gotchas.length, 0)} gotcha patterns`);
 
   // --verify mode: re-check only files from last review that had findings
@@ -720,12 +739,15 @@ async function main() {
       return true;
     });
 
-    displayFindings(filepath, filteredFindings);
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const scopedFindings = filterFindingsByHunks(filteredFindings, hunkLinesMap.get(absPath));
 
-    totalErrors += filteredFindings.filter(f => f.severity === "error").length;
-    totalWarnings += filteredFindings.filter(f => f.severity === "warning").length;
-    totalInfos += filteredFindings.filter(f => f.severity === "info").length;
-    if (filteredFindings.length === 0) cleanFiles++;
+    displayFindings(filepath, scopedFindings);
+
+    totalErrors += scopedFindings.filter(f => f.severity === "error").length;
+    totalWarnings += scopedFindings.filter(f => f.severity === "warning").length;
+    totalInfos += scopedFindings.filter(f => f.severity === "info").length;
+    if (scopedFindings.length === 0) cleanFiles++;
   }
 
   // Save results for --verify mode

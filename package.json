@@ -1,6 +1,6 @@
 {
   "name": "archkit",
-  "version": "1.6.5",
+  "version": "1.7.0",
   "description": "Context Engineering Scaffolder for AI-Assisted Development",
   "type": "module",
   "repository": {
@@ -25,7 +25,9 @@
     "init": "node bin/archkit.mjs init",
     "export": "node bin/archkit.mjs export",
     "sync": "node bin/archkit.mjs sync",
-    "drift": "node bin/archkit.mjs drift"
+    "drift": "node bin/archkit.mjs drift",
+    "check:versions": "node scripts/check-version-sync.mjs",
+    "prepublishOnly": "node scripts/check-version-sync.mjs"
   },
   "keywords": [
     "context-engineering",

@@ -293,6 +293,17 @@ function main() {
       const layer = cleanArgs[2];
       if (!feature || !layer) { output({ error: "Usage: resolve.mjs preflight <feature> <layer>" }, pretty); process.exit(1); }
       const result = cmdPreflight(archDir, feature, layer);
+      // arch-poly fix: surface required-reading + nextStep on stderr so:
+      //   - the agent driving this CLI sees the skill paths to pull into context
+      //   - stdout stays pure JSON for downstream parsers
+      // The structured fields are also in the JSON body for MCP-path callers.
+      if (Array.isArray(result.requiredReading) && result.requiredReading.length > 0) {
+        console.error(`Required reading: ${result.requiredReading.join(", ")}`);
+      } else if (result.requiredReadingNote) {
+        // v1.7 quick-win: loud no-op signal instead of silent empty array.
+        console.error(`Required reading: (none matched) — ${result.requiredReadingNote}`);
+      }
+      if (result.nextStep) console.error(`Next: ${result.nextStep}`);
       output(result, pretty);
       // v1.3: preflight returns passWithoutAction (informational), not pass
       // (which would block). Agents check passWithoutAction themselves.
