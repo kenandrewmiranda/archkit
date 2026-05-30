@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { findArchDir } from "../lib/shared.mjs";
 import { loadFile, parseIndex, parseSystem } from "../lib/parsers.mjs";
+import { collectDeps } from "../lib/workspace-deps.mjs";
 import * as log from "../lib/logger.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -47,11 +48,10 @@ function detectFindings(archDir, cwd) {
     ? fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill")).map(f => f.replace(".skill", ""))
     : [];
 
-  let pkgDeps = {};
-  try {
-    const pkgJson = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
-    pkgDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
-  } catch {}
+  // Union root + workspace-member deps so a skill whose package is declared in
+  // a workspace package.json (apps/*, packages/*) isn't flagged as orphaned in
+  // pnpm/npm/yarn monorepos.
+  const pkgDeps = collectDeps(cwd);
 
   // Import the package-docs map to resolve skill → npm name
   // Can't do dynamic import in sync function, so inline a basic check

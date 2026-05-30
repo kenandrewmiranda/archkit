@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.8.2 — 2026-05-30
+
+### Fixed — drift false-positive orphaned-skill findings in workspace monorepos
+
+- **`archkit drift` read only the root `package.json`** for the orphaned-skill check, so in pnpm/npm/yarn workspace monorepos — where runtime deps live in member manifests (`apps/*`, `packages/*`) — every skill whose package was declared in a workspace got flagged as orphaned. A repo whose root has only devDeps (turbo/eslint/etc.) tripped the check against an incomplete dep set (6 false positives observed in `arch-market`).
+- New `src/lib/workspace-deps.mjs` (`collectDeps` / `collectWorkspaceDeps` / `resolveWorkspaceGlobs`) unions root + workspace-member deps. Detects workspaces from `pnpm-workspace.yaml` (`packages:` globs) and `package.json` `workspaces` (array or `{ packages: [] }`). Handles `apps/*` / `packages/*` enumeration and direct paths; skips `!` exclusions. `drift.mjs` now calls `collectDeps(cwd)`.
+- Cascades to all three drift surfaces — the CLI, the `archkit_drift` MCP tool, and the doctor's `D-DRIFT` check all flow through `runDriftJson`, so the false positives clear everywhere. New `tests/drift-workspace` suite covers both workspace forms, direct paths, and a negative case proving genuinely-missing deps are still flagged.
+
 ## v1.8.1 — 2026-05-30
 
 ### Fixed — Stop hook output rejected by Claude Code
