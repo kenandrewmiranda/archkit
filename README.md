@@ -89,13 +89,15 @@ If you use Claude Code, install archkit as a plugin so the MCP server, SessionSt
 
 ```bash
 # In Claude Code (slash commands):
-/plugin marketplace add https://market.thearchkit.com
-/plugin install archkit
+/plugin marketplace add kenandrewmiranda/archkit
+/plugin install archkit@thearchkit
 
 # …or from your shell:
-claude plugin marketplace add https://market.thearchkit.com
-claude plugin install archkit
+claude plugin marketplace add kenandrewmiranda/archkit
+claude plugin install archkit@thearchkit
 ```
+
+> The GitHub-repo source above always works. The branded URL `https://market.thearchkit.com/marketplace.json` resolves to the same manifest once the marketplace is deployed — add it the same way (note: it must be the full `.json` URL; a bare domain is interpreted as a git repo).
 
 Then restart Claude Code (or run `/plugin`) so the MCP server, four guardrail hooks, and `/archkit-init` wizard load.
 
