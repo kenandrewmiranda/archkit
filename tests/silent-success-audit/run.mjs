@@ -166,12 +166,17 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_log_decision", { title: "audit", context: "x", decision: "y", consequences: "z" }],
         ["archkit_prd_check", {}],
         ["archkit_boundary_check", {}],
-        ["archkit_goal_intake", { goals: [{ title: "audit goal", exitCriteria: ["done"] }] }],
+        ["archkit_boundary_propose", { source: "src/audit-web/*", target: "src/audit-db/*", why: "audit-test" }],
+        ["archkit_goal_intake", { goals: [{ title: "audit goal", exitCriteria: ["done"] }, { title: "audit goal two", exitCriteria: ["done"] }] }],
         ["archkit_goal_list", {}],
         ["archkit_goal_show", { slug: "audit-goal" }],
         ["archkit_goal_payload", { slug: "audit-goal" }],
+        ["archkit_goal_verify", { slug: "audit-goal" }],
         ["archkit_goal_complete", { slug: "audit-goal" }],
+        ["archkit_goal_abandon", { slug: "audit-goal-two" }],
         ["archkit_doctor", {}],
+        ["archkit_install_hooks", {}],
+        ["archkit_decisions_search", {}],
         ["archkit_init", {}],
       ];
 

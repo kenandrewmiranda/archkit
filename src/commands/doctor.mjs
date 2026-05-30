@@ -19,6 +19,7 @@ import { commandBanner } from "../lib/banner.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { parseBoundaries } from "../lib/boundary-parser.mjs";
 import { listGoals } from "../lib/goals.mjs";
+import { gatherHooksStatus } from "../lib/hooks-status.mjs";
 import { cmdWarmup } from "./resolve/warmup.mjs";
 
 // drift.mjs auto-fires main() when process.env.ARCHKIT_RUN is set (CLI
@@ -305,6 +306,32 @@ export async function runDoctorJson({ archDir, cwd }) {
     );
   }
 
+  // Intent C4: are the guardrail hooks even installed? Without them the
+  // SessionStart digest, the CGR Stop-guard, and review-on-edit never fire —
+  // .arch/ can be perfect and still do nothing. The MCP layer is the only
+  // surface that can detect this (it's connected regardless of hook wiring).
+  const hooks = gatherHooksStatus(cwd);
+  if (hooks.installed) {
+    checks.push({
+      id: "D-HOOKS",
+      name: "Guardrail hooks installed",
+      status: "pass",
+      detail: hooks.via === "plugin"
+        ? "Provided by the enabled archkit plugin."
+        : "All four guardrail hooks wired in settings.json.",
+    });
+  } else {
+    checks.push({
+      id: "D-HOOKS",
+      name: "Guardrail hooks installed",
+      status: "warn",
+      detail: `${hooks.missing.length}/${hooks.required.length} guardrail hook(s) not wired: ${hooks.missing.join(", ")}.`,
+    });
+    warnings.push(
+      `[hooks] ${hooks.missing.length} guardrail hook(s) not installed (${hooks.missing.join(", ")}) — the SessionStart digest, CGR Stop-guard${hooks.missing.includes("Stop") ? "" : ""}, and review-on-edit won't fire. Call archkit_install_hooks to wire the full set into .claude/settings.json.`
+    );
+  }
+
   // Structural warmup top-line check so the user sees one row.
   checks.unshift({
     id: "D-WARMUP",
@@ -322,7 +349,7 @@ export async function runDoctorJson({ archDir, cwd }) {
   const failing = checks.filter(c => c.status === "fail").length;
 
   const warningsNote = warnings.length === 0
-    ? `Ran ${totalChecks} aggregated check(s): structural warmup, drift, and 3 intent checks (skill gotcha coverage, BOUNDARIES.md BAN coverage, CGR goal quality). All clean.`
+    ? `Ran ${totalChecks} aggregated check(s): structural warmup, drift, and 4 surface checks (skill gotcha coverage, BOUNDARIES.md BAN coverage, CGR goal quality, guardrail-hook install). All clean.`
     : undefined;
 
   const nextStep = (() => {

@@ -57,14 +57,14 @@ await log("initialize handshake succeeds", async () => {
     await withClient(tmp, async (client) => {
       const info = client.getServerVersion();
       assert.equal(info.name, "archkit");
-      assert.ok(info.version.startsWith("1.4."));
+      assert.ok(info.version.startsWith("1.8."));
     });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-await log("tools/list returns all 20 tools", async () => {
+await log("tools/list returns all 25 tools", async () => {
   const tmp = makeFixture();
   try {
     await withClient(tmp, async (client) => {
@@ -72,16 +72,21 @@ await log("tools/list returns all 20 tools", async () => {
       const names = tools.map(t => t.name).sort();
       assert.deepEqual(names, [
         "archkit_boundary_check",
+        "archkit_boundary_propose",
+        "archkit_decisions_search",
         "archkit_doctor",
         "archkit_drift",
+        "archkit_goal_abandon",
         "archkit_goal_complete",
         "archkit_goal_intake",
         "archkit_goal_list",
         "archkit_goal_payload",
         "archkit_goal_show",
+        "archkit_goal_verify",
         "archkit_gotcha_list",
         "archkit_gotcha_propose",
         "archkit_init",
+        "archkit_install_hooks",
         "archkit_log_decision",
         "archkit_prd_check",
         "archkit_resolve_lookup",

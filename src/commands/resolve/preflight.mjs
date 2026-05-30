@@ -4,6 +4,7 @@ import { execFileSync } from "child_process";
 import { loadFile, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 import { archkitError } from "../../lib/errors.mjs";
+import { searchDecisions } from "../../lib/decisions.mjs";
 
 // arch-poly dogfood: .arch/skills/<x>.skill files capture API quirks
 // (e.g. Kalshi switching `yes_bid` to `yes_bid_dollars`) but never reach
@@ -186,13 +187,33 @@ export function cmdPreflight(archDir, featureId, layer, opts = {}) {
         ? `No skill files in .arch/skills/ yet — consider adding ${featureId}.skill to capture API quirks and WRONG/RIGHT patterns for this feature.`
         : `Checked ${skillCatalogSize} skill file(s); none matched this feature by id, cluster-graph reference, or keyword. If a skill is relevant, link it by adding $${featureId} to .arch/clusters/${nodeInfo.cluster}.graph or a keyword entry to INDEX.md.`;
 
+  // 5c. Related ADRs — recall past decisions touching this feature so they're
+  // not re-litigated. Especially load-bearing for the fresh-context relay,
+  // where prior reasoning is gone from the window. Read-only; decisions/ may
+  // not exist yet. Silent-success: explain an empty result, don't just omit.
+  let relatedDecisions = [];
+  try {
+    relatedDecisions = searchDecisions(archDir, { query: featureId, limit: 3 }).map((d) => ({
+      number: d.number,
+      title: d.title,
+      status: d.status,
+      relativePath: d.relativePath,
+    }));
+  } catch (_) { /* decisions are optional */ }
+  const relatedDecisionsNote = relatedDecisions.length > 0
+    ? `Read these ADR(s) before changing ${featureId} — honor or explicitly supersede them.`
+    : `No prior ADR mentions "${featureId}". If this change sets an architectural precedent, capture it with archkit_log_decision.`;
+
   // 6. Compute pass + next-step guidance
   const passWithoutAction = pendingGotchas.length === 0 && driftFindings.length === 0;
-  const nextStep = !passWithoutAction
+  const baseNextStep = !passWithoutAction
     ? `Resolve pending gotchas and drift findings before generating code. Drift first (structural), then triage gotcha proposals.`
     : requiredReading.length > 0
       ? `Read required-reading skill(s), then write code following their WRONG/RIGHT patterns.`
       : `Proceed with the change. Run \`archkit review --staged\` before committing.`;
+  const nextStep = relatedDecisions.length > 0
+    ? `${baseNextStep} First check ${relatedDecisions.length} related ADR(s) (e.g. ${relatedDecisions[0].relativePath}).`
+    : baseNextStep;
 
   return {
     feature: featureId,
@@ -205,6 +226,8 @@ export function cmdPreflight(archDir, featureId, layer, opts = {}) {
     recentCommits,
     pendingGotchas,
     driftFindings,
+    relatedDecisions,
+    relatedDecisionsNote,
     passWithoutAction,
     nextStep,
     gitAvailable,

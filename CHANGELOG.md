@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.8.0 — 2026-05-30
+
+CGR fresh-context **relay loop** + **self-healing hook setup** + **ADR recall**, plus read-side symmetry across the surface: **goal verification/abandon**, **boundary capture**, and **MCP resources**. Makes the Clear Goal Run workflow frictionless (one keystroke to advance instead of copy-paste), able to detect/install its own guardrail hooks, and able to read back its own decisions/skills. Purely additive — the old paste-after-`/goal` flow still works as a fallback, and plain (non-CGR) sessions are unaffected. Brings tool count to 25, adds 3 MCP prompts, and adds MCP resources.
+
+### Added — CGR relay loop
+
+- **3 MCP prompts → slash commands** (`src/mcp/prompts.mjs`, registered in `src/mcp/server.mjs` via `registerPrompt`): `/mcp__archkit__goal_next` (marks the next eligible goal in-progress and injects its payload — the user's one keystroke after `/clear`, replacing the manual payload paste), `/mcp__archkit__goal_resume` (re-inject the active goal, no state change), `/mcp__archkit__goal_status` (read-only queue orientation). These are user-typed commands; the agent cannot trigger them (they pair with `/clear`).
+- **`in-progress` goal lifecycle** in `src/lib/goals.mjs`: `startGoal` / `getActiveGoal` / `nextEligibleGoal` (honors `depends-on`) + a turn-cap loop-state (`.arch/goals/.loop-state.json`).
+- **Goal-aware Stop hook** (`bin/archkit-stop-hook.mjs`): while a goal is in-progress, blocks stopping (`decision:"block"`) with the unmet exit-criteria as the reason, until the agent calls `archkit_goal_complete`. Safety valves: question-to-user detection (won't trap a genuine question) and a per-goal turn cap (`RELAY_TURN_CAP`, or `max-turns` frontmatter). Naturally scoped — only fires for goals started via the relay.
+- **Guidance glue**: the SessionStart digest and the `archkit_goal_intake` / `archkit_goal_complete` / `archkit_goal_payload` descriptions + `nextStep`s now steer the user into the relay (`/clear` → `/mcp__archkit__goal_next`), with the payload retained as fallback.
+
+### Added — `archkit_install_hooks` + D-HOOKS check
+
+- **`archkit_install_hooks`** (tool #21): checks whether the four v1.6 guardrail hooks (SessionStart, Stop, PostToolUse, UserPromptSubmit) are wired into Claude Code, and installs the full set. Default = **emit mode** (returns the exact `{ hooks }` config for the agent to merge via Edit, so the user sees the diff); `apply:true` writes them into the **project** `.claude/settings.json` (idempotent, preserves existing hooks, never touches the global user file). No-op when the archkit plugin is enabled.
+- **`archkit_doctor` gains D-HOOKS**: doctor now flags when the guardrail hooks aren't installed — closing a real blind spot. Previously doctor could report all-green while `.arch/` did nothing because no hook was wired to fire it. The MCP layer is the only surface that can detect this (it's connected regardless of hook wiring).
+- Fixes a long-standing gap: `archkit init --install-hooks` predates the v1.6 guardrail hooks and only wires a git pre-commit hook + the legacy PreToolUse claude-hook + SessionStart. The new install path wires the complete set, including the Stop hook the relay guard needs.
+
+### Added — `archkit_decisions_search` (ADR recall)
+
+- **`archkit_decisions_search`** (tool #22): searches/lists past ADRs in `.arch/decisions/`. `archkit_log_decision` only ever **wrote** decisions — nothing read them back, at any layer (the CLI `decisions` command only supported `log`). This closed archkit's institutional-memory loop: `query` gives keyword-ranked results (title/tags weighted over body); omitting it lists recent ADRs; optional `status`/`tags`/`limit`. Carries the silent-success contract (`decisionsNote` when empty). Also adds `archkit decisions list` / `archkit decisions search` CLI subcommands.
+- **`archkit_resolve_preflight` now surfaces `relatedDecisions`**: before changing a feature, preflight recalls ADRs mentioning it (with `relatedDecisionsNote` explaining an empty result), so settled choices aren't re-litigated — especially valuable in the fresh-context relay, where prior reasoning is gone from the window.
+
+### Added — capture symmetry, goal verification, and MCP resources
+
+- **`archkit_goal_verify`** (tool #23): gathers *evidence* a goal is done without auto-completing it — echoes exit-criteria as a checklist and adds objective signals (which files-to-touch are modified in git; what a staged review finds). Hardens the relay, whose Stop-guard otherwise trusts the `goal_complete` call blindly.
+- **`archkit_goal_abandon`** (tool #24): drops a goal *without* marking it done — archives to `done/` with status `abandoned` (distinct from completed), clears the relay turn-cap, releases the guard, and returns the next goal. For obsolete/mis-scoped goals.
+- **`archkit_boundary_propose`** (tool #25): the capture-symmetry partner to `archkit_gotcha_propose` — queues a proposed `BAN: source -> target` to `.arch/boundary-proposals/` for human review (validates glob syntax; no-ops if already enforced). Human-gated by design: archkit never auto-merges a BAN, since a wrong one blocks real work.
+- **MCP resources** (`src/mcp/resources.mjs`): `.arch/` artifacts exposed as `@archkit:…` handles so the agent can reference source files without a tool round-trip — `archkit://system`, `archkit://index`, `archkit://boundaries`, and templated `archkit://skill/{id}` + `archkit://decision/{number}` (the templates enumerate available skills/ADRs via list callbacks). Cheaper than tool calls for repeated reads in long sessions.
+
+Files: `src/mcp/prompts.mjs` (new), `src/mcp/resources.mjs` (new), `src/lib/hooks-status.mjs` (new), `src/commands/hooks.mjs` (new), `src/lib/decisions.mjs` (new), `src/lib/goals.mjs`, `src/lib/claude-settings.mjs`, `bin/archkit-stop-hook.mjs`, `bin/archkit-session-start.mjs`, `src/mcp/server.mjs`, `src/mcp/tools.mjs`, `src/commands/goal.mjs`, `src/commands/doctor.mjs`, `src/commands/decisions.mjs`, `src/commands/resolve/preflight.mjs`, `src/commands/boundary.mjs`, `src/mcp/server.mjs`. Tests: `tests/cgr-relay/` (10), `tests/hooks-status/` (10), `tests/decisions-search/` (9), `tests/goal-verify-abandon/` (6), `tests/boundary-propose/` (4), `tests/mcp-resources/` (2), plus updates to `tests/doctor/`, `tests/mcp-server/`, `tests/silent-success-audit/`.
+
 ## v1.7.2 — 2026-05-25
 
 v1.8 work item C from [docs/roadmap/v1.8.md](docs/roadmap/v1.8.md). Adds `archkit doctor` — the workflow logistic gauge that aggregates structural + intent checks into a single envelope, exposed as both CLI (`archkit doctor`) and MCP tool (`archkit_doctor`). Pure additive; no existing caller breaks.
