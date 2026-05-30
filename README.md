@@ -110,8 +110,10 @@ The plugin includes:
 ### Install — npm (Cursor, Continue, CI, or Claude Code without plugins)
 
 ```bash
-npm install -g archkit
+npm install -g @kenandrewmiranda/archkit
 ```
+
+> The npm package is scoped (`@kenandrewmiranda/archkit`) because the bare name `archkit` collides with an existing package — but it still installs the `archkit` CLI command.
 
 Registers seven bins on your `PATH`: `archkit` (CLI), `archkit-mcp` (MCP server), and the hook executables `archkit-session-start`, `archkit-stop-hook`, `archkit-posttooluse-hook`, `archkit-userpromptsubmit-hook`, and the legacy `archkit-claude-hook`.
 

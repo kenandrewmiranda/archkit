@@ -1,8 +1,11 @@
 {
-  "name": "archkit",
+  "name": "@kenandrewmiranda/archkit",
   "version": "1.8.0",
   "description": "Context Engineering Scaffolder for AI-Assisted Development",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/kenandrewmiranda/archkit.git"

@@ -1,6 +1,6 @@
 # Releasing archkit
 
-archkit ships as two artifacts that move together: the **npm package** (`archkit`) and the **Claude Code plugin** (the same repo, via `.claude-plugin/`). A single version covers both — `scripts/check-version-sync.mjs` enforces that `package.json` and `.claude-plugin/plugin.json` agree.
+archkit ships as two artifacts that move together: the **npm package** (`@kenandrewmiranda/archkit` — scoped because the bare name `archkit` collides with an existing package; the CLI command is still `archkit`) and the **Claude Code plugin** (the same repo, via `.claude-plugin/`). A single version covers both — `scripts/check-version-sync.mjs` enforces that `package.json` and `.claude-plugin/plugin.json` agree.
 
 ## One-time setup
 
