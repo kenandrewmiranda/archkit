@@ -39,7 +39,11 @@ export async function apiRequest(method, endpoint, params = {}) {
 
   // Concatenate base + endpoint (new URL() would strip the /api/cli prefix)
   const url = new URL(getBaseUrl() + endpoint);
-  if (method === "GET" && params) {
+  // The /api/cli/* surface takes its params from the query string for BOTH
+  // verbs: GET /search?q=… and POST /configs/:slug/download?version=…. Append
+  // for any method — otherwise `archkit install slug@1.2.0` drops the version
+  // and the server silently serves latest instead of the pinned release.
+  if (params) {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, v);
     }
