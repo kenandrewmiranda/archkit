@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { archkitError } from "../lib/errors.mjs";
 import { C, ICONS as I } from "../lib/shared.mjs";
+import { searchDecisions, listDecisions } from "../lib/decisions.mjs";
 
 const VALID_STATUS = new Set(["proposed", "accepted", "superseded", "deprecated"]);
 
@@ -149,6 +150,49 @@ export async function runLogDecisionJson({ archDir, title, context, decision, co
   };
 }
 
+// Read-back: search or list ADRs. Backs archkit_decisions_search and is reused
+// by archkit_resolve_preflight to surface related decisions.
+export function runDecisionsSearchJson({ archDir, query, status, tags, limit } = {}) {
+  if (!archDir) {
+    throw archkitError("no_arch_dir", "No .arch/ directory found", {
+      suggestion: "Run `archkit init` (or `/archkit-init` in Claude Code) to create one.",
+    });
+  }
+  const lim = Math.min(Math.max(Number(limit) || 10, 1), 50);
+  const totalOnDisk = listDecisions(archDir).length;
+  const results = searchDecisions(archDir, { query, status, tags, limit: lim });
+  const isSearch = !!(query && String(query).trim());
+
+  const decisions = results.map((d) => ({
+    number: d.number,
+    title: d.title,
+    status: d.status,
+    date: d.date,
+    tags: d.tags,
+    summary: d.summary,
+    relativePath: d.relativePath,
+    score: d.score,
+  }));
+
+  const decisionsNote = decisions.length > 0
+    ? undefined
+    : totalOnDisk === 0
+      ? "No ADRs in .arch/decisions/ yet — nothing recorded. Capture architectural choices with archkit_log_decision so they survive context resets."
+      : isSearch
+        ? `Searched ${totalOnDisk} ADR(s); none matched "${query}"${status ? ` with status=${status}` : ""}. Broaden the query, or call with no query to list recent decisions.`
+        : `No ADRs match the given filters (of ${totalOnDisk} on disk).`;
+
+  const nextStep = decisions.length === 0
+    ? totalOnDisk === 0
+      ? "No decisions recorded yet. Proceed; log new ones with archkit_log_decision as you make architectural choices."
+      : "No matches — re-call with a broader query, or omit query to browse recent ADRs."
+    : isSearch
+      ? `Found ${decisions.length} related ADR(s). Read the top one (${decisions[0].relativePath}) before changing this area — don't re-litigate a settled choice.`
+      : `Listing ${decisions.length} recent ADR(s). Open one via relativePath, or pass a query to search by keyword.`;
+
+  return { query: query || null, status: status || null, total: totalOnDisk, returned: decisions.length, decisions, decisionsNote, nextStep };
+}
+
 // ── CLI mode ──────────────────────────────────────────────────────────────
 
 function findArchDir(start) {
@@ -166,12 +210,39 @@ async function cliMode(args) {
   const sub = args[0];
   const jsonMode = args.includes("--json");
 
+  if (sub === "list" || sub === "search") {
+    const archDir = findArchDir(process.cwd());
+    if (!archDir) {
+      const msg = "No .arch/ directory found.";
+      console.log(jsonMode ? JSON.stringify({ error: msg }) : `${C.red}  ${I.warn} ${msg}${C.reset}`);
+      process.exit(1);
+    }
+    const query = args.filter((a) => a !== sub && !a.startsWith("--")).join(" ");
+    const result = runDecisionsSearchJson({ archDir, query });
+    if (jsonMode) {
+      console.log(JSON.stringify(result));
+    } else {
+      if (result.decisions.length === 0) {
+        console.log(`${C.dim}  ${result.decisionsNote}${C.reset}`);
+      } else {
+        for (const d of result.decisions) {
+          const score = d.score != null ? `${C.dim} (score ${d.score})${C.reset}` : "";
+          console.log(`  ${C.bold}${d.number}${C.reset} ${d.title} ${C.dim}[${d.status || "?"}]${C.reset}${score}`);
+          console.log(`     ${C.gray}${d.relativePath}${C.reset}`);
+        }
+      }
+    }
+    return;
+  }
+
   if (sub !== "log") {
     if (jsonMode) {
       console.log(JSON.stringify({ error: "Usage: archkit decisions log --json '<input>'" }));
     } else {
       console.log(`${C.yellow}  Usage:${C.reset}`);
       console.log(`${C.gray}    archkit decisions log --json '<input>'${C.reset}`);
+      console.log(`${C.gray}    archkit decisions list [--json]            List recent ADRs${C.reset}`);
+      console.log(`${C.gray}    archkit decisions search <terms> [--json]  Keyword-rank ADRs${C.reset}`);
       console.log("");
       console.log(`${C.yellow}  Input shape (JSON):${C.reset}`);
       console.log(`${C.gray}    {${C.reset}`);

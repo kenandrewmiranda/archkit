@@ -221,3 +221,106 @@ function ensureArray(v) {
   if (typeof v === "string" && v) return [v];
   return [];
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// CGR fresh-context relay loop (prototype, proto/cgr-relay-loop)
+//
+// The base CGR flow tracks status: planned | done. The relay loop adds an
+// "in-progress" state so a goal-aware Stop hook knows which goal's
+// exit-criteria to guard, and the /mcp__archkit__goal_next prompt can advance
+// the queue without copy-paste.
+// ───────────────────────────────────────────────────────────────────────────
+
+const STATUS_DONE = "done";
+const STATUS_ACTIVE = "in-progress";
+
+export function isGoalDone(archDir, slug) {
+  return fs.existsSync(path.join(doneDir(archDir), `${slug}.md`));
+}
+
+export function statusOf(goal) {
+  return (goal?.meta?.status || "planned");
+}
+
+export function exitCriteriaOf(goal) {
+  return ensureArray(goal?.meta?.["exit-criteria"]);
+}
+
+// The single in-progress goal, or null. In fresh-context relay there should be
+// at most one; if several exist we return the first by listGoals order.
+export function getActiveGoal(archDir) {
+  return listGoals(archDir).find((g) => statusOf(g) === STATUS_ACTIVE) || null;
+}
+
+// Mark a goal in-progress — the relay "start" transition. Idempotent.
+// Clears any stale turn-cap counter so the guard starts fresh for this goal.
+export function startGoal(archDir, slug) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) throw new Error(`unknown goal: ${slug}`);
+  goal.meta.status = STATUS_ACTIVE;
+  if (!goal.meta.started) goal.meta.started = new Date().toISOString().slice(0, 10);
+  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+  fs.writeFileSync(goal.filepath, out);
+  const state = readLoopState(archDir);
+  if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
+  return { slug, status: STATUS_ACTIVE };
+}
+
+// Next goal to hand to the agent: prefer an already in-progress goal (resume),
+// else the first planned goal whose depends-on are all complete.
+export function nextEligibleGoal(archDir) {
+  const goals = listGoals(archDir);
+  const active = goals.find((g) => statusOf(g) === STATUS_ACTIVE);
+  if (active) return active;
+  for (const g of goals) {
+    if (statusOf(g) === STATUS_DONE) continue;
+    const deps = ensureArray(g.meta["depends-on"]);
+    const blocked = deps.some((d) => !isGoalDone(archDir, d));
+    if (!blocked) return g;
+  }
+  return null;
+}
+
+// ── Turn-cap state for the goal-aware Stop hook ──
+// Counts how many consecutive turns the hook has blocked the active goal, so a
+// stuck loop releases instead of trapping the agent forever (mirrors /goal's
+// optional turn bound). Stored beside the goals; .json is skipped by listGoals.
+function loopStatePath(archDir) {
+  return path.join(goalsDir(archDir), ".loop-state.json");
+}
+export function readLoopState(archDir) {
+  try { return JSON.parse(fs.readFileSync(loopStatePath(archDir), "utf8")); }
+  catch { return {}; }
+}
+function writeLoopState(archDir, state) {
+  ensureGoalsLayout(archDir);
+  fs.writeFileSync(loopStatePath(archDir), JSON.stringify(state, null, 2));
+}
+export function bumpLoopBlock(archDir, slug) {
+  const state = readLoopState(archDir);
+  state[slug] = (state[slug] || 0) + 1;
+  writeLoopState(archDir, state);
+  return state[slug];
+}
+export function resetLoopState(archDir) {
+  try { fs.rmSync(loopStatePath(archDir), { force: true }); } catch { /* ignore */ }
+}
+
+// Drop a goal without marking it done — archived to done/ with status
+// "abandoned" (kept for history, distinguishable from completed). Releases the
+// relay guard by clearing the active goal + its turn-cap counter.
+export function abandonGoal(archDir, slug, { reason = "" } = {}) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) throw new Error(`unknown goal: ${slug}`);
+  ensureGoalsLayout(archDir);
+  goal.meta.status = "abandoned";
+  goal.meta["abandoned"] = new Date().toISOString().slice(0, 10);
+  if (reason) goal.meta["abandon-reason"] = reason;
+  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+  const targetPath = path.join(doneDir(archDir), `${slug}.md`);
+  fs.writeFileSync(targetPath, out);
+  fs.rmSync(goal.filepath, { force: true });
+  const state = readLoopState(archDir);
+  if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
+  return { slug, archivedAt: targetPath, status: "abandoned" };
+}

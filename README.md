@@ -17,7 +17,7 @@ archkit compiles your architecture into a machine-readable blueprint — graphs,
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-1.3.0-cyan.svg)]()
+[![Version](https://img.shields.io/badge/version-1.8.0-cyan.svg)]()
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-1-lightgrey.svg)]()
 
 [Website](https://thearchkit.com) · [Marketplace](https://market.thearchkit.com) · [Issues](https://github.com/kenandrewmiranda/archkit/issues)
@@ -48,13 +48,13 @@ archkit solves this by compiling your architecture into structured files the age
 
 ## Highlights
 
-- **Agent-callable CLI** — every command returns structured JSON on stdout; human logs strictly on stderr. Drop-in for Claude, Cursor, Copilot, Aider, Windsurf.
-- **8 application archetypes** — SaaS, e-commerce, real-time, data/analytics, AI-powered, mobile, internal tools, content/CMS. Each ships with tailored rules and review checks.
-- **Static review engine** — 9 categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression.
-- **Live runtime signal** — `preflight` surfaces recent commits, scoped gotchas, and active drift per feature/layer so agents see current state, not yesterday's snapshot.
-- **Token-budgeted output** — every generated file declares its token cost; always-loaded context stays under budget.
-- **First-class Claude Code integration** — emits `CLAUDE.md`, `.claude/rules/`, `.claude/skills/`, a pre-commit review hook, and a PreToolUse guard.
-- **Lean footprint** — 1 runtime dependency (`inquirer`), ~10k LOC across 54 modules, 16 integration test suites.
+- **Clear Goal Run (CGR)** *(v1.7+)* — decompose a sprawling ask into discrete, one-per-fresh-context goals, then advance the queue with a single keystroke. A goal-aware Stop hook keeps the agent on the current goal until its exit-criteria are met. [See below](#clear-goal-run-cgr).
+- **Full MCP server** — **25 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **3 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **Continuous-guardrail hooks** *(v1.6+)* — SessionStart, UserPromptSubmit, PostToolUse, and a goal-aware Stop hook fire every turn so archkit stays in working memory even on long sessions. Self-installing via `archkit_install_hooks` or the plugin.
+- **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
+- **Live runtime signal** — `preflight` surfaces recent commits, scoped gotchas, active drift, and **related ADRs** per feature/layer, so agents see current state and prior decisions, not yesterday's snapshot.
+- **Institutional memory** — log architectural decisions (`archkit_log_decision`) and read them back (`archkit_decisions_search`) so settled choices survive context resets.
+- **Lean footprint** — 1 runtime dependency (`inquirer`), 79 source modules, 40 integration test suites.
 
 ---
 
@@ -88,15 +88,24 @@ archkit ships a Model Context Protocol server so AI agents can call archkit's re
 If you use Claude Code, install archkit as a plugin so the MCP server, SessionStart hook, and `/archkit-init` wizard land as one atomic unit. Plugin install handles MCP registration for you — no `claude mcp add` step.
 
 ```bash
-# (Plugin marketplace URL — set per your distribution channel)
-# In Claude Code: /plugins → add marketplace → install archkit
+# In Claude Code (slash commands):
+/plugin marketplace add kenandrewmiranda/archkit
+/plugin install archkit@thearchkit
+
+# …or from your shell:
+claude plugin marketplace add kenandrewmiranda/archkit
+claude plugin install archkit@thearchkit
 ```
+
+> The GitHub-repo source above always works. The branded URL `https://market.thearchkit.com/marketplace.json` resolves to the same manifest once the marketplace is deployed — add it the same way (note: it must be the full `.json` URL; a bare domain is interpreted as a git repo).
+
+Then restart Claude Code (or run `/plugin`) so the MCP server, four guardrail hooks, and `/archkit-init` wizard load.
 
 The plugin includes:
 
-- **MCP server** — all `archkit_*` tools, including the new `archkit_log_decision` for ADR-style decision records
-- **SessionStart hook** — factual context nudge when `.arch/SYSTEM.md` is present
-- **Bundled archetype skeletons** — eight canonical archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data) plus a generic fallback
+- **MCP server** — all 25 `archkit_*` tools, the 3 CGR relay prompts, and `@archkit:` resources
+- **Four guardrail hooks** — SessionStart, UserPromptSubmit, PostToolUse, and the goal-aware Stop hook (wired automatically; no `archkit_install_hooks` step needed)
+- **`/archkit-init` wizard** + bundled archetype skeletons — nine archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data) plus a generic fallback
 
 ### Install — npm (Cursor, Continue, CI, or Claude Code without plugins)
 
@@ -104,7 +113,7 @@ The plugin includes:
 npm install -g archkit
 ```
 
-Registers four bins on your `PATH`: `archkit` (CLI), `archkit-mcp` (MCP server), `archkit-claude-hook` (PreToolUse drift guard), `archkit-session-start` (SessionStart context nudge).
+Registers seven bins on your `PATH`: `archkit` (CLI), `archkit-mcp` (MCP server), and the hook executables `archkit-session-start`, `archkit-stop-hook`, `archkit-posttooluse-hook`, `archkit-userpromptsubmit-hook`, and the legacy `archkit-claude-hook`.
 
 ### Wire it up to Claude Code (npm install path)
 
@@ -116,7 +125,7 @@ archkit init --install-hooks --claude --mcp
 This does three things:
 
 1. Generates `.arch/` from an interactive wizard (or reverse-engineers it from your existing repo).
-2. Writes `.claude/settings.json` with PreToolUse + SessionStart hooks.
+2. Writes `.claude/settings.json` with the legacy SessionStart + PreToolUse hooks. **For the full v1.6+ guardrail set (including the CGR Stop relay guard), then call `archkit_install_hooks` once the MCP server is connected** — `archkit init --install-hooks` predates those hooks.
 3. Registers archkit as an MCP server via `claude mcp add archkit archkit-mcp --scope user` so Claude Code starts the server on every session.
 
 **Restart Claude Code after running this** — it picks up the MCP server on session start, not mid-session. After restart, `/mcp` should show `archkit ✓ Connected`.
@@ -130,7 +139,9 @@ archkit ships four hooks. The first names archkit; the next three are what v1.6 
 - **SessionStart** — on attach to a project that has `.arch/SYSTEM.md`, injects a tools digest pointing the agent at `archkit_resolve_warmup` as the first call for spec/structure questions. Greenfield projects (no `.arch/`) get a setup nudge to call `archkit_init`.
 - **UserPromptSubmit** *(v1.6)* — before each user prompt is processed, keyword-matches the prompt against `.arch/INDEX.md`. If two or more keywords hit a feature node or skill, prepends a routing reminder and a specific call-to-action (`archkit_resolve_lookup` with the matched symbol). Highest-leverage hook for the v1.6 utilization goal because it fires before the agent reasons.
 - **PostToolUse** *(v1.6)* — after every tool call, increments the session-stats counter (the data behind the utilization metric). For Edit/Write/MultiEdit on source files inside `src/`, runs `archkit_review` inline and surfaces the top findings as additional context.
-- **Stop** *(v1.6)* — after every assistant turn, surfaces the current archkit utilization rate (per-task primary + per-session secondary), re-injects a compact form of `.arch/BOUNDARIES.md` (NEVER lines only) to keep rules fresh after Claude Code's context compression, scans the response for boundary violations (SQL string concat, hardcoded credentials, unvalidated `req.body`), and auto-drafts proposed ADRs from decision-language to `.arch/decisions/proposed/<hash>.json` for human review.
+- **Stop** *(v1.6, extended v1.8)* — after every assistant turn, surfaces the current archkit utilization rate (per-task primary + per-session secondary), re-injects a compact form of `.arch/BOUNDARIES.md` (NEVER lines only) to keep rules fresh after Claude Code's context compression, scans the response for boundary violations (SQL string concat, hardcoded credentials, unvalidated `req.body`), and auto-drafts proposed ADRs from decision-language to `.arch/decisions/proposed/<hash>.json` for human review. **v1.8 adds the CGR relay guard:** when a goal is in-progress, the hook blocks stopping (with the unmet exit-criteria as the reason) until the agent calls `archkit_goal_complete` — with question-to-user detection and a per-goal turn cap so it never traps the agent.
+
+> **Installing the guardrail hooks:** the Claude Code **plugin** bundles all four automatically. On an npm install, call **`archkit_install_hooks`** (or `apply:true`) to wire them into your project's `.claude/settings.json`. Note: `archkit init --install-hooks` predates the v1.6 set and only wires SessionStart + the legacy PreToolUse guard — use `archkit_install_hooks` for the full set including the Stop relay guard. `archkit_doctor` flags when they're missing.
 
 The v1.6 utilization goal — agents should consult `archkit_resolve_preflight` or `archkit_resolve_lookup` *before* the first edit on a task. Compound metric:
 
@@ -162,28 +173,95 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 }
 ```
 
-### Available tools
+### Available tools (25)
 
-- `archkit_review` — review files against rules and gotchas
-- `archkit_review_staged` — review git-staged files
+**Resolve & scaffold**
+- `archkit_init` — greenfield setup; returns the wizard inline
 - `archkit_resolve_warmup` — pre-session health check
-- `archkit_resolve_preflight` — verify a feature/layer before coding
-- `archkit_resolve_scaffold` — get a new-feature checklist
+- `archkit_resolve_preflight` — verify a feature/layer before coding (recent commits, scoped gotchas, drift, **related ADRs**, required-reading skills)
+- `archkit_resolve_scaffold` — new-feature checklist
 - `archkit_resolve_lookup` — look up a node, skill, or cluster by id
-- `archkit_gotcha_propose` — queue a gotcha proposal
-- `archkit_gotcha_list` — list skills with gotcha counts
-- `archkit_stats` — health dashboard data
-- `archkit_drift` — detect stale `.arch/` files
-- `archkit_log_decision` — append an ADR-style decision record to `.arch/decisions/`
-- `archkit_prd_check` — detect a Product Requirements Document and check it against `.arch/SYSTEM.md`
 
-All tools return structured JSON in MCP `text` content. Errors flow through `isError: true` with the standard archkit envelope (`code`, `message`, `suggestion`, `docsUrl`).
+**Review & boundaries**
+- `archkit_review` / `archkit_review_staged` — review files / git-staged files against rules + gotchas
+- `archkit_boundary_check` — enforce `BAN: source -> target` directives from `BOUNDARIES.md`
+- `archkit_boundary_propose` — queue a new BAN for human review (capture-symmetry with gotchas)
+
+**Health**
+- `archkit_drift` — detect stale/orphaned `.arch/` files
+- `archkit_stats` — health dashboard data
+- `archkit_doctor` — workflow logistic gauge (is `.arch/` actually load-bearing? are the hooks installed?)
+
+**Knowledge & decisions**
+- `archkit_gotcha_propose` / `archkit_gotcha_list` — propose / list package gotchas
+- `archkit_log_decision` — append an ADR to `.arch/decisions/`
+- `archkit_decisions_search` — read/search past ADRs (closes the institutional-memory loop)
+- `archkit_prd_check` — detect a PRD and check it against `.arch/SYSTEM.md`
+
+**Clear Goal Run (CGR)**
+- `archkit_goal_intake` — decompose an ask into discrete goals
+- `archkit_goal_list` / `archkit_goal_show` / `archkit_goal_payload` — inspect the queue
+- `archkit_goal_verify` — evidence a goal is done (no auto-complete)
+- `archkit_goal_complete` / `archkit_goal_abandon` — finish / drop a goal, advance the queue
+
+**Setup**
+- `archkit_install_hooks` — detect + install the four guardrail hooks into `.claude/settings.json`
+
+### Prompts (slash commands)
+
+The CGR relay surfaces as **user-typed** slash commands (prompts are user-initiated; the agent can't invoke them — which is exactly why they pair with `/clear`):
+
+- `/mcp__archkit__goal_next` — load the next eligible goal into a fresh context (one keystroke instead of pasting a payload)
+- `/mcp__archkit__goal_resume` — re-inject the active goal without changing state
+- `/mcp__archkit__goal_status` — queue orientation
+
+### Resources
+
+`.arch/` artifacts as `@archkit:` handles — referenced by URI, no tool round-trip:
+
+- `archkit://system`, `archkit://index`, `archkit://boundaries`
+- `archkit://skill/{id}`, `archkit://decision/{number}`
+
+All tools return structured JSON in MCP `text` content with a `nextStep` field naming the next action. Empty results carry a `<field>Note` explaining what was checked. Errors flow through `isError: true` with the standard archkit envelope (`code`, `message`, `suggestion`, `docsUrl`).
+
+---
+
+## Clear Goal Run (CGR)
+
+A long agent session accumulates context, drifts off-task, and re-litigates settled decisions. CGR is archkit's answer: **decompose a sprawling ask into discrete goals, run each in a fresh context, and let archkit keep the agent honest.**
+
+```
+  you: <a big, multi-part ask>
+   |
+   v
+  archkit_goal_intake        decompose into goals/<slug>.md, each with exit-criteria
+   |
+   v
+  you: /clear                fresh context window
+  you: /mcp__archkit__goal_next   <- one keystroke loads the next goal (no copy-paste)
+   |
+   v
+  agent works the goal ...
+  Stop hook: exit-criteria unmet? -> keep going.   met? -> release.
+   |
+   v
+  archkit_goal_complete      archive, advance the queue
+   |
+   '--> /clear + /mcp__archkit__goal_next  (repeat until the queue is empty)
+```
+
+- **Fresh context per goal.** Each goal starts in a `/clear`'d window, so the agent isn't dragging an entire session's noise into focused work.
+- **One keystroke to advance.** `/mcp__archkit__goal_next` marks the next goal in-progress and injects its payload — replacing the old copy-paste-after-`/goal` step (still available as a fallback).
+- **A goal-aware Stop hook** blocks stopping while a goal's exit-criteria are unmet, and releases when the agent calls `archkit_goal_complete`. It won't trap a genuine question to you, and a per-goal turn cap prevents runaway loops. It only fires for relay-started goals — plain sessions are untouched.
+- **Verify before you finish.** `archkit_goal_verify` reports objective evidence (which planned files changed, what a staged review finds) so "done" isn't just a vibe. `archkit_goal_abandon` drops a mis-scoped goal without marking it complete.
+
+> CGR works best with the guardrail hooks installed (so the Stop guard fires). Install via the Claude Code plugin, or call `archkit_install_hooks` in your project.
 
 ---
 
 ## How It Works
 
-archkit's agent workflow is a six-step loop, each step exposed as an agent-callable command.
+Within a single goal, archkit's agent workflow is a six-step loop, each step exposed as an agent-callable command.
 
 ```
   +----------------------------------------------------------------------+
@@ -323,6 +401,7 @@ archkit detects or asks for your application type and tailors rules, review logi
 | `archkit review --dir src/` | Review directory |
 | `archkit review --json [file]` | Structured output with autofixes (alias: `--agent`) |
 | `archkit review --verify` | Re-check only previously flagged files |
+| `archkit boundary-check [--staged\|--diff\|<files>]` | Enforce `BAN: source -> target` directives from `BOUNDARIES.md` |
 
 **Production-readiness checks** (introduced 1.3):
 
@@ -354,12 +433,39 @@ archkit detects or asks for your application type and tailors rules, review logi
 </details>
 
 <details>
+<summary><b>Clear Goal Run (CGR)</b> — one goal per fresh context</summary>
+
+| Command | What it does |
+|---------|--------------|
+| `archkit goal list` | Show active + done goals |
+| `archkit goal show <slug>` | Print a goal's full markdown |
+| `archkit goal payload <slug>` | Print the copy-paste payload (fallback for the relay prompt) |
+| `archkit goal complete <slug> [--notes X]` | Mark done, archive, advance the queue |
+| `archkit goal intake --json '<json>'` | Accept a decomposed-goals payload (agent driver) |
+
+Most CGR usage is via MCP: `archkit_goal_intake` to decompose, then `/clear` + `/mcp__archkit__goal_next` to advance, plus `archkit_goal_verify` / `archkit_goal_abandon`. See [Clear Goal Run](#clear-goal-run-cgr).
+
+</details>
+
+<details>
+<summary><b>Decisions (ADRs)</b></summary>
+
+| Command | What it does |
+|---------|--------------|
+| `archkit decisions log --json '<json>'` | Append an ADR to `.arch/decisions/` (MCP: `archkit_log_decision`) |
+| `archkit decisions list [--json]` | List recent ADRs |
+| `archkit decisions search <terms> [--json]` | Keyword-rank ADRs (MCP: `archkit_decisions_search`) |
+
+</details>
+
+<details>
 <summary><b>Health, drift &amp; export</b></summary>
 
 | Command | What it does |
 |---------|--------------|
 | `archkit stats [--compact] [--json]` | Health dashboard (0–100 score) |
 | `archkit drift [--json]` | Detect stale/orphaned `.arch/` files |
+| `archkit doctor [--json]` | Workflow logistic gauge — warmup + drift + intent + hook-install checks |
 | `archkit sync [src-dir]` | Detect code changes needing `.arch/` updates |
 | `archkit export cursor` | `.cursorrules` |
 | `archkit export windsurf` | `.windsurfrules` |

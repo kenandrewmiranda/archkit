@@ -15,12 +15,19 @@
 //   4. Detect decision-language and write proposal files to
 //      .arch/decisions/proposed/<hash>.json for human review (decision-
 //      detector lib).
+//   5. CGR relay guard (proto/cgr-relay-loop): when a goal is in-progress
+//      (started via /mcp__archkit__goal_next), block stopping with
+//      decision:"block" until the agent calls archkit_goal_complete — unless
+//      the response is a genuine question to the user, or the per-goal turn
+//      cap is hit. When no goal is active, nudge toward the next queued goal.
 //
 // Safety:
 //   - Walks up looking for .arch/SYSTEM.md. If not found, exits 0 silent
 //     (don't fire on non-archkit projects).
-//   - Always exits 0; never blocks the stop event.
-//   - Output is informational additionalContext only — never decision: block.
+//   - Always exits 0. Only ever blocks when a CGR goal is in-progress; plain
+//     (non-CGR) sessions never see decision:block.
+//   - Turn cap (RELAY_TURN_CAP / per-goal `max-turns`) guarantees the guard
+//     releases so a stuck goal can't trap the agent indefinitely.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -33,9 +40,29 @@ const LIB = path.resolve(__dirname, "..", "src", "lib");
 const { loadOrInit, computeUtilization, formatUtilizationLine, save } = await import(path.join(LIB, "session-stats.mjs"));
 const { detectViolations, formatViolation } = await import(path.join(LIB, "boundary-patterns.mjs"));
 const { detectDecisions } = await import(path.join(LIB, "decision-detector.mjs"));
+const {
+  getActiveGoal, exitCriteriaOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
+} = await import(path.join(LIB, "goals.mjs"));
 
 const UTILIZATION_TARGET = 75;
 const BOUNDARIES_RULE_CAP = 12;
+// CGR relay: release the guard after this many consecutive blocked turns so a
+// stuck goal can't trap the agent forever. Override per-goal with `max-turns`
+// frontmatter. Mirrors /goal's optional turn bound.
+const RELAY_TURN_CAP = 30;
+
+// Heuristic: does the assistant's last response read as a question to the user
+// (genuine block) rather than a stopping point we should push past? Keeps the
+// relay guard from trapping the agent when it actually needs human input.
+function looksLikeQuestionToUser(text) {
+  if (!text) return false;
+  const trimmed = text.trimEnd();
+  if (/\?\s*$/.test(trimmed)) return true;
+  if (/\b(NEEDS INPUT|BLOCKED|WAITING ON YOU|AWAITING)\b\s*:/i.test(text)) return true;
+  const tail = trimmed.slice(-400);
+  if (/\b(could you|can you|should i|do you want|would you like|which (one|option|approach))\b[^?]*\?/is.test(tail)) return true;
+  return false;
+}
 
 function findArchDir(start) {
   let dir = start;
@@ -153,18 +180,65 @@ async function main() {
     sections.push(["Active BOUNDARIES (from .arch/BOUNDARIES.md — re-injected for working memory):", boundaries].join("\n"));
   }
 
-  if (!sections.length) {
+  // 5. CGR relay guard — block stopping while a goal is in-progress and its
+  //    exit-criteria aren't released (released = agent called
+  //    archkit_goal_complete, which moves the goal to done/ so it's no longer
+  //    active). Naturally scoped: fires only when a goal was started via the
+  //    /mcp__archkit__goal_next relay prompt (status in-progress).
+  let blockReason = null;
+  const activeGoal = getActiveGoal(archDir);
+  if (activeGoal) {
+    const slug = activeGoal.slug;
+    const criteria = exitCriteriaOf(activeGoal);
+    const maxTurns = Number(activeGoal.meta["max-turns"]) || RELAY_TURN_CAP;
+    if (looksLikeQuestionToUser(assistantResponse)) {
+      // Genuine question to the user — surface it, don't trap the agent.
+      sections.push(
+        `CGR relay: goal "${slug}" is still in progress, but your last response reads as a question to the user — not blocking. When unblocked, finish the exit-criteria and call archkit_goal_complete ${slug}.`
+      );
+    } else {
+      const blocks = bumpLoopBlock(archDir, slug);
+      if (blocks > maxTurns) {
+        sections.push(
+          `CGR relay: goal "${slug}" hit the ${maxTurns}-turn relay cap without completing — releasing the guard. Call archkit_goal_complete ${slug} if it's actually done, or archkit_goal_show ${slug} to re-scope it.`
+        );
+      } else {
+        const list = criteria.length
+          ? criteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")
+          : `  (no exit-criteria recorded — see .arch/goals/${slug}.md)`;
+        blockReason = [
+          `CGR relay: goal "${slug}" is still in progress (turn ${blocks}/${maxTurns}).`,
+          `Keep working until ALL exit-criteria are met:`,
+          list,
+          ``,
+          `When every criterion holds, call archkit_goal_complete ${slug} to release this guard and advance the queue. If you are genuinely blocked and need the user, end your message with a direct question.`,
+        ].join("\n");
+      }
+    }
+  } else {
+    // No goal in progress. Clear any stale turn-cap counters, and if the queue
+    // still has eligible work, nudge the relay forward (non-blocking).
+    resetLoopState(archDir);
+    const next = nextEligibleGoal(archDir);
+    if (next) {
+      sections.push(
+        `CGR relay: no goal in progress and "${next.slug}" is queued. Run /clear then /mcp__archkit__goal_next to start it in a fresh context.`
+      );
+    }
+  }
+
+  if (!sections.length && !blockReason) {
     process.exit(0);
   }
 
-  const additionalContext = sections.join("\n\n");
+  const out = { hookSpecificOutput: { hookEventName: "Stop" } };
+  if (sections.length) out.hookSpecificOutput.additionalContext = sections.join("\n\n");
+  if (blockReason) {
+    out.decision = "block";
+    out.reason = blockReason;
+  }
 
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: "Stop",
-      additionalContext,
-    },
-  }));
+  process.stdout.write(JSON.stringify(out));
 
   // Persist updated session stats (no-op if no sessionId).
   if (sessionId) {

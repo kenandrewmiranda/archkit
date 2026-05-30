@@ -19,9 +19,11 @@ import { runDriftJson } from "../commands/drift.mjs";
 import { runLogDecisionJson } from "../commands/decisions.mjs";
 import { runPrdCheckJson } from "../commands/prd.mjs";
 import { runInitJson } from "../commands/init-mcp.mjs";
-import { runBoundaryCheckJson } from "../commands/boundary.mjs";
+import { runBoundaryCheckJson, runBoundaryProposeJson } from "../commands/boundary.mjs";
 import { runDoctorJson } from "../commands/doctor.mjs";
-import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload } from "../commands/goal.mjs";
+import { runHooksInstallJson } from "../commands/hooks.mjs";
+import { runDecisionsSearchJson } from "../commands/decisions.mjs";
+import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify } from "../commands/goal.mjs";
 import { loadGoal } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
@@ -204,8 +206,21 @@ export const tools = {
     },
   },
 
+  archkit_boundary_propose: {
+    description: "Queue a proposed `BAN: source -> target` architectural boundary for human review — the capture-symmetry partner to archkit_gotcha_propose. Call when you discover a layering rule the codebase should enforce (e.g. the web layer must not import the db layer directly). archkit does NOT auto-merge it: a wrong BAN blocks real work, so this writes a pending proposal to .arch/boundary-proposals/ and a human pastes the banLine into BOUNDARIES.md. Validates the glob syntax (supports `*` and trailing `/*`) and no-ops if the rule is already enforced. Returns { queued, proposalPath, banLine, nextStep }.",
+    inputSchema: z.object({
+      source: z.string().min(1).describe("Source glob — the layer that must NOT import the target. E.g. 'src/web/*'."),
+      target: z.string().min(1).describe("Target glob — what the source is banned from importing. E.g. 'src/db/*'."),
+      why: z.string().optional().describe("Optional short rationale, appended as a parenthetical to the BAN line."),
+    }),
+    handler: async ({ source, target, why }) => {
+      const cwd = process.cwd();
+      return runBoundaryProposeJson({ archDir: requireArchDir(cwd), source, target, why });
+    },
+  },
+
   archkit_goal_intake: {
-    description: "CGR (Clear Goal Run): accept a structured decomposition of a sprawling user ask into one or more discrete goals, persist them to .arch/goals/<slug>.md, and return a copy-pasteable payload (<=3800 chars) per goal that the user pastes after `/goal` in a fresh /clear'ed session. Call this AS SOON AS the user types a multi-goal or unclear ask in a fresh session — BEFORE writing code. You (the agent) do the decomposition: split the ask into 1..N discrete goals, give each a kebab-case slug, a one-line title, 2-5 exitCriteria, and optionally filesToTouch + requiredReading (paths like .arch/skills/<x>.skill that capture API quirks). archkit writes the files and returns payload strings — the user pastes payloads[0].payload after /goal to begin the first goal. If the ask is one goal, pass a single-element goals array. If the ask is ambiguous, ASK the user to clarify before calling this. Workflow: intake -> /clear + paste payload 0 -> work goal 0 -> archkit_goal_complete -> /clear + paste payload 1 -> ...",
+    description: "CGR (Clear Goal Run): accept a structured decomposition of a sprawling user ask into one or more discrete goals, persist them to .arch/goals/<slug>.md, and return a payload per goal (<=3800 chars). Call this AS SOON AS the user types a multi-goal or unclear ask in a fresh session — BEFORE writing code. You (the agent) do the decomposition: split the ask into 1..N discrete goals, give each a kebab-case slug, a one-line title, 2-5 exitCriteria, and optionally filesToTouch + requiredReading (paths like .arch/skills/<x>.skill that capture API quirks). If the ask is one goal, pass a single-element goals array. If the ask is ambiguous, ASK the user to clarify before calling this. To START the first goal, tell the user to run /clear then the slash command /mcp__archkit__goal_next (the relay — it marks the next goal in-progress and injects it automatically; the returned payloads are a fallback they can paste after /goal). You CANNOT run /clear or /mcp__archkit__goal_next yourself — they are the user's keystrokes; your job is to instruct them. Workflow: intake -> user: /clear + /mcp__archkit__goal_next -> work goal 0 (the Stop hook blocks stopping until it's done) -> archkit_goal_complete -> user: /clear + /mcp__archkit__goal_next -> ...",
     inputSchema: z.object({
       sourceAsk: z.string().optional().describe("The user's original ask (first ~500 chars). Stored with each goal for backtrace."),
       goals: z.array(z.object({
@@ -280,7 +295,7 @@ export const tools = {
   },
 
   archkit_goal_complete: {
-    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's copy-paste payload (or nextGoal:null when the queue is empty). Use this at the end of a goal session, right before instructing the user to /clear and paste the next payload. Optional `notes` is appended as completion-notes frontmatter.",
+    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
     inputSchema: z.object({
       slug: z.string().min(1).describe("Goal slug to complete."),
       notes: z.string().optional().describe("Optional 1-2 sentence completion notes."),
@@ -291,12 +306,60 @@ export const tools = {
     },
   },
 
+  archkit_goal_verify: {
+    description: "Gather evidence for whether a CGR goal is actually done — WITHOUT auto-completing it. Echoes the goal's exit-criteria as a checklist and adds objective signals: which of its files-to-touch are modified in the working tree, and what a staged review finds (errors/findings). Use this right before archkit_goal_complete to avoid declaring done prematurely — the Stop-hook relay guard otherwise trusts the complete call blindly. Returns { slug, exitCriteria, filesToTouch:{touched,untouched}, stagedReview:{files,errors,findings}, clean, nextStep }. Does not modify anything.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to verify."),
+    }),
+    handler: async ({ slug }) => {
+      const cwd = process.cwd();
+      return runGoalVerify({ archDir: requireArchDir(cwd), cwd, slug });
+    },
+  },
+
+  archkit_goal_abandon: {
+    description: "Drop a CGR goal WITHOUT marking it done — for goals that are obsolete, mis-scoped, or superseded. Archives the file to .arch/goals/done/<slug>.md with status 'abandoned' (kept for history, distinct from completed), clears the relay turn-cap, and releases the Stop-hook guard. Returns the next pending goal's payload like archkit_goal_complete. Use instead of goal_complete when the work should NOT count as finished. Optional `reason` is stored as abandon-reason frontmatter.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to abandon."),
+      reason: z.string().optional().describe("Optional 1-2 sentence reason (stored on the archived goal)."),
+    }),
+    handler: async ({ slug, reason }) => {
+      const cwd = process.cwd();
+      return runGoalAbandon({ archDir: requireArchDir(cwd), slug, reason });
+    },
+  },
+
   archkit_doctor: {
-    description: "Workflow logistic gauge — aggregates archkit_resolve_warmup + archkit_drift findings AND adds three new intent checks that ask whether .arch/ is actually load-bearing: (1) skills with zero real WRONG/RIGHT/WHY gotchas (present on disk but contributing nothing to archkit_review), (2) BAN directives in BOUNDARIES.md whose source-glob matches no file in the working tree (warning, not error — could be future-protecting, could be stale), (3) active CGR goals in .arch/goals/ with vacuous exit-criteria (<8 chars or generic phrases like \"ship it\", \"done\") or no required-reading. Returns { pass, checks:[{id,name,status,detail}], blockers, warnings, summary, intent, sources, nextStep }. Different from warmup: warmup runs at session start and is structural (\"can I trust .arch/ at all?\"); doctor runs on demand and is intent-checking (\"does the configured surface actually fire?\"). When to use: as a periodic health check before a long session, after BOUNDARIES.md edits, after adding skills, or when archkit-driven reviews start feeling like noise.",
+    description: "Workflow logistic gauge — aggregates archkit_resolve_warmup + archkit_drift findings AND adds four surface checks that ask whether .arch/ is actually load-bearing: (1) skills with zero real WRONG/RIGHT/WHY gotchas (present on disk but contributing nothing to archkit_review), (2) BAN directives in BOUNDARIES.md whose source-glob matches no file in the working tree (warning, not error — could be future-protecting, could be stale), (3) active CGR goals in .arch/goals/ with vacuous exit-criteria (<8 chars or generic phrases like \"ship it\", \"done\") or no required-reading, (4) whether archkit's guardrail hooks are even installed (D-HOOKS) — if not, the SessionStart digest, CGR Stop-guard, and review-on-edit never fire; fix with archkit_install_hooks. Returns { pass, checks:[{id,name,status,detail}], blockers, warnings, summary, intent, sources, nextStep }. Different from warmup: warmup runs at session start and is structural (\"can I trust .arch/ at all?\"); doctor runs on demand and is intent-checking (\"does the configured surface actually fire?\"). When to use: as a periodic health check before a long session, after BOUNDARIES.md edits, after adding skills, or when archkit-driven reviews start feeling like noise.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
       return runDoctorJson({ archDir: requireArchDir(cwd), cwd });
+    },
+  },
+
+  archkit_decisions_search: {
+    description: "Search or list past architectural decisions (ADRs in .arch/decisions/). archkit_log_decision WRITES ADRs; this READS them back — closing archkit's institutional-memory loop so a settled choice isn't re-litigated after a context reset. Pass `query` for keyword-ranked results (matches title/tags weighted over body), or omit it to list the most recent decisions. Optional `status` (accepted/proposed/superseded/deprecated), `tags` filter, `limit` (default 10, cap 50). Call BEFORE changing an area to honor prior decisions — archkit_resolve_preflight also surfaces related ADRs automatically. Returns { decisions:[{number,title,status,date,tags,summary,relativePath,score}], total, returned, decisionsNote, nextStep }.",
+    inputSchema: z.object({
+      query: z.string().optional().describe("Keywords to rank ADRs by (title/tags/body). Omit to list recent decisions."),
+      status: z.enum(["accepted", "proposed", "superseded", "deprecated"]).optional().describe("Only ADRs with this status."),
+      tags: z.array(z.string()).optional().describe("Only ADRs carrying at least one of these tags."),
+      limit: z.number().optional().describe("Max results (default 10, capped at 50)."),
+    }),
+    handler: async ({ query, status, tags, limit }) => {
+      const cwd = process.cwd();
+      return runDecisionsSearchJson({ archDir: requireArchDir(cwd), query, status, tags, limit });
+    },
+  },
+
+  archkit_install_hooks: {
+    description: "Check whether archkit's four v1.6 guardrail hooks (SessionStart, Stop, PostToolUse, UserPromptSubmit) are wired into Claude Code — and help install them. CRITICAL: `archkit init --install-hooks` predates these and does NOT install them, so on npm/global installs the CGR Stop-hook relay guard, the SessionStart tools digest, and review-on-edit silently never fire even when .arch/ is perfect. The MCP layer is the only surface that can detect this (it's connected regardless of hook wiring). archkit_doctor flags missing hooks; call THIS to fix them. Default (no args) = EMIT mode: returns hooksConfig (the exact { hooks } block) + the target .claude/settings.json path + instruction, for you to merge via Edit so the user sees the diff. Pass apply:true to write the missing hooks directly into the PROJECT's .claude/settings.json (preserves existing hooks; never touches the global user file). If the archkit plugin is enabled, the hooks come from it and this is a no-op. After install, the user must RESTART Claude Code for hooks to load.",
+    inputSchema: z.object({
+      apply: z.boolean().optional().describe("If true, write the missing guardrail hooks directly into the project's .claude/settings.json (idempotent, preserves existing hooks). Default false = emit the config for you to apply via Edit with the user watching."),
+    }),
+    handler: async ({ apply }) => {
+      const cwd = process.cwd();
+      return runHooksInstallJson({ cwd, apply: apply === true });
     },
   },
 

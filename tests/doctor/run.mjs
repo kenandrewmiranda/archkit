@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { runDoctorJson } from "../../src/commands/doctor.mjs";
 import { ArchkitError } from "../../src/lib/errors.mjs";
+import { renderGuardrailHooks } from "../../src/lib/claude-settings.mjs";
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -30,6 +31,12 @@ function makeProject({ withEmptySkill = false, withUnappliedBan = false, withWea
   fs.mkdirSync(path.join(arch, "skills"), { recursive: true });
   fs.mkdirSync(path.join(arch, "clusters"), { recursive: true });
   fs.mkdirSync(path.join(arch, "goals"), { recursive: true });
+
+  // Wire the four guardrail hooks into project settings so the D-HOOKS check
+  // passes deterministically (these doctor tests exercise the intent checks,
+  // not hook-install detection — that has its own suite in tests/hooks-status).
+  fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, ".claude", "settings.json"), JSON.stringify(renderGuardrailHooks()));
 
   fs.writeFileSync(path.join(arch, "SYSTEM.md"),
     "## App: test\n## Type: SaaS\n## Stack: Node.js\n## Pattern: Layered\n\n" +

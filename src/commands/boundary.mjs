@@ -23,6 +23,60 @@ function findArchDir() {
   return _findArchDir({ requireFile: "BOUNDARIES.md" });
 }
 
+function banSlug(s) {
+  return String(s).replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "x";
+}
+
+// Queue a proposed `BAN: source -> target` rule for human review — the
+// capture-symmetry partner to archkit_gotcha_propose. Human-gated by design:
+// archkit NEVER auto-merges into BOUNDARIES.md (a wrong BAN blocks real work),
+// so this only writes a pending proposal the human reviews + pastes in.
+export function runBoundaryProposeJson({ archDir, source, target, why }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  for (const [k, v] of Object.entries({ source, target })) {
+    if (!v || typeof v !== "string" || !v.trim()) {
+      throw archkitError("proposal_invalid", `Missing required field: ${k}`, {
+        suggestion: "Provide source and target globs, e.g. source='src/web/*', target='src/db/*'.",
+      });
+    }
+  }
+  // Validate: the BAN must parse to exactly one rule with no glob warnings.
+  const probe = parseBoundaries(`BAN: ${source} -> ${target}`);
+  if (probe.rules.length !== 1 || probe.warnings.length > 0) {
+    throw archkitError("proposal_invalid", `Unsupported glob in BAN: ${source} -> ${target}`, {
+      suggestion: "Globs support `*` (single segment) and a trailing `/*`; the chars []{}?! are not supported.",
+    });
+  }
+
+  // Skip if already enforced in BOUNDARIES.md.
+  const boundariesPath = path.join(archDir, "BOUNDARIES.md");
+  if (fs.existsSync(boundariesPath)) {
+    const { rules } = parseBoundaries(fs.readFileSync(boundariesPath, "utf8"));
+    if (rules.some((r) => r.source === source && r.target === target)) {
+      return {
+        queued: false,
+        alreadyEnforced: true,
+        source,
+        target,
+        nextStep: `BAN ${source} -> ${target} is already in BOUNDARIES.md — nothing to propose.`,
+      };
+    }
+  }
+
+  const pDir = path.join(archDir, "boundary-proposals");
+  fs.mkdirSync(pDir, { recursive: true });
+  const file = path.join(pDir, `${banSlug(source)}__${banSlug(target)}.json`);
+  const banLine = `- BAN: ${source} -> ${target}${why ? `  (${why})` : ""}`;
+  const proposal = { source, target, ...(why ? { why } : {}), banLine, origin: "mcp", created_at: new Date().toISOString() };
+  fs.writeFileSync(file, JSON.stringify(proposal, null, 2));
+  return {
+    queued: true,
+    proposalPath: file,
+    banLine,
+    nextStep: `BAN proposal queued at ${path.relative(process.cwd(), file)}. A human must review it and paste banLine into .arch/BOUNDARIES.md to enforce — archkit does not auto-merge boundary rules.`,
+  };
+}
+
 function listFilesFromArgs(args, cwd) {
   if (args.includes("--staged")) {
     try {
