@@ -82,8 +82,10 @@ test("emits BOUNDARIES + utilization on archkit project, no decisions", () => {
     assert.equal(r.status, 0);
     assert.ok(r.stdout, "should emit context");
     const out = JSON.parse(r.stdout);
-    assert.equal(out.hookSpecificOutput.hookEventName, "Stop");
-    const ctx = out.hookSpecificOutput.additionalContext;
+    // Non-blocking nudges are surfaced to the user via `systemMessage`
+    // (Stop hooks have no additionalContext channel).
+    const ctx = out.systemMessage;
+    assert.ok(ctx, "should emit systemMessage");
     assert.match(ctx, /archkit utilization/);
     assert.match(ctx, /Active BOUNDARIES/);
     assert.match(ctx, /NEVER use string concatenation/);
@@ -115,7 +117,7 @@ test("writes proposed ADR file when decision-language detected", () => {
     assert.match(proposal.createdAt, /^\d{4}-\d{2}-\d{2}T/);
 
     const out = JSON.parse(r.stdout);
-    assert.match(out.hookSpecificOutput.additionalContext, /proposed ADR/);
+    assert.match(out.systemMessage, /proposed ADR/);
 
     cleanupSession(sid);
   });
@@ -139,7 +141,7 @@ test("dedups proposals across turns by hash", () => {
 
     const out2 = JSON.parse(r2.stdout);
     // newProposals should be 0 on the second turn — no "Drafted N proposed" line
-    assert.doesNotMatch(out2.hookSpecificOutput.additionalContext, /Drafted \d+ proposed ADR/);
+    assert.doesNotMatch(out2.systemMessage, /Drafted \d+ proposed ADR/);
 
     cleanupSession(sid);
   });
@@ -156,8 +158,8 @@ test("flags boundary violation when assistant response contains hardcoded sk- ke
     });
     assert.equal(r.status, 0);
     const out = JSON.parse(r.stdout);
-    assert.match(out.hookSpecificOutput.additionalContext, /BOUNDARY VIOLATION/);
-    assert.match(out.hookSpecificOutput.additionalContext, /U-002/);
+    assert.match(out.systemMessage, /BOUNDARY VIOLATION/);
+    assert.match(out.systemMessage, /U-002/);
     cleanupSession(sid);
   });
 });
@@ -181,7 +183,7 @@ test("utilization line contains target percentage", () => {
     const sid = freshSessionId();
     const r = runHook({ cwd: dir, sessionId: sid, assistantResponse: "x" });
     const out = JSON.parse(r.stdout);
-    assert.match(out.hookSpecificOutput.additionalContext, /target ≥75%/);
+    assert.match(out.systemMessage, /target ≥75%/);
     cleanupSession(sid);
   });
 });

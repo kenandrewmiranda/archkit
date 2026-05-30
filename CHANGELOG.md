@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.8.1 — 2026-05-30
+
+### Fixed — Stop hook output rejected by Claude Code
+
+- **`bin/archkit-stop-hook.mjs` emitted `hookSpecificOutput.additionalContext`**, but `Stop` hooks have no such channel (it's only valid for `UserPromptSubmit`/`PostToolUse`/`PostToolBatch`/`SessionStart`). Claude Code rejected the entire payload on schema validation — so even the legitimate CGR relay guard (`decision:"block"`) silently failed to fire. The hook now uses the two valid Stop channels: working-memory sections (utilization + re-injected BOUNDARIES) ride in `reason` when the relay guard blocks, and surface as a non-blocking `systemMessage` otherwise. Tests in `tests/stop-hook` and `tests/cgr-relay` updated to assert the corrected shape.
+
 ## v1.8.0 — 2026-05-30
 
 CGR fresh-context **relay loop** + **self-healing hook setup** + **ADR recall**, plus read-side symmetry across the surface: **goal verification/abandon**, **boundary capture**, and **MCP resources**. Makes the Clear Goal Run workflow frictionless (one keystroke to advance instead of copy-paste), able to detect/install its own guardrail hooks, and able to read back its own decisions/skills. Purely additive — the old paste-after-`/goal` flow still works as a fallback, and plain (non-CGR) sessions are unaffected. Brings tool count to 25, adds 3 MCP prompts, and adds MCP resources.

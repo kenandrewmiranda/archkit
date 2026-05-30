@@ -231,11 +231,22 @@ async function main() {
     process.exit(0);
   }
 
-  const out = { hookSpecificOutput: { hookEventName: "Stop" } };
-  if (sections.length) out.hookSpecificOutput.additionalContext = sections.join("\n\n");
+  // Stop hooks have no `hookSpecificOutput.additionalContext` channel (that
+  // only exists for UserPromptSubmit/PostToolUse/PostToolBatch). The two valid
+  // channels are `decision: "block"` + `reason` (fed back to the model, forces
+  // continuation) and `systemMessage` (shown to the user, non-blocking).
+  //
+  //   • Relay guard active  → block; fold the working-memory sections into the
+  //     reason so the model still carries them while it keeps working.
+  //   • No block, just nudges → surface them to the user via systemMessage.
+  const out = {};
   if (blockReason) {
     out.decision = "block";
-    out.reason = blockReason;
+    out.reason = sections.length
+      ? [...sections, blockReason].join("\n\n")
+      : blockReason;
+  } else if (sections.length) {
+    out.systemMessage = sections.join("\n\n");
   }
 
   process.stdout.write(JSON.stringify(out));

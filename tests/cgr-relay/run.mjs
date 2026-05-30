@@ -175,7 +175,7 @@ await test("Stop hook does NOT block when the response is a question to the user
     const out = runHook({ cwd: dir, assistant_response: "Which database should I use, Postgres or SQLite?" });
     assert.ok(out, "hook produced output");
     assert.notEqual(out.decision, "block");
-    assert.match(out.hookSpecificOutput.additionalContext, /reads as a question to the user/);
+    assert.match(out.systemMessage, /reads as a question to the user/);
   });
 });
 
@@ -185,7 +185,7 @@ await test("Stop hook nudges (no block) when no goal active but one is queued", 
     const out = runHook({ cwd: dir, assistant_response: "Here is a summary." });
     assert.ok(out, "hook produced output");
     assert.notEqual(out.decision, "block");
-    assert.match(out.hookSpecificOutput.additionalContext, /goal_next/);
+    assert.match(out.systemMessage, /goal_next/);
   });
 });
 

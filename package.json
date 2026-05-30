@@ -1,6 +1,6 @@
 {
   "name": "@kenandrewmiranda/archkit",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Context Engineering Scaffolder for AI-Assisted Development",
   "type": "module",
   "publishConfig": {
@@ -8,7 +8,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/kenandrewmiranda/archkit.git"
+    "url": "git+https://github.com/kenandrewmiranda/archkit.git"
   },
   "homepage": "https://thearchkit.com",
   "files": [
@@ -19,13 +19,13 @@
     "CHANGELOG.md"
   ],
   "bin": {
-    "archkit": "./bin/archkit.mjs",
-    "archkit-claude-hook": "./bin/archkit-claude-hook.mjs",
-    "archkit-mcp": "./bin/archkit-mcp.mjs",
-    "archkit-session-start": "./bin/archkit-session-start.mjs",
-    "archkit-stop-hook": "./bin/archkit-stop-hook.mjs",
-    "archkit-posttooluse-hook": "./bin/archkit-posttooluse-hook.mjs",
-    "archkit-userpromptsubmit-hook": "./bin/archkit-userpromptsubmit-hook.mjs"
+    "archkit": "bin/archkit.mjs",
+    "archkit-claude-hook": "bin/archkit-claude-hook.mjs",
+    "archkit-mcp": "bin/archkit-mcp.mjs",
+    "archkit-session-start": "bin/archkit-session-start.mjs",
+    "archkit-stop-hook": "bin/archkit-stop-hook.mjs",
+    "archkit-posttooluse-hook": "bin/archkit-posttooluse-hook.mjs",
+    "archkit-userpromptsubmit-hook": "bin/archkit-userpromptsubmit-hook.mjs"
   },
   "scripts": {
     "start": "node bin/archkit.mjs",
