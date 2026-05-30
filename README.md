@@ -88,9 +88,16 @@ archkit ships a Model Context Protocol server so AI agents can call archkit's re
 If you use Claude Code, install archkit as a plugin so the MCP server, SessionStart hook, and `/archkit-init` wizard land as one atomic unit. Plugin install handles MCP registration for you — no `claude mcp add` step.
 
 ```bash
-# (Plugin marketplace URL — set per your distribution channel)
-# In Claude Code: /plugins → add marketplace → install archkit
+# In Claude Code (slash commands):
+/plugin marketplace add https://market.thearchkit.com
+/plugin install archkit
+
+# …or from your shell:
+claude plugin marketplace add https://market.thearchkit.com
+claude plugin install archkit
 ```
+
+Then restart Claude Code (or run `/plugin`) so the MCP server, four guardrail hooks, and `/archkit-init` wizard load.
 
 The plugin includes:
 
