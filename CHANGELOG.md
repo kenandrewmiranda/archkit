@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.8.3 — 2026-06-04
+
+### Fixed — marketplace `install <slug>@<version>` ignored the pinned version
+
+- **`apiRequest()` in `src/lib/marketplace.mjs` only appended query params for `GET`**, so the POST download caller silently dropped its `version` param — `archkit install <slug>@1.2.0` always fetched the latest release instead of the pinned one. The `/api/cli/*` surface reads params from the query string for both verbs (`GET /search?q=…` and `POST /configs/:slug/download?version=…`), so params are now appended for any method.
+
 ## v1.8.2 — 2026-05-30
 
 ### Fixed — drift false-positive orphaned-skill findings in workspace monorepos
