@@ -175,7 +175,7 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 }
 ```
 
-### Available tools (25)
+### Available tools (28)
 
 **Resolve & scaffold**
 - `archkit_init` — greenfield setup; returns the wizard inline
@@ -205,6 +205,8 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 - `archkit_goal_list` / `archkit_goal_show` / `archkit_goal_payload` — inspect the queue
 - `archkit_goal_verify` — evidence a goal is done (no auto-complete)
 - `archkit_goal_complete` / `archkit_goal_abandon` — finish / drop a goal, advance the queue
+- `archkit_goal_defer` — stash a follow-up you spotted mid-session as a **proposed** goal (out of scope now, reviewed later)
+- `archkit_goal_promote` / `archkit_goal_dismiss` — promote selected proposals into planned goals, or reject them
 
 **Setup**
 - `archkit_install_hooks` — detect + install the four guardrail hooks into `.claude/settings.json`
@@ -216,6 +218,7 @@ The CGR relay surfaces as **user-typed** slash commands (prompts are user-initia
 - `/mcp__archkit__goal_next` — load the next eligible goal into a fresh context (one keystroke instead of pasting a payload)
 - `/mcp__archkit__goal_resume` — re-inject the active goal without changing state
 - `/mcp__archkit__goal_status` — queue orientation
+- `/mcp__archkit__goal_review` — review follow-up goals proposed in prior sessions and choose which to promote
 
 ### Resources
 
@@ -256,6 +259,22 @@ A long agent session accumulates context, drifts off-task, and re-litigates sett
 - **One keystroke to advance.** `/mcp__archkit__goal_next` marks the next goal in-progress and injects its payload — replacing the old copy-paste-after-`/goal` step (still available as a fallback).
 - **A goal-aware Stop hook** blocks stopping while a goal's exit-criteria are unmet, and releases when the agent calls `archkit_goal_complete`. It won't trap a genuine question to you, and a per-goal turn cap prevents runaway loops. It only fires for relay-started goals — plain sessions are untouched.
 - **Verify before you finish.** `archkit_goal_verify` reports objective evidence (which planned files changed, what a staged review finds) so "done" isn't just a vibe. `archkit_goal_abandon` drops a mis-scoped goal without marking it complete.
+
+### The test gate (v1.9)
+
+"Done" should provably mean **tests pass**, not just that the agent says so. CGR bakes a test confirmation into every goal:
+
+- **Auto-detected verify-command.** At `archkit_goal_intake`, archkit detects the project's test command — it reads `package.json` → `scripts.test` and picks the runner from the lockfile (`pnpm` / `yarn` / `bun` / `npm test`) — and stamps it onto every goal as `verify-command`. You can override it per goal in the goal's frontmatter, or it's skipped entirely for projects with no real test script (so they aren't blocked on a command that can't run).
+- **Hard gate on completion.** `archkit_goal_complete` re-runs the `verify-command` and **refuses to complete a goal whose tests are red** (or whose command can't run). A failing gate returns the failing output tail so the agent knows what to fix; the escape hatch for a genuinely-obsolete goal is `archkit_goal_abandon`, not completion.
+- **Cheap preview.** `archkit_goal_verify` runs the same command as a non-authoritative dry run, so you can see green/red before calling complete.
+
+### Deferred-goal proposals (v1.9)
+
+Worthwhile work you notice mid-goal shouldn't derail the current goal or get lost in a code TODO. CGR captures it as a **proposed** goal that survives context resets and is surfaced for explicit confirmation later:
+
+- **Propose.** Two sources feed `.arch/goals/proposed/`: the agent calls `archkit_goal_defer` the moment it spots out-of-scope follow-up work (supplying a real title + exit-criteria), and the Stop hook auto-drafts proposals when it detects deferral language in a turn ("out of scope for this PR", "follow-up: wire up retries", "in a separate goal"). Detection is high-precision — exploratory "should we…?" questions are filtered out. Neither is a real goal yet; the active goal and queue are untouched.
+- **Review.** In a later session, `/mcp__archkit__goal_review` lists the pending proposals and drives a multi-select so you pick which to act on.
+- **Promote / dismiss.** `archkit_goal_promote` turns the selected proposals into planned goals the CGR queue will pick up; `archkit_goal_dismiss` rejects the rest. Anything you neither promote nor dismiss stays pending for next time.
 
 > CGR works best with the guardrail hooks installed (so the Stop guard fires). Install via the Claude Code plugin, or call `archkit_install_hooks` in your project.
 

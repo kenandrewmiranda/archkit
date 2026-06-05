@@ -22,6 +22,7 @@ import {
   listGoals,
   statusOf,
   doneDir,
+  listGoalProposals,
 } from "../lib/goals.mjs";
 
 function archDirOrNull() {
@@ -88,6 +89,46 @@ export const prompts = {
       }
       const { payload } = renderPayload(archDir, goal.slug);
       return textMessage(relayHeader(goal.slug) + payload);
+    },
+  },
+
+  goal_review: {
+    config: {
+      title: "archkit: review follow-up goals",
+      description:
+        "Review follow-up goals proposed during prior sessions (.arch/goals/proposed/) and choose which to promote into planned goals. Drives a multi-select: promote selected, all, or dismiss.",
+    },
+    handler: async () => {
+      const archDir = archDirOrNull();
+      if (!archDir) return textMessage(NO_ARCH);
+      const proposals = listGoalProposals(archDir);
+      if (proposals.length === 0) {
+        return textMessage(
+          "No follow-up goal proposals pending in .arch/goals/proposed/. Nothing to review — these are drafted automatically when a session defers work, or via archkit_goal_defer."
+        );
+      }
+      const lines = [
+        `[archkit] ${proposals.length} follow-up goal proposal${proposals.length === 1 ? "" : "s"} pending review:`,
+        ``,
+      ];
+      proposals.forEach((p, i) => {
+        lines.push(`${i + 1}. [${p.hash}] ${p.title}`);
+        if (p.why) lines.push(`   why: ${p.why}`);
+        if (Array.isArray(p.exitCriteria) && p.exitCriteria.length) {
+          lines.push(`   exit-criteria: ${p.exitCriteria.join("; ")}`);
+        }
+        if (p.contextExcerpt) lines.push(`   context: ${String(p.contextExcerpt).slice(0, 160).replace(/\s+/g, " ")}…`);
+        lines.push(`   source: ${p.source}`);
+        lines.push("");
+      });
+      lines.push(
+        `Present these to the user with the AskUserQuestion tool as a MULTI-SELECT (multiSelect: true) — one option per proposal (label by title), so they can pick any subset; the tool also lets them pick all or none.`,
+        `Then act on their choice:`,
+        `  • promote the chosen ones: archkit_goal_promote with hashes:[...] (or all:true if they picked everything)`,
+        `  • dismiss the rest if they explicitly reject them: archkit_goal_dismiss with hashes:[...]`,
+        `Leave anything they neither promote nor dismiss as pending. After promoting, tell them to /clear then /mcp__archkit__goal_next to start the first new goal.`
+      );
+      return textMessage(lines.join("\n"));
     },
   },
 

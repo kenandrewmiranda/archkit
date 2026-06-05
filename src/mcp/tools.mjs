@@ -23,7 +23,7 @@ import { runBoundaryCheckJson, runBoundaryProposeJson } from "../commands/bounda
 import { runDoctorJson } from "../commands/doctor.mjs";
 import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
-import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify } from "../commands/goal.mjs";
+import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss } from "../commands/goal.mjs";
 import { loadGoal } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
@@ -220,7 +220,7 @@ export const tools = {
   },
 
   archkit_goal_intake: {
-    description: "CGR (Clear Goal Run): accept a structured decomposition of a sprawling user ask into one or more discrete goals, persist them to .arch/goals/<slug>.md, and return a payload per goal (<=3800 chars). Call this AS SOON AS the user types a multi-goal or unclear ask in a fresh session — BEFORE writing code. You (the agent) do the decomposition: split the ask into 1..N discrete goals, give each a kebab-case slug, a one-line title, 2-5 exitCriteria, and optionally filesToTouch + requiredReading (paths like .arch/skills/<x>.skill that capture API quirks). If the ask is one goal, pass a single-element goals array. If the ask is ambiguous, ASK the user to clarify before calling this. To START the first goal, tell the user to run /clear then the slash command /mcp__archkit__goal_next (the relay — it marks the next goal in-progress and injects it automatically; the returned payloads are a fallback they can paste after /goal). You CANNOT run /clear or /mcp__archkit__goal_next yourself — they are the user's keystrokes; your job is to instruct them. Workflow: intake -> user: /clear + /mcp__archkit__goal_next -> work goal 0 (the Stop hook blocks stopping until it's done) -> archkit_goal_complete -> user: /clear + /mcp__archkit__goal_next -> ...",
+    description: "CGR (Clear Goal Run): accept a structured decomposition of a sprawling user ask into one or more discrete goals, persist them to .arch/goals/<slug>.md, and return a payload per goal (<=3800 chars). Call this AS SOON AS the user types a multi-goal or unclear ask in a fresh session — BEFORE writing code. You (the agent) do the decomposition: split the ask into 1..N discrete goals, give each a kebab-case slug, a one-line title, 2-5 exitCriteria, and optionally filesToTouch + requiredReading (paths like .arch/skills/<x>.skill that capture API quirks). If the ask is one goal, pass a single-element goals array. If the ask is ambiguous, ASK the user to clarify before calling this. To START the first goal, tell the user to run /clear then the slash command /mcp__archkit__goal_next (the relay — it marks the next goal in-progress and injects it automatically; the returned payloads are a fallback they can paste after /goal). You CANNOT run /clear or /mcp__archkit__goal_next yourself — they are the user's keystrokes; your job is to instruct them. Workflow: intake -> user: /clear + /mcp__archkit__goal_next -> work goal 0 (the Stop hook blocks stopping until it's done) -> archkit_goal_complete -> user: /clear + /mcp__archkit__goal_next -> ... TEST GATE: the project's test command is auto-detected from package.json scripts.test and baked onto each goal as verify-command; archkit_goal_complete re-runs it and refuses to complete on red. Pass verifyCommand per goal to scope it to that goal's slice (e.g. \"vitest run src/auth/\") or to set one when auto-detect can't.",
     inputSchema: z.object({
       sourceAsk: z.string().optional().describe("The user's original ask (first ~500 chars). Stored with each goal for backtrace."),
       goals: z.array(z.object({
@@ -231,6 +231,7 @@ export const tools = {
         filesToTouch: z.array(z.string()).optional().describe("Best-guess files this goal will modify."),
         requiredReading: z.array(z.string()).optional().describe("Paths the agent must read first, e.g. .arch/skills/kalshi.skill."),
         dependsOn: z.array(z.string()).optional().describe("Other goal slugs that must complete first."),
+        verifyCommand: z.string().optional().describe("Test/verify command that gates completion (e.g. \"npm test\", \"vitest run src/auth/\"). Auto-detected from package.json scripts.test if omitted. archkit_goal_complete re-runs it and refuses to complete on red — bakes test confirmation into the goal. Set explicitly to scope to the goal's slice of the suite."),
         body: z.string().optional().describe("Optional markdown body; auto-generated if omitted."),
       })).min(1).describe("One or more goals. Order matters — payloads[0] is the first goal the user starts."),
     }),
@@ -295,19 +296,19 @@ export const tools = {
   },
 
   archkit_goal_complete: {
-    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
+    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. HARD TEST GATE: if the goal has a verify-command (auto-detected at intake or set explicitly), this re-runs it and REFUSES to complete on red — erroring with test_gate_failed and the failing output tail. Fix the tests and retry, or archkit_goal_abandon if the goal is obsolete. On success it stamps tests-passed/tests-command/tests-at on the archived goal. Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
     inputSchema: z.object({
       slug: z.string().min(1).describe("Goal slug to complete."),
       notes: z.string().optional().describe("Optional 1-2 sentence completion notes."),
     }),
     handler: async ({ slug, notes }) => {
       const cwd = process.cwd();
-      return runGoalComplete({ archDir: requireArchDir(cwd), slug, notes });
+      return runGoalComplete({ archDir: requireArchDir(cwd), cwd, slug, notes });
     },
   },
 
   archkit_goal_verify: {
-    description: "Gather evidence for whether a CGR goal is actually done — WITHOUT auto-completing it. Echoes the goal's exit-criteria as a checklist and adds objective signals: which of its files-to-touch are modified in the working tree, and what a staged review finds (errors/findings). Use this right before archkit_goal_complete to avoid declaring done prematurely — the Stop-hook relay guard otherwise trusts the complete call blindly. Returns { slug, exitCriteria, filesToTouch:{touched,untouched}, stagedReview:{files,errors,findings}, clean, nextStep }. Does not modify anything.",
+    description: "Gather evidence for whether a CGR goal is actually done — WITHOUT auto-completing it. Echoes the goal's exit-criteria as a checklist and adds objective signals: which of its files-to-touch are modified in the working tree, what a staged review finds (errors/findings), and — if the goal has a verify-command — a PREVIEW test run (archkit_goal_complete re-runs it as the authoritative gate). Use this right before archkit_goal_complete to avoid declaring done prematurely. Returns { slug, exitCriteria, filesToTouch:{touched,untouched}, stagedReview:{files,errors,findings}, tests:{command,ran,passed,exitCode,outputTail}, clean, nextStep }. clean is false if tests are red. Does not modify anything.",
     inputSchema: z.object({
       slug: z.string().min(1).describe("Goal slug to verify."),
     }),
@@ -326,6 +327,44 @@ export const tools = {
     handler: async ({ slug, reason }) => {
       const cwd = process.cwd();
       return runGoalAbandon({ archDir: requireArchDir(cwd), slug, reason });
+    },
+  },
+
+  archkit_goal_defer: {
+    description: "Stash a follow-up you noticed mid-session as a PROPOSED goal for a LATER session — without derailing the current goal. Use the moment you spot worthwhile work that is out of scope right now ('this also needs retry logic, but not in this goal'). Writes to .arch/goals/proposed/ (NOT a real goal yet); it does not change the active goal or the queue. At session end the user runs /mcp__archkit__goal_review to promote selected proposals into planned goals (or dismiss them). Prefer this over leaving a TODO in code or prose — proposals survive context resets and are surfaced for explicit confirmation. Returns { proposed, hash, duplicate, totalPending, nextStep }.",
+    inputSchema: z.object({
+      title: z.string().min(1).describe("One-line title of the follow-up, imperative if possible (e.g. 'Add retry/backoff to the upload client')."),
+      why: z.string().optional().describe("Optional 1-2 sentence motivation — why this matters and why it's deferred."),
+      exitCriteria: z.array(z.string()).optional().describe("Optional concrete completion conditions, carried onto the goal when promoted."),
+      context: z.string().optional().describe("Optional short excerpt of where this came up, stored for backtrace."),
+    }),
+    handler: async (input) => {
+      const cwd = process.cwd();
+      return runGoalDefer({ archDir: requireArchDir(cwd), ...input });
+    },
+  },
+
+  archkit_goal_promote: {
+    description: "Promote pending follow-up proposals (from .arch/goals/proposed/, created by archkit_goal_defer or the Stop-hook deferred-work detector) into real PLANNED goals the CGR queue will pick up. Pass hashes:[...] for a user-selected subset, or all:true to promote everything pending. This is the 'confirm' half of the propose-and-confirm flow — call it AFTER presenting the proposals to the user (see the /mcp__archkit__goal_review prompt, which gathers their multi-select choice). Removes each promoted proposal. Returns { promoted:[{hash,slug}], notFound, remaining, nextStep }.",
+    inputSchema: z.object({
+      hashes: z.array(z.string().min(1)).optional().describe("Proposal hashes to promote (the user's selection). Omit when all:true."),
+      all: z.boolean().optional().describe("Promote every pending proposal. Overrides hashes."),
+    }),
+    handler: async ({ hashes, all }) => {
+      const cwd = process.cwd();
+      return runGoalPromote({ archDir: requireArchDir(cwd), hashes, all });
+    },
+  },
+
+  archkit_goal_dismiss: {
+    description: "Discard pending follow-up proposals from .arch/goals/proposed/ WITHOUT turning them into goals — the 'reject' half of the propose-and-confirm flow. Pass hashes:[...] for a subset or all:true to clear the queue. Use for noise the detector drafted or follow-ups the user declined in /mcp__archkit__goal_review. To inspect what's pending first, the goal_review prompt lists them. Returns { dismissed, remaining, nextStep }.",
+    inputSchema: z.object({
+      hashes: z.array(z.string().min(1)).optional().describe("Proposal hashes to dismiss. Omit when all:true."),
+      all: z.boolean().optional().describe("Dismiss every pending proposal."),
+    }),
+    handler: async ({ hashes, all }) => {
+      const cwd = process.cwd();
+      return runGoalDismiss({ archDir: requireArchDir(cwd), hashes, all });
     },
   },
 

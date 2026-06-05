@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.9.0 — 2026-06-04
+
+Hardens the Clear Goal Run loop on both ends: a **test gate** so "done" provably means tests pass, and **deferred-goal proposals** so follow-up work spotted mid-goal is captured and reviewed instead of lost. Adds 3 MCP tools (bringing the count to 28) and 1 MCP prompt. Purely additive — projects without a test script skip the gate gracefully, and the propose/review flow is opt-in.
+
+### Added — CGR test gate
+
+- **Auto-detected `verify-command`** (`src/lib/test-runner.mjs`): `archkit_goal_intake` now detects the project's test command — reads `package.json` → `scripts.test` and picks the runner from the lockfile (`pnpm` / `yarn` / `bun`, default `npm test`) — and stamps it onto every goal as `verify-command`. Best-effort and Node-first: returns `null` when there's no real test script (npm's `no test specified` placeholder counts as none), so projects without tests aren't blocked on a command that can't run. Per-goal override via the goal's `verifyCommand`/`verify-command` field.
+- **Hard gate on `archkit_goal_complete`**: completion re-runs the `verify-command` and **refuses to complete a goal whose tests are red** (or whose command can't be launched). Red returns the failing output tail (`outputTail`, last ~2000 chars) plus a remediation `nextStep`; a passing gate stamps `tests-passed` / `tests-command` / `tests-at` onto the archived goal. The escape hatch for a genuinely-obsolete goal is `archkit_goal_abandon`, not completion.
+- **Cheap preview on `archkit_goal_verify`**: runs the same command as a non-authoritative dry run and folds its result into the goal's `clean` signal, so the agent sees green/red (and keeps working on red) before calling complete. `runTests()` never throws — a spawn failure is reported as `ran:false` so callers degrade gracefully.
+
+### Added — deferred-goal proposals (3 new MCP tools, 1 new prompt)
+
+- **`archkit_goal_defer`** (tool #26): stash a follow-up the agent notices mid-session as a **proposed** goal in `.arch/goals/proposed/` — without derailing the active goal or touching the queue. Richer than the Stop-hook draft because the agent supplies a real title + exit-criteria. Dedupes by title hash.
+- **`archkit_goal_promote`** (tool #27) / **`archkit_goal_dismiss`** (tool #28): the confirm/reject halves of the propose-and-confirm flow. `promote` turns selected proposals (`hashes:[...]` or `all:true`) into planned goals the CGR queue picks up and removes them from `proposed/`; `dismiss` discards them without promoting.
+- **`/mcp__archkit__goal_review` prompt** (`src/mcp/prompts.mjs`): lists pending proposals and drives an `AskUserQuestion` multi-select so the user picks which to promote vs. dismiss; anything neither promoted nor dismissed stays pending.
+- **Stop-hook auto-drafting** (`src/lib/goal-detector.mjs`): the Stop hook scans each turn for explicit deferral language ("out of scope for this PR", "follow-up: wire up retries", "in a separate goal", "circle back") and auto-drafts a proposal to `.arch/goals/proposed/<hash>.json`. Mirrors `decision-detector.mjs` — high-precision-over-recall: questions and exploratory "should we…?" phrasing are filtered out, since false positives spam the queue and erode trust faster than missed follow-ups hurt.
+
+### Tests
+
+- New suites `tests/test-gate/` (verify-command detection + the hard completion gate) and `tests/goal-proposals/` (defer/promote/dismiss + the deferral-language detector). `tests/mcp-server/` tool-count assertion updated 25 → 28; `tests/silent-success-audit/` and `tests/stop-hook/` updated for the new tools and auto-drafting.
+
+### Docs
+
+- README "Available tools" updated to **28**, documenting `archkit_goal_defer` / `archkit_goal_promote` / `archkit_goal_dismiss` and the `/mcp__archkit__goal_review` prompt; the CGR section gains "The test gate" and "Deferred-goal proposals" subsections.
+
 ## v1.8.2 — 2026-05-30
 
 ### Fixed — drift false-positive orphaned-skill findings in workspace monorepos

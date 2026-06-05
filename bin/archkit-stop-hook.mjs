@@ -14,7 +14,9 @@
 //      specific warning if any matched (boundary-patterns lib).
 //   4. Detect decision-language and write proposal files to
 //      .arch/decisions/proposed/<hash>.json for human review (decision-
-//      detector lib).
+//      detector lib). Likewise detect DEFERRED/follow-up work and draft
+//      proposed goals to .arch/goals/proposed/<hash>.json (goal-detector lib),
+//      surfaced via /mcp__archkit__goal_review for promote-or-dismiss.
 //   5. CGR relay guard (proto/cgr-relay-loop): when a goal is in-progress
 //      (started via /mcp__archkit__goal_next), block stopping with
 //      decision:"block" until the agent calls archkit_goal_complete — unless
@@ -40,8 +42,10 @@ const LIB = path.resolve(__dirname, "..", "src", "lib");
 const { loadOrInit, computeUtilization, formatUtilizationLine, save } = await import(path.join(LIB, "session-stats.mjs"));
 const { detectViolations, formatViolation } = await import(path.join(LIB, "boundary-patterns.mjs"));
 const { detectDecisions } = await import(path.join(LIB, "decision-detector.mjs"));
+const { detectDeferredGoals } = await import(path.join(LIB, "goal-detector.mjs"));
 const {
-  getActiveGoal, exitCriteriaOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
+  getActiveGoal, exitCriteriaOf, verifyCommandOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
+  writeGoalProposal, countGoalProposals,
 } = await import(path.join(LIB, "goals.mjs"));
 
 const UTILIZATION_TARGET = 75;
@@ -174,6 +178,21 @@ async function main() {
     );
   }
 
+  // 3b. Deferred-/follow-up-work language → draft proposed goals for a later
+  //     session. Same propose-and-confirm pattern as ADRs: drafts persist in
+  //     .arch/goals/proposed/ until /mcp__archkit__goal_review promotes them.
+  const goalDetections = detectDeferredGoals(assistantResponse);
+  let newGoalProposals = 0;
+  for (const d of goalDetections) {
+    if (writeGoalProposal(archDir, d)) newGoalProposals += 1;
+  }
+  if (newGoalProposals > 0) {
+    const totalGoalProposals = countGoalProposals(archDir);
+    sections.push(
+      `Drafted ${newGoalProposals} follow-up goal proposal${newGoalProposals === 1 ? "" : "s"} from deferred-work language in your response. Total pending: ${totalGoalProposals} at .arch/goals/proposed/. Run /mcp__archkit__goal_review to pick which to promote into planned goals (selected or all), or dismiss them.`
+    );
+  }
+
   // 4. BOUNDARIES re-injection (last so it doesn't dominate).
   const boundaries = compactBoundaries(archDir);
   if (boundaries) {
@@ -206,10 +225,15 @@ async function main() {
         const list = criteria.length
           ? criteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")
           : `  (no exit-criteria recorded — see .arch/goals/${slug}.md)`;
+        const verifyCommand = verifyCommandOf(activeGoal);
+        const testLine = verifyCommand
+          ? `Test gate: archkit_goal_complete will run "${verifyCommand}" and REFUSE to complete on red — make sure tests pass first (archkit_goal_verify previews them).`
+          : null;
         blockReason = [
           `CGR relay: goal "${slug}" is still in progress (turn ${blocks}/${maxTurns}).`,
           `Keep working until ALL exit-criteria are met:`,
           list,
+          ...(testLine ? ["", testLine] : []),
           ``,
           `When every criterion holds, call archkit_goal_complete ${slug} to release this guard and advance the queue. If you are genuinely blocked and need the user, end your message with a direct question.`,
         ].join("\n");

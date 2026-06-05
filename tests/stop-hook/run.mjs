@@ -147,6 +147,32 @@ test("dedups proposals across turns by hash", () => {
   });
 });
 
+test("drafts a proposed goal when deferred-work language detected", () => {
+  withTempProject((dir) => {
+    setupArch(dir);
+    const sid = freshSessionId();
+    const r = runHook({
+      cwd: dir,
+      sessionId: sid,
+      assistantResponse: "Shipped the upload path. Follow-up: add retry/backoff to the upload client in a later session.",
+    });
+    assert.equal(r.status, 0);
+    const proposedDir = path.join(dir, ".arch", "goals", "proposed");
+    assert.ok(fs.existsSync(proposedDir), "proposed goals dir created");
+    const files = fs.readdirSync(proposedDir).filter((f) => f.endsWith(".json"));
+    assert.ok(files.length >= 1, "≥1 goal proposal written");
+    const proposal = JSON.parse(fs.readFileSync(path.join(proposedDir, files[0]), "utf8"));
+    assert.match(proposal.hash, /^[a-f0-9]{12}$/);
+    assert.ok(proposal.title, "has a title");
+
+    const out = JSON.parse(r.stdout);
+    assert.match(out.systemMessage, /follow-up goal proposal/i);
+    assert.match(out.systemMessage, /goal_review/);
+
+    cleanupSession(sid);
+  });
+});
+
 test("flags boundary violation when assistant response contains hardcoded sk- key", () => {
   withTempProject((dir) => {
     setupArch(dir);

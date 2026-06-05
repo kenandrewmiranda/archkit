@@ -29,6 +29,10 @@ export function doneDir(archDir) {
   return path.join(goalsDir(archDir), "done");
 }
 
+export function proposedDir(archDir) {
+  return path.join(goalsDir(archDir), "proposed");
+}
+
 export function ensureGoalsLayout(archDir) {
   fs.mkdirSync(doneDir(archDir), { recursive: true });
 }
@@ -110,6 +114,7 @@ export function writeGoal(archDir, goal) {
     "files-to-touch": goal.filesToTouch || [],
     "required-reading": goal.requiredReading || [],
     "depends-on": goal.dependsOn || [],
+    "verify-command": goal.verifyCommand || "",
     "source-ask": goal.sourceAsk || "",
   };
   const body = goal.body || defaultBody(goal);
@@ -156,13 +161,18 @@ export function loadGoal(archDir, slug) {
   return { ...parseGoal(fs.readFileSync(filepath, "utf8")), filepath, slug };
 }
 
-export function completeGoal(archDir, slug, { notes = "" } = {}) {
+export function completeGoal(archDir, slug, { notes = "", extraMeta = {} } = {}) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
   ensureGoalsLayout(archDir);
   goal.meta.status = "done";
   goal.meta["completed"] = new Date().toISOString().slice(0, 10);
   if (notes) goal.meta["completion-notes"] = notes;
+  // Stamp objective completion evidence (e.g. tests-passed/-command/-at) so the
+  // archived goal records HOW it was verified, not just that it was claimed done.
+  for (const [k, v] of Object.entries(extraMeta)) {
+    if (v != null && v !== "") goal.meta[k] = v;
+  }
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(doneDir(archDir), `${slug}.md`);
   fs.writeFileSync(targetPath, out);
@@ -180,6 +190,7 @@ export function renderPayload(archDir, slug) {
   const required = ensureArray(m["required-reading"]);
   const exitCriteria = ensureArray(m["exit-criteria"]);
   const filesToTouch = ensureArray(m["files-to-touch"]);
+  const verifyCommand = typeof m["verify-command"] === "string" ? m["verify-command"].trim() : "";
 
   const lines = [];
   lines.push(`ARCHKIT GOAL: ${slug}`);
@@ -199,6 +210,10 @@ export function renderPayload(archDir, slug) {
   if (filesToTouch.length > 0 && filesToTouch.length <= 8) {
     lines.push(`Likely files to touch:`);
     for (const f of filesToTouch) lines.push(`- ${f}`);
+    lines.push("");
+  }
+  if (verifyCommand) {
+    lines.push(`Test gate: \`${verifyCommand}\` must pass — goal complete will run it and refuse on red.`);
     lines.push("");
   }
   lines.push(`When done: archkit goal complete ${slug}`);
@@ -244,6 +259,11 @@ export function statusOf(goal) {
 
 export function exitCriteriaOf(goal) {
   return ensureArray(goal?.meta?.["exit-criteria"]);
+}
+
+export function verifyCommandOf(goal) {
+  const v = goal?.meta?.["verify-command"];
+  return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
 // The single in-progress goal, or null. In fresh-context relay there should be
@@ -323,4 +343,85 @@ export function abandonGoal(archDir, slug, { reason = "" } = {}) {
   const state = readLoopState(archDir);
   if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
   return { slug, archivedAt: targetPath, status: "abandoned" };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Deferred-goal proposals (v1.9)
+//
+// Follow-up work surfaced during a session — by the Stop-hook detector or an
+// explicit archkit_goal_defer call — lands in .arch/goals/proposed/<hash>.json
+// (NOT written as a real goal). A later session reviews them via
+// /mcp__archkit__goal_review and promotes the chosen ones into planned goals.
+// Mirrors the decisions/ proposal flow: propose → human confirm → promote.
+// ───────────────────────────────────────────────────────────────────────────
+
+export function ensureProposedDir(archDir) {
+  const dir = proposedDir(archDir);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// Write a proposal. Skips if a file with the same hash already exists
+// (cross-turn dedup). Returns true if newly written.
+export function writeGoalProposal(archDir, proposal) {
+  const dir = ensureProposedDir(archDir);
+  const file = path.join(dir, `${proposal.hash}.json`);
+  if (fs.existsSync(file)) return false;
+  const record = {
+    hash: proposal.hash,
+    title: proposal.title || proposal.titleHint || "untitled follow-up",
+    why: proposal.why || "",
+    exitCriteria: Array.isArray(proposal.exitCriteria) ? proposal.exitCriteria : [],
+    contextExcerpt: proposal.contextExcerpt || "",
+    patternName: proposal.patternName || null,
+    source: proposal.source || "unknown",
+    createdAt: proposal.createdAt || new Date().toISOString(),
+  };
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(record, null, 2));
+  fs.renameSync(tmp, file);
+  return true;
+}
+
+export function listGoalProposals(archDir) {
+  const dir = proposedDir(archDir);
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    try { out.push(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"))); } catch {}
+  }
+  return out;
+}
+
+export function countGoalProposals(archDir) {
+  const dir = proposedDir(archDir);
+  if (!fs.existsSync(dir)) return 0;
+  return fs.readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+}
+
+export function removeGoalProposal(archDir, hash) {
+  const file = path.join(proposedDir(archDir), `${hash}.json`);
+  if (!fs.existsSync(file)) return false;
+  fs.rmSync(file, { force: true });
+  return true;
+}
+
+// Promote a proposal into a planned goal and remove the proposal file.
+// Returns { slug } or null if the hash isn't a known proposal.
+export function promoteGoalProposal(archDir, hash, overrides = {}) {
+  const file = path.join(proposedDir(archDir), `${hash}.json`);
+  if (!fs.existsSync(file)) return null;
+  let p;
+  try { p = JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+  const { slug } = writeGoal(archDir, {
+    title: overrides.title || p.title,
+    why: overrides.why || p.why || "",
+    exitCriteria: overrides.exitCriteria || p.exitCriteria || [],
+    verifyCommand: overrides.verifyCommand || "",
+    sourceAsk: p.contextExcerpt ? `Deferred during a prior session: ${String(p.contextExcerpt).slice(0, 200)}` : "",
+    status: "planned",
+  });
+  fs.rmSync(file, { force: true });
+  return { slug };
 }

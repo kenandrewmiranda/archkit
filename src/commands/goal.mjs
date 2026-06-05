@@ -22,11 +22,19 @@ import {
   completeGoal,
   abandonGoal,
   exitCriteriaOf,
+  verifyCommandOf,
   renderPayload,
   ensureGoalsLayout,
   goalsDir,
   doneDir,
+  writeGoalProposal,
+  listGoalProposals,
+  removeGoalProposal,
+  promoteGoalProposal,
+  countGoalProposals,
 } from "../lib/goals.mjs";
+import crypto from "node:crypto";
+import { detectTestCommand, runTests } from "../lib/test-runner.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { execFileSync } from "node:child_process";
 
@@ -62,17 +70,25 @@ export function runGoalIntake({ archDir, cwd, sourceAsk, goals }) {
     });
   }
   ensureGoalsLayout(archDir);
+  // Auto-detect the project's test command once and bake it onto every goal
+  // that doesn't override it — so completion gates on green tests by default
+  // (the agent can scope/override per goal via the goal's verifyCommand field).
+  const detected = detectTestCommand(cwd);
   const written = [];
   const payloads = [];
   for (const g of goals) {
     if (sourceAsk && !g.sourceAsk) g.sourceAsk = sourceAsk;
+    if (!g.verifyCommand && detected) g.verifyCommand = detected.command;
     const { slug, filepath } = writeGoal(archDir, g);
-    written.push({ slug, filepath: path.relative(cwd, filepath) });
+    written.push({ slug, filepath: path.relative(cwd, filepath), verifyCommand: g.verifyCommand || null });
     const { payload, length, withinBudget } = renderPayload(archDir, slug);
     payloads.push({ slug, payload, length, withinBudget });
   }
   return {
     written,
+    testGate: detected
+      ? `Detected test command "${detected.command}" (${detected.source}) — baked onto goals as verify-command. archkit_goal_complete will run it and refuse to complete on red.`
+      : `No test command detected (no package.json scripts.test). Goals have no test gate — set verifyCommand per goal to enable one.`,
     payloads,
     nextStep:
       payloads.length === 1
@@ -120,13 +136,45 @@ export function runGoalPayload({ archDir, slug }) {
   };
 }
 
-export function runGoalComplete({ archDir, slug, notes }) {
-  const result = completeGoal(archDir, slug, { notes });
+export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
+  // HARD test gate: if the goal declares a verify-command, run it and refuse to
+  // complete on red (or if it can't run). This is what makes "done" provably
+  // mean tests pass instead of trusting the agent's say-so. Escape hatch: a
+  // genuinely-obsolete goal should be archkit_goal_abandon'd, not completed.
+  const goal = loadGoal(archDir, slug);
+  if (!goal) {
+    const active = listGoals(archDir).map((g) => g.slug);
+    throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+      suggestion: active.length ? `Active goals: ${active.join(", ")}` : "No active goals — nothing to complete.",
+    });
+  }
+  const verifyCommand = verifyCommandOf(goal);
+  let extraMeta = {};
+  if (verifyCommand) {
+    const r = runTests({ cwd, command: verifyCommand });
+    if (!r.ran) {
+      throw archkitError("test_gate_unrunnable", `verify-command "${verifyCommand}" could not run: ${r.reason || "spawn failed"}`, {
+        suggestion: `Fix or correct the command in .arch/goals/${slug}.md, then retry archkit_goal_complete ${slug}. If the goal is obsolete, use archkit_goal_abandon ${slug}.`,
+      });
+    }
+    if (!r.passed) {
+      throw archkitError("test_gate_failed", `verify-command "${verifyCommand}" is RED${r.timedOut ? " (timed out)" : ` (exit ${r.exitCode})`} — goal NOT completed.`, {
+        suggestion: `Fix the failing tests, then retry archkit_goal_complete ${slug}. Tail:\n${r.outputTail || "(no output)"}`,
+      });
+    }
+    extraMeta = {
+      "tests-passed": true,
+      "tests-command": verifyCommand,
+      "tests-at": new Date().toISOString().slice(0, 10),
+    };
+  }
+  const result = completeGoal(archDir, slug, { notes, extraMeta });
   // Suggest the next goal's payload if any
   const remaining = listGoals(archDir);
   const next = remaining.find((g) => (g.meta.status || "planned") !== "done");
   return {
     ...result,
+    testGate: verifyCommand ? { command: verifyCommand, passed: true } : null,
     nextGoal: next
       ? {
           slug: next.slug,
@@ -188,12 +236,27 @@ export async function runGoalVerify({ archDir, cwd = process.cwd(), slug }) {
     reviewNote = r.filesNote;
   } catch (_) { reviewNote = "Staged review skipped (no git repo or no staged changes)."; }
 
-  const clean = stagedReview.errors === 0;
-  const nextStep = !clean
+  // Test gate (preview). The goal's verify-command is run here as a cheap dry
+  // run; archkit_goal_complete re-runs it as the authoritative gate. A red or
+  // failed-to-run command makes the goal "not clean" so the agent keeps working.
+  const verifyCommand = verifyCommandOf(goal);
+  let tests;
+  if (verifyCommand) {
+    const r = runTests({ cwd, command: verifyCommand });
+    tests = { command: verifyCommand, ran: r.ran, passed: r.passed, exitCode: r.exitCode, durationMs: r.durationMs, timedOut: r.timedOut, outputTail: r.outputTail, reason: r.reason };
+  }
+
+  const testsGreen = !verifyCommand || (tests?.ran && tests.passed);
+  const clean = stagedReview.errors === 0 && testsGreen;
+  const nextStep = stagedReview.errors > 0
     ? `Staged review has ${stagedReview.errors} error(s) — resolve them (archkit_review_staged for detail) before archkit_goal_complete ${slug}.`
-    : untouched.length === filesToTouch.length && filesToTouch.length > 0
-      ? `None of the ${filesToTouch.length} planned files are modified yet — the goal likely isn't done. Keep working or re-scope.`
-      : `Objective checks clean. Confirm each of the ${exitCriteria.length} exit-criterion below holds, then call archkit_goal_complete ${slug}.`;
+    : verifyCommand && !tests.ran
+      ? `Couldn't run verify-command "${verifyCommand}" (${tests.reason || "spawn failed"}). Fix or correct the command in .arch/goals/${slug}.md before archkit_goal_complete ${slug}.`
+      : verifyCommand && !tests.passed
+        ? `verify-command "${verifyCommand}" is RED${tests.timedOut ? " (timed out)" : ` (exit ${tests.exitCode})`} — fix the failing tests before archkit_goal_complete ${slug}. archkit_goal_complete will re-run it and refuse on red.`
+        : untouched.length === filesToTouch.length && filesToTouch.length > 0
+          ? `None of the ${filesToTouch.length} planned files are modified yet — the goal likely isn't done. Keep working or re-scope.`
+          : `Objective checks clean${verifyCommand ? " (tests green)" : ""}. Confirm each of the ${exitCriteria.length} exit-criterion below holds, then call archkit_goal_complete ${slug}.`;
 
   return {
     slug,
@@ -204,8 +267,91 @@ export async function runGoalVerify({ archDir, cwd = process.cwd(), slug }) {
     filesToTouchNote: filesToTouch.length === 0 ? "Goal declared no files-to-touch — skipping the file-modification check." : undefined,
     stagedReview,
     reviewNote,
+    tests,
+    testsNote: verifyCommand ? undefined : "Goal has no verify-command — no test gate. Add one to .arch/goals/" + slug + ".md to gate completion on green tests.",
     clean,
     nextStep,
+  };
+}
+
+// Explicitly stash a follow-up the agent noticed mid-session as a PROPOSED goal
+// (not a real goal). Richer than the Stop-hook regex draft because the agent
+// supplies a real title + exit-criteria. Lands in .arch/goals/proposed/.
+export function runGoalDefer({ archDir, title, why, exitCriteria, context }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  if (!title || !title.trim()) {
+    throw archkitError("invalid_input", "title is required", { suggestion: "Pass a one-line title for the follow-up." });
+  }
+  const hash = crypto.createHash("sha1").update(`defer::${title.trim()}`).digest("hex").slice(0, 12);
+  const created = writeGoalProposal(archDir, {
+    hash,
+    title: title.trim(),
+    why: why || "",
+    exitCriteria: Array.isArray(exitCriteria) ? exitCriteria : [],
+    contextExcerpt: context || "",
+    patternName: null,
+    source: "goal-defer",
+  });
+  const totalPending = countGoalProposals(archDir);
+  return {
+    proposed: created,
+    hash,
+    duplicate: !created,
+    totalPending,
+    nextStep: created
+      ? `Stashed "${title.trim()}" as a follow-up proposal (${totalPending} pending). It is NOT a goal yet — at session end, run /mcp__archkit__goal_review to promote it (or dismiss). Keep working the current goal.`
+      : `An identical follow-up is already pending (${totalPending} total). No duplicate written.`,
+  };
+}
+
+// Promote proposed follow-ups into planned goals. Pass hashes:[...] for a
+// selection or all:true for everything. The /mcp__archkit__goal_review prompt
+// drives the user-facing multi-select that decides what gets passed here.
+export function runGoalPromote({ archDir, hashes, all }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  const pending = listGoalProposals(archDir);
+  if (pending.length === 0) {
+    return { promoted: [], notFound: [], nextStep: "No follow-up proposals pending in .arch/goals/proposed/. Nothing to promote." };
+  }
+  const targets = all ? pending.map((p) => p.hash) : (Array.isArray(hashes) ? hashes : []);
+  if (targets.length === 0) {
+    throw archkitError("invalid_input", "pass hashes:[...] or all:true", {
+      suggestion: `Pending: ${pending.map((p) => `${p.hash} (${p.title})`).join("; ")}`,
+    });
+  }
+  const promoted = [];
+  const notFound = [];
+  for (const h of targets) {
+    const r = promoteGoalProposal(archDir, h);
+    if (r) promoted.push({ hash: h, slug: r.slug });
+    else notFound.push(h);
+  }
+  const remaining = countGoalProposals(archDir);
+  return {
+    promoted,
+    notFound,
+    remaining,
+    nextStep: promoted.length
+      ? `Promoted ${promoted.length} proposal(s) to planned goals: ${promoted.map((p) => p.slug).join(", ")}. ${remaining} still pending. Run /clear then /mcp__archkit__goal_next to start the first one.`
+      : `No proposals matched the given hashes. ${remaining} still pending.`,
+  };
+}
+
+// Drop proposed follow-ups without promoting them. hashes:[...] or all:true.
+export function runGoalDismiss({ archDir, hashes, all }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  const pending = listGoalProposals(archDir);
+  const targets = all ? pending.map((p) => p.hash) : (Array.isArray(hashes) ? hashes : []);
+  if (targets.length === 0 && !all) {
+    throw archkitError("invalid_input", "pass hashes:[...] or all:true", {
+      suggestion: pending.length ? `Pending: ${pending.map((p) => `${p.hash} (${p.title})`).join("; ")}` : "No proposals pending.",
+    });
+  }
+  const dismissed = targets.filter((h) => removeGoalProposal(archDir, h));
+  return {
+    dismissed,
+    remaining: countGoalProposals(archDir),
+    nextStep: `Dismissed ${dismissed.length} follow-up proposal(s). ${countGoalProposals(archDir)} still pending.`,
   };
 }
 
@@ -291,10 +437,12 @@ async function main() {
         if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal complete <slug>" });
         const notesIdx = args.indexOf("--notes");
         const notes = notesIdx > 0 ? (args[notesIdx + 1] || "") : "";
-        const out = runGoalComplete({ archDir, slug, notes });
+        const out = runGoalComplete({ archDir, cwd: process.cwd(), slug, notes });
         if (isJson) { console.log(JSON.stringify(out)); break; }
         commandBanner("archkit goal", `completed ${slug}`);
-        console.log(`\n  ${C.green}${I.check}${C.reset} archived: ${out.archivedAt}\n`);
+        console.log(`\n  ${C.green}${I.check}${C.reset} archived: ${out.archivedAt}`);
+        if (out.testGate) console.log(`  ${C.green}${I.check}${C.reset} test gate: ${out.testGate.command} passed`);
+        console.log("");
         if (out.nextGoal) {
           console.log(`  ${C.bold}Next goal:${C.reset} ${out.nextGoal.slug}`);
           console.log(`  ${out.nextGoal.instruction}`);

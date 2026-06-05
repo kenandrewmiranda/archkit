@@ -13,7 +13,7 @@ import { archkitError } from "../lib/errors.mjs";
 export async function startMcpServer() {
   const server = new McpServer({
     name: "archkit",
-    version: "1.8.0",
+    version: "1.9.0",
   });
 
   for (const [toolName, def] of Object.entries(tools)) {
