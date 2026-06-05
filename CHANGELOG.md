@@ -25,6 +25,12 @@ Hardens the Clear Goal Run loop on both ends: a **test gate** so "done" provably
 
 - README "Available tools" updated to **28**, documenting `archkit_goal_defer` / `archkit_goal_promote` / `archkit_goal_dismiss` and the `/mcp__archkit__goal_review` prompt; the CGR section gains "The test gate" and "Deferred-goal proposals" subsections.
 
+## v1.8.3 — 2026-06-04
+
+### Fixed — marketplace `install <slug>@<version>` ignored the pinned version
+
+- **`apiRequest()` in `src/lib/marketplace.mjs` only appended query params for `GET`**, so the POST download caller silently dropped its `version` param — `archkit install <slug>@1.2.0` always fetched the latest release instead of the pinned one. The `/api/cli/*` surface reads params from the query string for both verbs (`GET /search?q=…` and `POST /configs/:slug/download?version=…`), so params are now appended for any method.
+
 ## v1.8.2 — 2026-05-30
 
 ### Fixed — drift false-positive orphaned-skill findings in workspace monorepos
