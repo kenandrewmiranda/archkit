@@ -9,3 +9,6 @@ node_modules/
 .archkit-progress.json
 .archkit-config.json
 .arch/goals/.loop-state.json
+
+# Local Claude Code hooks config (machine-specific absolute paths)
+.claude/settings.json

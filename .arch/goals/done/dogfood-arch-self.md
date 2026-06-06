@@ -1,7 +1,7 @@
 ---
 slug: dogfood-arch-self
 title: Dogfood archkit's own .arch/ so warmup + doctor pass
-status: in-progress
+status: done
 created: 2026-06-06
 exit-criteria:
   - Decide whether archkit's .arch/ should be version-controlled; if yes, remove `.arch` from .gitignore and commit the built spec, and log the choice as an ADR via archkit_log_decision
@@ -9,6 +9,7 @@ exit-criteria:
   - Author at least 2-3 real skills (WRONG/RIGHT/WHY) for archkit's own conventions (e.g. the ARCHKIT_RUN CLI-dispatch pattern, the MCP nextStep / silent-success contract)
   - `archkit doctor` reports .arch/ as load-bearing — no D-INTENT empty-skill or D-HOOKS blockers of note
   - npm test passes
+  - Generate graph clusters + INDEX reflecting archkit's real structure (src/commands, src/lib, src/mcp, bin/) so `archkit resolve warmup` returns pass: true with no blockers (W003 graph clusters pass)
 - Generate graph clusters + INDEX reflecting archkit's real structure (src/commands, src/lib, src/mcp, bin/) so `archkit resolve warmup` returns pass: true with no blockers (W003 graph clusters pass)
 files-to-touch:
   - .gitignore
@@ -22,7 +23,13 @@ depends-on:
 verify-command: npm test
 source-ask: (1) add a CGR goal to build out archkit's own .arch/ so the warmup/utilization metric is meaningful; (2) validate that nodes/graph and the arch system get refreshed after a goal completes so the next iteration is up to date — both after 1.9 ships.
 started: 2026-06-06
+completed: 2026-06-06
+completion-notes: Built a real load-bearing .arch/: 4 graph clusters (cli/hooks/lib/mcp), INDEX with 4 nodes + 5 cross-refs, 3 skills with 9 gotchas, BOUNDARIES BAN, 5 reserved words. Un-gitignored .arch/, logged ADR 0001, committed. warmup pass (0 warnings), doctor 6/6, npm test 43/43.
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-06-06
 ---
+
 
 
 # Dogfood archkit's own .arch/ so warmup + doctor pass
