@@ -17,7 +17,7 @@ archkit compiles your architecture into a machine-readable blueprint — graphs,
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-1.8.0-cyan.svg)]()
+[![Version](https://img.shields.io/badge/version-1.9.0-cyan.svg)]()
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-1-lightgrey.svg)]()
 
 [Website](https://thearchkit.com) · [Marketplace](https://market.thearchkit.com) · [Issues](https://github.com/kenandrewmiranda/archkit/issues)
@@ -49,12 +49,13 @@ archkit solves this by compiling your architecture into structured files the age
 ## Highlights
 
 - **Clear Goal Run (CGR)** *(v1.7+)* — decompose a sprawling ask into discrete, one-per-fresh-context goals, then advance the queue with a single keystroke. A goal-aware Stop hook keeps the agent on the current goal until its exit-criteria are met. [See below](#clear-goal-run-cgr).
-- **Full MCP server** — **25 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **3 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **Full MCP server** — **28 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **4 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **CGR test gate + deferred-goal proposals** *(v1.9)* — every goal carries an auto-detected `verify-command`, and `archkit_goal_complete` refuses to finish a goal whose tests are red. Follow-up work spotted mid-goal is captured as a **proposed** goal (`archkit_goal_defer` + Stop-hook auto-drafting) and reviewed later instead of lost. [See below](#the-test-gate-v19).
 - **Continuous-guardrail hooks** *(v1.6+)* — SessionStart, UserPromptSubmit, PostToolUse, and a goal-aware Stop hook fire every turn so archkit stays in working memory even on long sessions. Self-installing via `archkit_install_hooks` or the plugin.
 - **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
 - **Live runtime signal** — `preflight` surfaces recent commits, scoped gotchas, active drift, and **related ADRs** per feature/layer, so agents see current state and prior decisions, not yesterday's snapshot.
 - **Institutional memory** — log architectural decisions (`archkit_log_decision`) and read them back (`archkit_decisions_search`) so settled choices survive context resets.
-- **Lean footprint** — 1 runtime dependency (`inquirer`), 79 source modules, 40 integration test suites.
+- **Lean footprint** — 1 runtime dependency (`inquirer`), 82 source modules, 43 integration test suites.
 
 ---
 
@@ -103,7 +104,7 @@ Then restart Claude Code (or run `/plugin`) so the MCP server, four guardrail ho
 
 The plugin includes:
 
-- **MCP server** — all 25 `archkit_*` tools, the 3 CGR relay prompts, and `@archkit:` resources
+- **MCP server** — all 28 `archkit_*` tools, the 4 CGR relay prompts, and `@archkit:` resources
 - **Four guardrail hooks** — SessionStart, UserPromptSubmit, PostToolUse, and the goal-aware Stop hook (wired automatically; no `archkit_install_hooks` step needed)
 - **`/archkit-init` wizard** + bundled archetype skeletons — nine archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data) plus a generic fallback
 
