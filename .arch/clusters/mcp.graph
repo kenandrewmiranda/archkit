@@ -1,0 +1,7 @@
+--- mcp [feature,critical] ---
+McpServer   [C]   : src/mcp/server.mjs — registers tools/prompts/resources on the MCP SDK server | McpEntry → THIS → Tools
+Tools       [S]   : src/mcp/tools.mjs — the archkit_* tool handlers; each result carries a nextStep (silent-success) | McpServer → THIS → Commands
+Prompts     [S]   : src/mcp/prompts.mjs — CGR goal_next relay prompt | McpServer → THIS → Goals
+Resources   [S]   : src/mcp/resources.mjs — exposes .arch/ files as MCP resources | McpServer → THIS
+Envelope    [U]   : src/mcp/envelope.mjs — wraps command JSON into MCP tool-result envelopes | Tools → THIS
+---

@@ -1,0 +1,12 @@
+--- cli [feature] ---
+ArchkitBin  [C]   : bin/archkit.mjs CLI router — parses argv, sets ARCHKIT_RUN=1, lazy-imports the matching src/commands/* module | User → THIS → *Cmd
+GoalCmd     [S]   : src/commands/goal.mjs — CGR goal intake/list/show/complete/abandon over .arch/goals/ | ArchkitBin → THIS → Goals
+ResolveCmd  [S]   : src/commands/resolve.mjs (+resolve/*) — warmup, preflight, scaffold, lookup, verify-wiring | ArchkitBin → THIS → Parsers
+ReviewCmd   [S]   : src/commands/review.mjs (+review/*) — runs rule checks against staged/working files | ArchkitBin → THIS → Skills
+DoctorCmd   [S]   : src/commands/doctor.mjs — load-bearing gauge, aggregates warmup+drift+intent | ArchkitBin → THIS → ResolveCmd,DriftCmd
+DriftCmd    [S]   : src/commands/drift.mjs — INDEX↔source consistency findings | ArchkitBin → THIS → Parsers
+InitCmd     [C]   : src/commands/init.mjs (+wizard) — scaffolds .arch/ on greenfield repos | ArchkitBin → THIS → Generators
+MarketCmd   [S]   : src/commands/market.mjs (+market/*) — search/install community skill packs | ArchkitBin → THIS → Marketplace
+BoundaryCmd [S]   : src/commands/boundary.mjs — enforce/propose BAN layering rules | ArchkitBin → THIS → Parsers
+DecisionCmd [S]   : src/commands/decisions.mjs — log/search ADRs in .arch/decisions/ | ArchkitBin → THIS → Decisions
+---

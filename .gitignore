@@ -3,7 +3,9 @@ node_modules/
 *.log
 .env
 .env.*
-.arch/
-!examples/**/.arch/
+# archkit dogfoods its own .arch/ — it is version-controlled (see ADR).
+# Only the transient per-session review cache stays ignored.
+.arch/.last-review.json
 .archkit-progress.json
 .archkit-config.json
+.arch/goals/.loop-state.json

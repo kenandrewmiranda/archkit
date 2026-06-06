@@ -1,0 +1,11 @@
+--- lib [feature] ---
+Parsers     [U]   : src/lib/parsers.mjs — parseSystem/parseIndex/loadGraphCluster/parseGotchas, pure read of .arch/ | Commands → THIS
+Goals       [U]   : src/lib/goals.mjs — list/read/move CGR goal files, pure | GoalCmd,StopHook → THIS
+Generators  [U]   : src/lib/generators.mjs — genGraph/genSkillFile/genInfraGraph scaffolders, pure | InitCmd → THIS
+TestRunner  [U]   : src/lib/test-runner.mjs — detects + runs the project test command for the goal gate | GoalCmd → THIS
+Detectors   [U]   : src/lib/{decision,goal,import}-detector.mjs — heuristic detectors, pure | Commands,Hooks → THIS
+HooksStatus [U]   : src/lib/hooks-status.mjs — reports whether the guardrail hooks are wired | DoctorCmd → THIS
+Decisions   [U]   : src/lib/decisions.mjs — read/write ADR files under .arch/decisions/ | DecisionCmd → THIS
+Errors      [U]   : src/lib/errors.mjs — archkitError typed-error factory | AllCmds → THIS
+Shared      [U]   : src/lib/shared.mjs — findArchDir, color + icon constants | AllCmds → THIS
+---

@@ -1,0 +1,43 @@
+# lib-purity.skill
+
+## Meta
+pkg: archkit (internal convention)
+docs: src/lib/, SYSTEM.md
+updated: 2026-06-06
+
+## Use
+src/lib/ holds PURE libraries — parsers, generators, detectors, goal/test helpers.
+They take inputs and return data. Side effects (fs writes, process.exit, console output,
+process.env mutation, network) live in src/commands/ and bin/. This split is what lets
+the MCP layer and the CLI reuse the same library code without surprises.
+
+## Patterns
+- A lib function receives `archDir`/`cwd`/content as arguments — it does not call
+  findArchDir() or read process.argv itself.
+- Parsers (parsers.mjs) return plain objects; callers decide what to print.
+- package.json `version` and .claude-plugin/plugin.json `version` ship as ONE unit —
+  bump both together (scripts/check-version-sync.mjs enforces this on prepublish).
+
+## Gotchas
+WRONG: export function parseIndex(){ const c = fs.readFileSync(findArchDir()+"/INDEX.md"); ... }
+RIGHT: export function parseIndex(content){ ... }  // caller does the fs read + passes content in
+WHY: pure parsers are reused by warmup, drift, doctor, and the MCP tools; baking in fs/path lookups couples them to one call site and breaks tests that feed fixture strings.
+
+WRONG: bump package.json to 1.9.1 and ship
+RIGHT: bump BOTH package.json and .claude-plugin/plugin.json to 1.9.1 in the same commit
+WHY: the two version fields ship as one unit; check-version-sync.mjs fails prepublish if they drift, and the marketplace serves a mismatched plugin.
+
+WRONG: console.log(...) or process.exit(1) inside a src/lib/ helper
+RIGHT: return a result/throw archkitError; let the command module in src/commands/ print and exit
+WHY: libs run inside the MCP server too — stdout corrupts JSON-RPC and process.exit() kills the server.
+
+## Boundaries
+src/lib/ does NOT import from src/commands/ or bin/ (one-way dependency: commands → lib).
+If a lib needs orchestration, that orchestration belongs in the command, not the lib.
+
+## Snippets
+```js
+// src/commands/resolve/warmup.mjs — command does I/O, lib stays pure
+const systemContent = loadFile(archDir, "SYSTEM.md"); // command-side read
+const system = parseSystem(systemContent);            // pure lib, string in
+```

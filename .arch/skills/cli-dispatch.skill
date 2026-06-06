@@ -1,0 +1,48 @@
+# cli-dispatch.skill
+
+## Meta
+pkg: archkit (internal convention)
+docs: bin/archkit.mjs
+updated: 2026-06-06
+
+## Use
+Every CLI/MCP command lives in its own `src/commands/*.mjs` module. `bin/archkit.mjs`
+sets `process.env.ARCHKIT_RUN = "1"` and `await import(...)`s the matching module.
+Each command module self-fires `main()` only when it is the entry point.
+
+## Patterns
+- Entry guard at the bottom of every command module:
+  `if (import.meta.url === \`file://${process.argv[1]}\` || process.env.ARCHKIT_RUN) main();`
+- Export the JSON-returning core (`runXJson({ archDir, cwd })`) separately from `main()`
+  so the MCP layer and other commands can import it WITHOUT triggering CLI side effects.
+- When one command imports another's module, clear `ARCHKIT_RUN` first or the imported
+  module will run its own `main()` (see `loadDrift()` in src/commands/doctor.mjs).
+
+## Gotchas
+WRONG: export async function main(){...}  // then `await import("./drift.mjs")` from another command with ARCHKIT_RUN still set
+RIGHT: const prev = process.env.ARCHKIT_RUN; delete process.env.ARCHKIT_RUN; try { return await import("./drift.mjs"); } finally { if (prev !== undefined) process.env.ARCHKIT_RUN = prev; }
+WHY: command modules self-fire main() when ARCHKIT_RUN is set; importing one for its exports re-runs its CLI and double-executes / corrupts output.
+
+WRONG: if (import.meta.url === `file://${process.argv[1]}`) main();
+RIGHT: if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) main();
+WHY: bin/archkit.mjs dispatches via `await import()`, so import.meta.url never equals argv[1]; without the ARCHKIT_RUN clause the command never runs under the real CLI.
+
+WRONG: put the whole command body (fs writes, process.exit) directly in an exported function the MCP tool calls
+RIGHT: split a pure runXJson({archDir,cwd}) that returns data from main() which prints + process.exit()s
+WHY: MCP tool handlers reuse runXJson; if it calls process.exit() it kills the MCP server, and if it console.logs it corrupts the stdio JSON-RPC stream.
+
+## Boundaries
+This convention does NOT cover argument parsing libraries — archkit hand-rolls argv
+handling. Do not add yargs/commander; match the existing manual `process.argv` style.
+
+## Snippets
+```js
+// src/commands/foo.mjs
+export async function runFooJson({ archDir, cwd }) { /* pure: returns data */ }
+async function main() {
+  const result = await runFooJson({ archDir: findArchDir(), cwd: process.cwd() });
+  console.log(JSON.stringify(result));
+  process.exit(result.pass ? 0 : 1);
+}
+if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) main();
+```

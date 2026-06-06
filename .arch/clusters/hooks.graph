@@ -1,0 +1,8 @@
+--- hooks [feature,critical] ---
+SessionStart [M]  : bin/archkit-session-start.mjs — injects the .arch/ digest + MCP tool list at session open | ClaudeCode → THIS → ResolveCmd
+StopHook     [M!] : bin/archkit-stop-hook.mjs — CGR relay guard, blocks Stop until the active goal is completed | ClaudeCode → THIS → Goals
+PostToolUse  [M]  : bin/archkit-posttooluse-hook.mjs — review-on-edit after Write/Edit | ClaudeCode → THIS → ReviewCmd
+UserPrompt   [M]  : bin/archkit-userpromptsubmit-hook.mjs — intent nudges injected on user turns | ClaudeCode → THIS
+McpEntry     [C]  : bin/archkit-mcp.mjs — stdio MCP server entrypoint | ClaudeCode → THIS → McpServer
+ClaudeHook   [M]  : bin/archkit-claude-hook.mjs — legacy/aggregate hook shim | ClaudeCode → THIS
+---

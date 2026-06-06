@@ -1,0 +1,46 @@
+# mcp-contract.skill
+
+## Meta
+pkg: @modelcontextprotocol/sdk (archkit MCP layer)
+docs: src/mcp/tools.mjs
+updated: 2026-06-06
+
+## Use
+archkit exposes ~25 `archkit_*` MCP tools from src/mcp/tools.mjs. Each tool wraps a
+command's `runXJson()` and returns a structured result whose LAST word to the agent is
+a `nextStep` string. This is the silent-success contract: a tool that succeeds says
+nothing chatty — it returns data + the single next action the agent should take.
+
+## Patterns
+- Every tool result object MUST include a `nextStep: string` field (enforced by convention,
+  surfaced to the model). No `nextStep` = the agent doesn't know what to do next.
+- Tool handlers import `runXJson` from src/commands/* — never re-implement command logic.
+- All stdout on the MCP process is JSON-RPC; never console.log from a tool handler or a
+  library it calls. Use the typed `archkitError` for failures, not throw new Error.
+- Wrap the command JSON in the MCP envelope via src/mcp/envelope.mjs.
+
+## Gotchas
+WRONG: return { pass: true, findings: [] }
+RIGHT: return { pass: true, findings: [], nextStep: "Warmup green. Call archkit_resolve_preflight before editing a feature." }
+WHY: the silent-success contract requires every tool result to end with one concrete nextStep; without it the agent stalls or guesses.
+
+WRONG: console.log(`Loaded ${n} skills`)  // inside a tool handler or a lib it calls
+RIGHT: include the count in the returned JSON object; never write to stdout off the MCP path
+WHY: the MCP server speaks JSON-RPC over stdio — any stray stdout corrupts the framing and the client drops the connection.
+
+WRONG: throw new Error("no .arch dir")
+RIGHT: throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." })
+WHY: tool handlers serialize archkitError into a structured { error, suggestion } envelope; a bare Error loses the code and suggestion the agent needs.
+
+## Boundaries
+The MCP layer does NOT contain business logic — it only wires SDK registration
+(server.mjs) and adapts command JSON to envelopes. New behavior goes in src/commands/.
+
+## Snippets
+```js
+// src/mcp/tools.mjs
+server.tool("archkit_doctor", schema, async (args) => {
+  const result = await runDoctorJson({ archDir: findArchDir(), cwd: process.cwd() });
+  return envelope(result); // result already carries nextStep
+});
+```
