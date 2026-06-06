@@ -187,7 +187,10 @@ export async function runDoctorJson({ archDir, cwd }) {
 
   // Drift: surface aggregated count. Severity is warning unless drift has
   // missing-source findings, which block real work.
-  const driftFatal = drift.stale.filter(s => s.type === "missing-source");
+  // Only high-confidence missing-source findings block. In a workspace/monorepo
+  // layout drift downgrades source-path findings to low confidence (the path may
+  // resolve via a member dir or a path alias), so those stay warnings, not blockers.
+  const driftFatal = drift.stale.filter(s => s.type === "missing-source" && s.confidence !== "low");
   if (drift.stale.length > 0) {
     const detail = Object.entries(drift.summary.byType)
       .map(([t, n]) => `${t}:${n}`).join(", ");
@@ -318,7 +321,7 @@ export async function runDoctorJson({ archDir, cwd }) {
       status: "pass",
       detail: hooks.via === "plugin"
         ? "Provided by the enabled archkit plugin."
-        : "All four guardrail hooks wired in settings.json.",
+        : "All guardrail hooks wired in settings.json.",
     });
   } else {
     checks.push({

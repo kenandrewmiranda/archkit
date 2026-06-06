@@ -11,6 +11,42 @@ export function loadFile(archDir, ...segments) {
 }
 
 /**
+ * Create a request-scoped reader over an .arch/ directory.
+ *
+ * Memoizes file reads and the SYSTEM.md / INDEX.md parses for the lifetime of a
+ * SINGLE warmup/drift invocation, so redundant re-parsing within one call is
+ * eliminated (e.g. drift previously parsed INDEX.md twice per call).
+ *
+ * Per ADR 0002 the cache MUST be call-scoped, NEVER module-global: callers
+ * create a fresh reader per command invocation so that successive calls in the
+ * long-running MCP process always reflect current on-disk .arch/ state. This is
+ * the contract pinned by tests/cgr-context-refresh/ — a module-level singleton
+ * here would reintroduce cross-goal staleness.
+ */
+export function createArchReader(archDir) {
+  const files = new Map();
+  const parses = new Map();
+
+  const read = (...segments) => {
+    const key = segments.join("/");
+    if (!files.has(key)) files.set(key, loadFile(archDir, ...segments));
+    return files.get(key);
+  };
+
+  const memoParse = (key, fn) => {
+    if (!parses.has(key)) parses.set(key, fn());
+    return parses.get(key);
+  };
+
+  return {
+    archDir,
+    read,
+    system: () => memoParse("SYSTEM.md", () => parseSystem(read("SYSTEM.md"))),
+    index: () => memoParse("INDEX.md", () => parseIndex(read("INDEX.md"))),
+  };
+}
+
+/**
  * Parse SYSTEM.md content into structured data.
  * Returns { rules, reservedWords, pattern, convention }.
  */

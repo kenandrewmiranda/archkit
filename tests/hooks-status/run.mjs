@@ -11,11 +11,13 @@ import { strict as assert } from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 import {
   detectArchkitHooks,
   addGuardrailHooks,
   renderGuardrailHooks,
+  guardrailHookCommand,
   ARCHKIT_GUARDRAIL_HOOKS,
 } from "../../src/lib/claude-settings.mjs";
 import { gatherHooksStatus } from "../../src/lib/hooks-status.mjs";
@@ -65,7 +67,7 @@ test("detectArchkitHooks returns empty set for settings with no hooks", () => {
 
 console.log("\n  hooks-status — addGuardrailHooks");
 
-test("addGuardrailHooks adds all four into empty settings", () => {
+test("addGuardrailHooks adds the full guardrail set into empty settings", () => {
   const { settings, added } = addGuardrailHooks({});
   assert.deepEqual(added.sort(), [...EVENTS].sort());
   assert.deepEqual([...detectArchkitHooks(settings)].sort(), [...EVENTS].sort());
@@ -91,6 +93,76 @@ test("renderGuardrailHooks includes the PostToolUse matcher", () => {
   const { hooks } = renderGuardrailHooks();
   assert.ok(hooks.PostToolUse[0].matcher.includes("mcp__archkit__"), "matcher carried through");
   assert.equal(hooks.SessionStart[0].matcher, undefined, "non-matcher hooks have no matcher key");
+});
+
+console.log("\n  hooks-status — portable command forms");
+
+// Pull every hook command string out of a { hooks: {...} } object.
+function allCommands(hooks) {
+  const out = [];
+  for (const event of Object.keys(hooks || {})) {
+    for (const group of hooks[event] || []) {
+      for (const h of group.hooks || []) out.push(String(h.command || ""));
+    }
+  }
+  return out;
+}
+
+// A hook command is portable iff it carries no absolute, machine-specific
+// filesystem path: no home dir, no leading /Users|/home|... unix path, no
+// Windows drive path. The two allowed forms are a bare bin name and the
+// `node $CLAUDE_PROJECT_DIR/bin/<bin>.mjs` form ($CLAUDE_PROJECT_DIR is a
+// placeholder Claude Code expands at hook time, not a literal absolute path).
+function assertPortable(cmd) {
+  assert.ok(!cmd.includes(os.homedir()), `command must not embed the home dir: ${cmd}`);
+  assert.ok(!/(^|\s)\/(Users|home|root|opt|usr|var|private|tmp|Applications)\//.test(cmd),
+    `command must not embed an absolute unix path: ${cmd}`);
+  assert.ok(!/[A-Za-z]:\\/.test(cmd), `command must not embed a Windows drive path: ${cmd}`);
+}
+
+test("guardrailHookCommand falls back to the bare bin without projectDir", () => {
+  assert.equal(guardrailHookCommand("archkit-stop-hook"), "archkit-stop-hook");
+  assert.equal(guardrailHookCommand("archkit-stop-hook", { projectDir: "/nope/missing" }),
+    "archkit-stop-hook", "non-existent projectDir/bin falls back to bare bin");
+});
+
+test("guardrailHookCommand uses $CLAUDE_PROJECT_DIR when the bin lives in the project", () => {
+  withProject(({ root }) => {
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(root, "bin", "archkit-stop-hook.mjs"), "// stub\n");
+    const cmd = guardrailHookCommand("archkit-stop-hook", { projectDir: root });
+    assert.equal(cmd, "node $CLAUDE_PROJECT_DIR/bin/archkit-stop-hook.mjs");
+    assertPortable(cmd);
+  });
+});
+
+test("renderGuardrailHooks emits zero absolute filesystem paths (bare-bin form)", () => {
+  for (const cmd of allCommands(renderGuardrailHooks().hooks)) assertPortable(cmd);
+});
+
+test("renderGuardrailHooks emits zero absolute paths with projectDir ($CLAUDE_PROJECT_DIR form)", () => {
+  withProject(({ root }) => {
+    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+    for (const spec of ARCHKIT_GUARDRAIL_HOOKS) {
+      fs.writeFileSync(path.join(root, "bin", `${spec.bin}.mjs`), "// stub\n");
+    }
+    const cmds = allCommands(renderGuardrailHooks({ projectDir: root }).hooks);
+    assert.equal(cmds.length, ARCHKIT_GUARDRAIL_HOOKS.length);
+    for (const cmd of cmds) {
+      assert.ok(cmd.includes("$CLAUDE_PROJECT_DIR"), `expected portable form, got: ${cmd}`);
+      assertPortable(cmd);
+    }
+  });
+});
+
+test("this repo's committed .claude/settings.json contains no absolute paths", () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const settingsPath = path.join(repoRoot, ".claude", "settings.json");
+  if (!fs.existsSync(settingsPath)) return; // tolerated on clones without the dogfood config
+  const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  const cmds = allCommands(settings.hooks);
+  assert.ok(cmds.length > 0, "settings.json should wire at least one hook");
+  for (const cmd of cmds) assertPortable(cmd);
 });
 
 console.log("\n  hooks-status — gatherHooksStatus");

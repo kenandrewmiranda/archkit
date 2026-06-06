@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/archkit-session-start.mjs",
+            "command": "node $CLAUDE_PROJECT_DIR/bin/archkit-session-start.mjs",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/archkit-stop-hook.mjs",
+            "command": "node $CLAUDE_PROJECT_DIR/bin/archkit-stop-hook.mjs",
             "timeout": 8
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/archkit-pretooluse-hook.mjs",
+            "command": "node $CLAUDE_PROJECT_DIR/bin/archkit-pretooluse-hook.mjs",
             "timeout": 5
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/archkit-posttooluse-hook.mjs",
+            "command": "node $CLAUDE_PROJECT_DIR/bin/archkit-posttooluse-hook.mjs",
             "timeout": 8
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/archkit-userpromptsubmit-hook.mjs",
+            "command": "node $CLAUDE_PROJECT_DIR/bin/archkit-userpromptsubmit-hook.mjs",
             "timeout": 5
           }
         ]

@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.9.1 — 2026-06-06
+
+Hardens the CGR guardrail surface and tightens the spec-derivation hot path. Five goals shipped as one unit: a **PreToolUse guardrail** (the flagship — block boundary violations *before* the edit lands), **portable/committable hook config**, **workspace-aware drift precision**, **request-scoped parse caching**, and **test coverage for the CGR relay prompts**. Purely additive.
+
+### Added — PreToolUse guardrail (flagship)
+
+- **`bin/archkit-pretooluse-hook.mjs`** (fail-open) backed by pure **`src/lib/pretooluse-eval.mjs`**: evaluates `Edit`/`Write`/`MultiEdit` *before* the write, reconstructs the post-edit file content, and blocks only **newly-introduced** imports that violate a `BOUNDARIES.md` BAN rule — returning a deny envelope with an actionable reason. Pre-existing violations and non-import edits pass through untouched (no false blocks). Registered as the 5th guardrail hook in `ARCHKIT_GUARDRAIL_HOOKS`, wired into `hooks/hooks.json` and emitted in portable form by `archkit_install_hooks`. This turns archkit from a PostToolUse reviewer into an up-front guardrail. New suite `tests/pretooluse-hook/` (banned→deny, clean→allow, precision, fail-open).
+
+### Added — portable, committable hook config
+
+- **Hooks now emit a portable command form** — `node $CLAUDE_PROJECT_DIR/bin/archkit-*.mjs` when archkit's bins live in the project tree (else the bare bin resolved via PATH), never a machine-specific absolute `/Users/...` path. `projectDir` is threaded through `renderGuardrailHooks`/`addGuardrailHooks`. `.claude/settings.json` is now **committable and shareable** across a team — un-gitignored (only `.claude/settings.local.json` stays per-machine). New portable-command assertions in `tests/hooks-status/`.
+
+### Changed — drift precision in workspaces
+
+- **Drift findings now carry a `confidence` level.** In workspace/monorepo layouts (detected via `resolveWorkspaceGlobs`), the source-tree-sensitive checks (`orphaned-skill`, `missing-source`, `missing-file`) are downgraded to `confidence:"low"` so they read as hints, not hard errors — they no longer drive the CLI exit code or the doctor's blocker escalation. `.arch/`-internal consistency checks (`orphaned-graph`, `orphaned-index-node`, `name-mismatch`) stay `high`. Drift summary now reports `byConfidence`. Regression test reproduces a nested-member orphaned-skill false-positive and asserts the downgrade.
+
+### Changed — request-scoped parse caching
+
+- **`createArchReader()`** (`src/lib/parsers.mjs`): a request-scoped memoizing reader (file reads + `SYSTEM.md`/`INDEX.md` parses), created fresh per warmup/drift invocation — **never** module-global (per ADR 0002, so successive calls in the long-running MCP server still reflect on-disk `.arch/` changes). Eliminates drift's duplicate `INDEX.md` parse by sharing one reader between `detectFindings` and the silent-success scan. New `tests/cgr-context-refresh/` assertion proves each `.arch` file is read+parsed exactly once per invocation.
+
+### Tests
+
+- CGR relay prompts (`goal_next`/`resume`/`review`/`status`) gain coverage in `tests/mcp-server/` — asserting `prompts/list` registration, the `goal_next` payload shape (relay header + rendered payload + in-progress side effect), and the empty-queue notice. Suite total: **45/45 green**.
+
 ## v1.9.0 — 2026-06-04
 
 Hardens the Clear Goal Run loop on both ends: a **test gate** so "done" provably means tests pass, and **deferred-goal proposals** so follow-up work spotted mid-goal is captured and reviewed instead of lost. Adds 3 MCP tools (bringing the count to 28) and 1 MCP prompt. Purely additive — projects without a test script skip the gate gracefully, and the propose/review flow is opt-in.

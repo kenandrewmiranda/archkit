@@ -63,10 +63,13 @@ function makeArchProject(dir, skillIds) {
   }
 }
 
-function orphanedSkills(dir) {
+function driftJson(dir) {
   const r = tryRun(["drift", "--json"], { cwd: dir });
-  const result = JSON.parse(r.stdout);
-  return result.stale.filter((f) => f.type === "orphaned-skill");
+  return JSON.parse(r.stdout);
+}
+
+function orphanedSkills(dir) {
+  return driftJson(dir).stale.filter((f) => f.type === "orphaned-skill");
 }
 
 console.log("\n\x1b[1m=== Drift Workspace-Monorepo Tests ===\x1b[0m\n");
@@ -165,6 +168,80 @@ test("non-workspace single-package repo still flags a missing dep (regression)",
     },
     (dir) => {
       assert.equal(orphanedSkills(dir).length, 1, "stripe should be orphaned");
+    }
+  );
+});
+
+// ─── Confidence-level precision (drift-precision-workspace) ───────────────────
+//
+// collectDeps only enumerates immediate children of a workspace glob, so a dep
+// declared in a NESTED member (packages/group/web) that `packages/*` doesn't
+// reach used to surface as a hard orphaned-skill false positive. We can't tell
+// "genuinely absent" from "in a member we couldn't enumerate", so in any
+// workspace layout these findings are downgraded to confidence:"low" instead of
+// firing as errors. This reproduces that prior false positive and asserts the
+// downgrade.
+
+test("workspace false-positive (dep in un-enumerated nested member) is downgraded to low confidence", () => {
+  withProject(
+    (dir) => {
+      makeArchProject(dir, ["hono"]);
+      writeJson(path.join(dir, "package.json"), {
+        name: "monorepo", private: true, devDependencies: { turbo: "^2" },
+      });
+      // glob only reaches immediate children of packages/, NOT packages/group/*.
+      fs.writeFileSync(path.join(dir, "pnpm-workspace.yaml"),
+        'packages:\n  - "packages/*"\n');
+      // hono lives one level deeper than the glob enumerates.
+      writeJson(path.join(dir, "packages", "group", "web", "package.json"), {
+        name: "web", dependencies: { hono: "^4" },
+      });
+    },
+    (dir) => {
+      const found = orphanedSkills(dir);
+      assert.equal(found.length, 1, `expected the finding to still surface, got: ${JSON.stringify(found)}`);
+      assert.equal(found[0].confidence, "low",
+        `workspace orphaned-skill must be downgraded to low confidence, got: ${found[0].confidence}`);
+    }
+  );
+});
+
+test("non-workspace genuinely-missing dep stays HIGH confidence (no blanket downgrade)", () => {
+  withProject(
+    (dir) => {
+      makeArchProject(dir, ["stripe"]);
+      writeJson(path.join(dir, "package.json"), {
+        name: "monorepo", dependencies: { hono: "^4" },
+      });
+    },
+    (dir) => {
+      const found = orphanedSkills(dir);
+      assert.equal(found.length, 1);
+      assert.equal(found[0].confidence, "high",
+        `single-package orphaned-skill must stay high confidence, got: ${found[0].confidence}`);
+    }
+  );
+});
+
+test("drift --json summary reports byConfidence breakdown", () => {
+  withProject(
+    (dir) => {
+      makeArchProject(dir, ["stripe"]);
+      writeJson(path.join(dir, "package.json"), {
+        name: "monorepo", private: true, workspaces: ["apps/*"],
+        devDependencies: { turbo: "^2" },
+      });
+      writeJson(path.join(dir, "apps", "api", "package.json"), {
+        name: "api", dependencies: { hono: "^4" },
+      });
+    },
+    (dir) => {
+      const result = driftJson(dir);
+      assert.ok(result.summary.byConfidence, "summary.byConfidence missing");
+      assert.equal(result.summary.byConfidence.low, 1,
+        `expected 1 low-confidence finding in workspace, got: ${JSON.stringify(result.summary.byConfidence)}`);
+      assert.match(result.nextStep, /low-confidence/i,
+        "nextStep should explain the low-confidence workspace findings");
     }
   );
 });

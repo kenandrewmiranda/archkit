@@ -3,8 +3,8 @@
 import fs from "fs";
 import path from "path";
 import { findArchDir } from "../lib/shared.mjs";
-import { loadFile, parseIndex, parseSystem } from "../lib/parsers.mjs";
-import { collectDeps } from "../lib/workspace-deps.mjs";
+import { createArchReader } from "../lib/parsers.mjs";
+import { collectDeps, resolveWorkspaceGlobs } from "../lib/workspace-deps.mjs";
 import * as log from "../lib/logger.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -13,12 +13,11 @@ function banner() {
   commandBanner("arch-drift", "Detect stale .arch/ files and architectural drift");
 }
 
-function detectFindings(archDir, cwd) {
+function detectFindings(archDir, cwd, arch = createArchReader(archDir)) {
   const findings = [];
 
   // 1. Check INDEX.md nodes against actual .graph files
-  const indexContent = loadFile(archDir, "INDEX.md");
-  const index = indexContent ? parseIndex(indexContent) : { nodeCluster: {}, skillFiles: {} };
+  const index = arch.index();
 
   const clustersDir = path.join(archDir, "clusters");
   const graphFiles = fs.existsSync(clustersDir)
@@ -104,7 +103,7 @@ function detectFindings(archDir, cwd) {
   //    comparison so the parenthetical doesn't break the substring check.
   //    Also strip an npm scope from package.json (@scope/foo → foo) so a
   //    scoped package matches an unscoped SYSTEM.md name.
-  const systemContent = loadFile(archDir, "SYSTEM.md");
+  const systemContent = arch.read("SYSTEM.md");
   if (systemContent) {
     const appNameMatch = systemContent.match(/^## App:\s*(.+)$/m);
     try {
@@ -124,21 +123,45 @@ function detectFindings(archDir, cwd) {
     } catch {}
   }
 
+  // Confidence tagging — workspace/monorepo precision.
+  // Workspace layouts split dependencies across member package.jsons (apps/*,
+  // packages/*) and resolve source paths through path aliases, so the checks
+  // that compare .arch/ against the dependency manifest or the source tree are
+  // inherently less certain there: a "missing" dep may live in a member that
+  // collectDeps couldn't enumerate (nested/recursive globs, catalogs), and a
+  // "missing" source path may resolve via a tsconfig/jsconfig alias. In a
+  // workspace we downgrade those three finding types to "low" confidence so
+  // they read as hints rather than hard errors — and so CI gates and doctor's
+  // blocker escalation don't false-fire on monorepo layouts. The .arch/-internal
+  // consistency checks (orphaned-graph, orphaned-index-node, name-mismatch) do
+  // not depend on monorepo layout, so they stay "high".
+  const isWorkspace = resolveWorkspaceGlobs(cwd).length > 0;
+  const WORKSPACE_SENSITIVE = new Set(["orphaned-skill", "missing-source", "missing-file"]);
+  for (const f of findings) {
+    f.confidence = isWorkspace && WORKSPACE_SENSITIVE.has(f.type) ? "low" : "high";
+  }
+
   return findings;
 }
 
 export async function runDriftJson({ archDir, cwd = process.cwd() }) {
   if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
 
-  const stale = detectFindings(archDir, cwd);
+  // One request-scoped reader for the whole invocation: detectFindings and the
+  // silent-success scan below share the same memoized INDEX.md parse (ADR 0002 —
+  // call-scoped, so successive calls still see on-disk changes).
+  const arch = createArchReader(archDir);
+  const stale = detectFindings(archDir, cwd, arch);
   const summary = {
     total: stale.length,
     byType: stale.reduce((acc, s) => { acc[s.type] = (acc[s.type] || 0) + 1; return acc; }, {}),
+    byConfidence: stale.reduce((acc, s) => { const c = s.confidence || "high"; acc[c] = (acc[c] || 0) + 1; return acc; }, {}),
   };
+  const lowOnly = stale.length > 0 && stale.every(s => s.confidence === "low");
 
   // Silent-success indicator: name what was scanned even when no drift is found.
-  const indexContent = loadFile(archDir, "INDEX.md");
-  const index = indexContent ? parseIndex(indexContent) : { nodeCluster: {} };
+  // Reuses the reader's memoized INDEX.md parse — no second parse this call.
+  const index = arch.index();
   const clustersDir = path.join(archDir, "clusters");
   const skillsDir = path.join(archDir, "skills");
   const scanned = {
@@ -151,7 +174,9 @@ export async function runDriftJson({ archDir, cwd = process.cwd() }) {
     : undefined;
   const nextStep = stale.length === 0
     ? `No drift to fix. Re-run after refactors or dependency removals.`
-    : `Resolve drift: missing-source/missing-file → restore the file or update INDEX.md basePath; orphaned-index-node → add the .graph or remove the INDEX.md entry; orphaned-skill → remove the .skill or re-add the dep.`;
+    : lowOnly
+      ? `All ${stale.length} finding(s) are low-confidence (workspace/monorepo layout) — review only. They false-fire when a dep lives in a workspace member archkit couldn't enumerate, or a source path resolves via a path alias. Safe to ignore if so.`
+      : `Resolve drift: missing-source/missing-file → restore the file or update INDEX.md basePath; orphaned-index-node → add the .graph or remove the INDEX.md entry; orphaned-skill → remove the .skill or re-add the dep. Low-confidence findings (workspace layouts) are hints, not hard errors.`;
 
   return { stale, summary, scanned, staleNote, nextStep };
 }
@@ -187,16 +212,25 @@ async function main() {
   log.resolve("Scanning for architectural drift...");
 
   const findings = detectFindings(archDir, process.cwd());
+  const high = findings.filter(f => f.confidence !== "low");
+  const low = findings.filter(f => f.confidence === "low");
 
   if (findings.length === 0) {
     log.ok("No drift detected — .arch/ files are consistent");
   } else {
-    findings.forEach(f => log.warn(`${f.type}: ${f.detail}`));
-    log.error(`${findings.length} drift issue${findings.length > 1 ? "s" : ""} detected`);
+    high.forEach(f => log.warn(`${f.type}: ${f.detail}`));
+    // Low-confidence findings (workspace/monorepo layouts) are surfaced as hints,
+    // not warnings, and don't drive the exit code so CI gates don't false-fire.
+    low.forEach(f => log.system(`${f.type} (low confidence — workspace layout): ${f.detail}`));
+    if (high.length > 0) {
+      log.error(`${high.length} drift issue${high.length > 1 ? "s" : ""} detected`);
+    } else {
+      log.ok(`No high-confidence drift — ${low.length} low-confidence finding${low.length > 1 ? "s" : ""} in a workspace layout (review only)`);
+    }
   }
   console.log("");
 
-  process.exit(findings.length > 0 ? 1 : 0);
+  process.exit(high.length > 0 ? 1 : 0);
 }
 
 export { main };

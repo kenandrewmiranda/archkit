@@ -88,6 +88,37 @@ await test("runWarmupJson re-derives the digest from disk on each call (no stale
   }
 });
 
+await test("runDriftJson reads/parses each .arch file once per invocation (no redundant re-parse)", async () => {
+  const archDir = makeArchDir();
+  try {
+    const cwd = path.dirname(archDir);
+
+    // Count disk reads per file during a SINGLE invocation. The request-scoped
+    // reader memoizes each .arch file's read+parse for the call, so INDEX.md is
+    // read exactly once even though detectFindings AND the silent-success scan
+    // both need the parsed index. Before request-scoped caching, INDEX.md was
+    // parsed twice per drift call.
+    const origRead = fs.readFileSync;
+    const reads = {};
+    fs.readFileSync = (p, ...rest) => {
+      reads[path.basename(String(p))] = (reads[path.basename(String(p))] || 0) + 1;
+      return origRead(p, ...rest);
+    };
+    try {
+      await runDriftJson({ archDir, cwd });
+    } finally {
+      fs.readFileSync = origRead;
+    }
+
+    assert.equal(reads["INDEX.md"], 1,
+      "INDEX.md must be read+parsed exactly once per drift invocation (request-scoped memoization)");
+    assert.equal(reads["SYSTEM.md"], 1,
+      "SYSTEM.md must be read exactly once per drift invocation");
+  } finally {
+    fs.rmSync(path.dirname(archDir), { recursive: true, force: true });
+  }
+});
+
 await test("runDriftJson re-derives findings from disk on each call (no stale cache)", async () => {
   const archDir = makeArchDir();
   try {

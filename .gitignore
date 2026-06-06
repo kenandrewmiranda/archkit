@@ -10,5 +10,7 @@ node_modules/
 .archkit-config.json
 .arch/goals/.loop-state.json
 
-# Local Claude Code hooks config (machine-specific absolute paths)
-.claude/settings.json
+# .claude/settings.json is committed: archkit emits portable hook commands
+# (node $CLAUDE_PROJECT_DIR/bin/*.mjs) so the guardrail config is shareable.
+# Only the per-machine local override stays ignored.
+.claude/settings.local.json

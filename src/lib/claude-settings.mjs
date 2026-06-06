@@ -2,6 +2,7 @@
 // hooks; only adds the archkit hook if not already present.
 
 import fs from "fs";
+import path from "path";
 
 export function mergeClaudeSettings(existing, matcher, command) {
   const settings = JSON.parse(JSON.stringify(existing || {}));
@@ -63,19 +64,43 @@ export function writeClaudeSettings(filepath, settings) {
 // hook + the legacy PreToolUse claude-hook + SessionStart — so the Stop-hook
 // CGR guard never gets installed via the npm path. These helpers let the MCP
 // layer detect + install the full set into a project's .claude/settings.json.
-// Commands are bare bin names so they resolve via PATH (npm/global install).
+//
+// Hook commands are emitted in one of two PORTABLE, committable forms — never a
+// machine-specific absolute path like `node /Users/you/.../bin/x.mjs`, which
+// would break on a teammate's clone and force .claude/settings.json to stay
+// gitignored:
+//   1. `node $CLAUDE_PROJECT_DIR/bin/<bin>.mjs` — when the archkit bins live
+//      inside the project tree (the archkit repo itself, or a vendored copy).
+//      Claude Code expands $CLAUDE_PROJECT_DIR to the project root at hook time,
+//      so this resolves on any checkout without a global/linked install.
+//   2. bare `<bin>` — resolves via PATH for npm-global / `npm link` installs.
 // ───────────────────────────────────────────────────────────────────────────
 
 export const ARCHKIT_GUARDRAIL_HOOKS = [
   { event: "SessionStart", bin: "archkit-session-start", timeout: 10 },
   { event: "Stop", bin: "archkit-stop-hook", timeout: 8 },
+  { event: "PreToolUse", bin: "archkit-pretooluse-hook", timeout: 5,
+    matcher: "Edit|Write|MultiEdit" },
   { event: "PostToolUse", bin: "archkit-posttooluse-hook", timeout: 8,
     matcher: "Edit|Write|MultiEdit|Read|Bash|Glob|Grep|mcp__archkit__.*" },
   { event: "UserPromptSubmit", bin: "archkit-userpromptsubmit-hook", timeout: 5 },
 ];
 
-function hookEntry(spec) {
-  const entry = { hooks: [{ type: "command", command: spec.bin, timeout: spec.timeout }] };
+// Resolve the portable hook command for a guardrail bin. When `projectDir` is
+// given and the bin actually exists at `<projectDir>/bin/<bin>.mjs`, emit the
+// $CLAUDE_PROJECT_DIR form (committable, resolves on any checkout). Otherwise
+// fall back to the bare bin name (PATH resolution for global/linked installs).
+// Either way the result contains no absolute filesystem path.
+export function guardrailHookCommand(bin, { projectDir } = {}) {
+  if (projectDir && fs.existsSync(path.join(projectDir, "bin", `${bin}.mjs`))) {
+    return `node $CLAUDE_PROJECT_DIR/bin/${bin}.mjs`;
+  }
+  return bin;
+}
+
+function hookEntry(spec, opts = {}) {
+  const command = guardrailHookCommand(spec.bin, opts);
+  const entry = { hooks: [{ type: "command", command, timeout: spec.timeout }] };
   if (spec.matcher) entry.matcher = spec.matcher;
   return entry;
 }
@@ -102,16 +127,19 @@ export function detectArchkitHooks(settings) {
 }
 
 // A settings-shaped { hooks: {...} } object containing the full guardrail set —
-// for emitting to the agent to merge (so the user sees the diff).
-export function renderGuardrailHooks() {
+// for emitting to the agent to merge (so the user sees the diff). Pass
+// `{ projectDir }` to prefer the $CLAUDE_PROJECT_DIR command form when the bins
+// live in the project tree.
+export function renderGuardrailHooks(opts = {}) {
   const hooks = {};
-  for (const spec of ARCHKIT_GUARDRAIL_HOOKS) hooks[spec.event] = [hookEntry(spec)];
+  for (const spec of ARCHKIT_GUARDRAIL_HOOKS) hooks[spec.event] = [hookEntry(spec, opts)];
   return { hooks };
 }
 
 // Idempotently merge any missing guardrail hooks into an existing settings
 // object (preserves all existing hooks). Returns { settings, added:[events] }.
-export function addGuardrailHooks(existing) {
+// Pass `{ projectDir }` to prefer the $CLAUDE_PROJECT_DIR command form.
+export function addGuardrailHooks(existing, opts = {}) {
   const settings = JSON.parse(JSON.stringify(existing || {}));
   settings.hooks = settings.hooks || {};
   const present = detectArchkitHooks(settings);
@@ -119,7 +147,7 @@ export function addGuardrailHooks(existing) {
   for (const spec of ARCHKIT_GUARDRAIL_HOOKS) {
     if (present.has(spec.event)) continue;
     settings.hooks[spec.event] = settings.hooks[spec.event] || [];
-    settings.hooks[spec.event].push(hookEntry(spec));
+    settings.hooks[spec.event].push(hookEntry(spec, opts));
     added.push(spec.event);
   }
   return { settings, added };

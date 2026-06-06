@@ -32,7 +32,7 @@ function makeProject({ withEmptySkill = false, withUnappliedBan = false, withWea
   fs.mkdirSync(path.join(arch, "clusters"), { recursive: true });
   fs.mkdirSync(path.join(arch, "goals"), { recursive: true });
 
-  // Wire the four guardrail hooks into project settings so the D-HOOKS check
+  // Wire the full guardrail-hook set into project settings so the D-HOOKS check
   // passes deterministically (these doctor tests exercise the intent checks,
   // not hook-install detection — that has its own suite in tests/hooks-status).
   fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });

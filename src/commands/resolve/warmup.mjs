@@ -1,11 +1,15 @@
 import fs from "fs";
 import path from "path";
-import { loadFile, parseSystem, parseIndex } from "../../lib/parsers.mjs";
+import { createArchReader } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 import { archkitError } from "../../lib/errors.mjs";
 
 export function cmdWarmup(archDir, deep) {
   log.resolve("Running warmup checks...");
+  // Request-scoped reader: SYSTEM.md / INDEX.md are read and parsed once for the
+  // whole invocation (ADR 0002 — call-scoped, never module-global, so the next
+  // CGR goal still sees current on-disk .arch/ state).
+  const arch = createArchReader(archDir);
   const checks = [];
   let pass = true;
   const blockers = [];
@@ -16,7 +20,7 @@ export function cmdWarmup(archDir, deep) {
 
   log.resolve("Checking core files...");
   // 1. Core files exist
-  const systemContent = loadFile(archDir, "SYSTEM.md");
+  const systemContent = arch.read("SYSTEM.md");
   if (systemContent) {
     checks.push({ id: "W001", check: "SYSTEM.md exists", status: "pass" });
   } else {
@@ -25,7 +29,7 @@ export function cmdWarmup(archDir, deep) {
     pass = false;
   }
 
-  const indexContent = loadFile(archDir, "INDEX.md");
+  const indexContent = arch.read("INDEX.md");
   if (indexContent) {
     checks.push({ id: "W002", check: "INDEX.md exists", status: "pass" });
   } else {
@@ -49,7 +53,7 @@ export function cmdWarmup(archDir, deep) {
 
   // 3. SYSTEM.md has rules (not just a skeleton)
   if (systemContent) {
-    const system = parseSystem(systemContent);
+    const system = arch.system();
     if (system.rules.length > 0) {
       checks.push({ id: "W004", check: "SYSTEM.md has rules", status: "pass", detail: `${system.rules.length} rules` });
     } else {
@@ -132,7 +136,7 @@ export function cmdWarmup(archDir, deep) {
 
   // 5. INDEX.md cross-references
   if (indexContent) {
-    const index = parseIndex(indexContent);
+    const index = arch.index();
     if (index.crossRefs.length === 0 && Object.keys(index.nodeCluster).length > 1) {
       checks.push({ id: "W010", check: "INDEX.md cross-references", status: "warn", detail: "No cross-refs defined between features" });
       warnings.push("INDEX.md has no cross-references. Feature dependencies are unmapped.");

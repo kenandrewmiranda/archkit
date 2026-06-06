@@ -17,7 +17,7 @@ archkit compiles your architecture into a machine-readable blueprint — graphs,
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-1.9.0-cyan.svg)]()
+[![Version](https://img.shields.io/badge/version-1.9.1-cyan.svg)]()
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-1-lightgrey.svg)]()
 
 [Website](https://thearchkit.com) · [Marketplace](https://market.thearchkit.com) · [Issues](https://github.com/kenandrewmiranda/archkit/issues)
@@ -145,6 +145,8 @@ archkit ships four hooks. The first names archkit; the next three are what v1.6 
 - **Stop** *(v1.6, extended v1.8)* — after every assistant turn, surfaces the current archkit utilization rate (per-task primary + per-session secondary), re-injects a compact form of `.arch/BOUNDARIES.md` (NEVER lines only) to keep rules fresh after Claude Code's context compression, scans the response for boundary violations (SQL string concat, hardcoded credentials, unvalidated `req.body`), and auto-drafts proposed ADRs from decision-language to `.arch/decisions/proposed/<hash>.json` for human review. **v1.8 adds the CGR relay guard:** when a goal is in-progress, the hook blocks stopping (with the unmet exit-criteria as the reason) until the agent calls `archkit_goal_complete` — with question-to-user detection and a per-goal turn cap so it never traps the agent.
 
 > **Installing the guardrail hooks:** the Claude Code **plugin** bundles all four automatically. On an npm install, call **`archkit_install_hooks`** (or `apply:true`) to wire them into your project's `.claude/settings.json`. Note: `archkit init --install-hooks` predates the v1.6 set and only wires SessionStart + the legacy PreToolUse guard — use `archkit_install_hooks` for the full set including the Stop relay guard. `archkit_doctor` flags when they're missing.
+
+> **`.claude/settings.json` is portable and committable** *(v1.9+)*. `archkit_install_hooks` emits hook commands in portable form — `node $CLAUDE_PROJECT_DIR/bin/archkit-*.mjs` when archkit's bins live in the project tree, otherwise the bare bin name resolved via PATH — never a machine-specific absolute path like `node /Users/you/.../bin/x.mjs`. That means you can **commit `.claude/settings.json`** and the whole team shares one guardrail config that resolves correctly on a fresh clone. Keep `.claude/settings.local.json` gitignored for per-machine overrides.
 
 The v1.6 utilization goal — agents should consult `archkit_resolve_preflight` or `archkit_resolve_lookup` *before* the first edit on a task. Compound metric:
 

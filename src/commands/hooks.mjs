@@ -23,7 +23,7 @@ export function runHooksStatusJson({ cwd }) {
   const nextStep = status.installed
     ? status.via === "plugin"
       ? "Guardrail hooks are provided by the enabled archkit plugin. Nothing to do."
-      : "All four guardrail hooks are wired. Nothing to do."
+      : "All guardrail hooks are wired. Nothing to do."
     : `Missing hook(s): ${status.missing.join(", ")}. Call archkit_install_hooks to wire them (the CGR Stop-hook guard needs Stop).`;
   return { ...status, nextStep };
 }
@@ -41,15 +41,19 @@ export function runHooksInstallJson({ cwd, apply = false }) {
       nextStep:
         status.via === "plugin"
           ? "Already provided by the enabled archkit plugin — no settings change needed."
-          : "All four guardrail hooks are already wired. No change needed.",
+          : "All guardrail hooks are already wired. No change needed.",
     };
   }
 
   const settingsPath = status.projectSettingsPath;
+  // The project root is the dir holding .claude/. When archkit's bins live
+  // there (the archkit repo, or a vendored copy), the emitted commands use the
+  // portable $CLAUDE_PROJECT_DIR form instead of a bare PATH-resolved bin.
+  const projectDir = path.dirname(path.dirname(settingsPath));
 
   if (apply) {
     const existing = readClaudeSettings(settingsPath);
-    const { settings, added } = addGuardrailHooks(existing);
+    const { settings, added } = addGuardrailHooks(existing, { projectDir });
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true }); // .claude/ may not exist yet
     writeClaudeSettings(settingsPath, settings);
     return {
@@ -68,7 +72,7 @@ export function runHooksInstallJson({ cwd, apply = false }) {
     installed: false,
     settingsPath,
     missing: status.missing,
-    hooksConfig: renderGuardrailHooks(),
+    hooksConfig: renderGuardrailHooks({ projectDir }),
     instruction: `Merge hooksConfig.hooks into ${path.relative(cwd, settingsPath)} (create the file if absent; PRESERVE any existing hooks — append, don't overwrite). Then tell the user to restart Claude Code. Or re-call archkit_install_hooks with apply:true to write it directly into the project settings.`,
     nextStep: `Apply hooksConfig to ${path.relative(cwd, settingsPath)} (or re-call apply:true), then have the user restart Claude Code.`,
   };

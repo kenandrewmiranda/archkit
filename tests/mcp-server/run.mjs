@@ -36,6 +36,30 @@ function makeFixture() {
   return tmp;
 }
 
+// Write a planned CGR goal into a fixture so the relay prompts (goal_next /
+// goal_status) have something to load. Uses the same simple key:value + block
+// list frontmatter that src/lib/goals.mjs parses.
+function writeGoal(tmp, { slug, title, status = "planned" }) {
+  const dir = path.join(tmp, ".arch", "goals");
+  fs.mkdirSync(dir, { recursive: true });
+  const md = [
+    "---",
+    `slug: ${slug}`,
+    `title: ${title}`,
+    `status: ${status}`,
+    "created: 2026-06-06",
+    "exit-criteria:",
+    "  - First exit criterion",
+    "  - Second exit criterion",
+    "verify-command: npm test",
+    "---",
+    "",
+    `# ${title}`,
+    "",
+  ].join("\n");
+  fs.writeFileSync(path.join(dir, `${slug}.md`), md);
+}
+
 async function withClient(cwd, fn) {
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -175,6 +199,62 @@ await log("invalid_input on schema violation", async () => {
       const isProtocolError = text.includes("Input validation error") || text.includes("invalid_input") || text.includes("-32602");
       const isToolError = (() => { try { return JSON.parse(text).code === "invalid_input"; } catch { return false; } })();
       assert.ok(isProtocolError || isToolError, `expected invalid_input error, got: ${text}`);
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await log("prompts/list registers the CGR relay prompts", async () => {
+  const tmp = makeFixture();
+  try {
+    await withClient(tmp, async (client) => {
+      const { prompts } = await client.listPrompts();
+      const names = prompts.map(p => p.name).sort();
+      assert.deepEqual(names, ["goal_next", "goal_resume", "goal_review", "goal_status"]);
+      const next = prompts.find(p => p.name === "goal_next");
+      assert.ok(next, "goal_next prompt should be registered");
+      assert.equal(typeof next.description, "string");
+      assert.ok(next.description.length > 0, "goal_next should carry a description");
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await log("goal_next prompt returns the relay payload for the next goal", async () => {
+  const tmp = makeFixture();
+  writeGoal(tmp, { slug: "demo-goal", title: "Demo relay goal" });
+  try {
+    await withClient(tmp, async (client) => {
+      const res = await client.getPrompt({ name: "goal_next", arguments: {} });
+      // Shape: { messages: [{ role: "user", content: { type: "text", text } }] }
+      assert.ok(Array.isArray(res.messages) && res.messages.length === 1, "expected one message");
+      const msg = res.messages[0];
+      assert.equal(msg.role, "user");
+      assert.equal(msg.content.type, "text");
+      const text = msg.content.text;
+      // Relay header + rendered payload markers.
+      assert.match(text, /\[archkit CGR relay\] Active goal: demo-goal/);
+      assert.match(text, /archkit_goal_complete demo-goal/);
+      assert.match(text, /ARCHKIT GOAL: demo-goal/);
+      assert.match(text, /First exit criterion/);
+    });
+    // goal_next marks the goal in-progress as a side effect — confirm it stuck.
+    const onDisk = fs.readFileSync(path.join(tmp, ".arch", "goals", "demo-goal.md"), "utf8");
+    assert.match(onDisk, /status: in-progress/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await log("goal_next prompt with empty queue returns a no-eligible-goal notice", async () => {
+  const tmp = makeFixture();
+  try {
+    await withClient(tmp, async (client) => {
+      const res = await client.getPrompt({ name: "goal_next", arguments: {} });
+      const text = res.messages[0].content.text;
+      assert.match(text, /No eligible CGR goal/);
     });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
