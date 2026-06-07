@@ -1,6 +1,6 @@
 {
   "name": "archkit",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "description": "Inject architectural thought into one-shot LLM coding. Bundles the archkit MCP server, five guardrail hooks (SessionStart, Stop, PreToolUse, PostToolUse, UserPromptSubmit), the CGR goal-relay prompts, and the /archkit-init project wizard.",
   "author": {
     "name": "Ken Miranda",
@@ -19,7 +19,9 @@
   "mcpServers": {
     "archkit": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/archkit-mcp.mjs"]
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/archkit-mcp.mjs"
+      ]
     }
   },
   "hooks": "./hooks/hooks.json"

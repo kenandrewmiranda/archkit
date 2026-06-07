@@ -22,6 +22,8 @@ import {
   listGoals,
   statusOf,
   doneDir,
+  archiveDir,
+  listDigests,
   listGoalProposals,
 } from "../lib/goals.mjs";
 
@@ -36,16 +38,26 @@ function textMessage(text) {
 
 // Prepended to an injected goal payload so the agent treats this as a relay
 // turn: single goal, exit-criteria are the contract, goal_complete is the
-// release signal the Stop hook waits for.
-function relayHeader(slug) {
-  return [
-    `[archkit CGR relay] Active goal: ${slug}`,
+// release signal the Stop hook waits for. Status-aware: a goal resumed in the
+// `testing` state is framed as draining verification debt (edits already
+// landed) rather than fresh work.
+function relayHeader(slug, status = "in-progress") {
+  const inTesting = status === "testing";
+  const lines = [
+    `[archkit CGR relay] Active goal: ${slug}${inTesting ? " (TESTING — edits applied, verification pending)" : ""}`,
     `Work ONLY this goal to its exit-criteria. Do not start other goals in this context.`,
-    `When ALL exit-criteria are met, call archkit_goal_complete ${slug} — that is the signal that releases the Stop-hook guard and advances the queue.`,
-    ``,
-    `────────────────────────────────────────`,
-    ``,
-  ].join("\n");
+  ];
+  if (inTesting) {
+    lines.push(
+      `This goal is in the verification window: its edits already landed. Re-run the verify-command and confirm every exit-criterion is green, then call archkit_goal_complete ${slug} (it re-runs the gate and refuses on red). It is NOT done until verified.`
+    );
+  } else {
+    lines.push(
+      `When ALL exit-criteria are met, call archkit_goal_complete ${slug} — that releases the Stop-hook guard and advances the queue. If edits are applied but you want a later session to verify, park it with archkit_goal_testing ${slug}; to deliberately set it aside, archkit_goal_hold ${slug}.`
+    );
+  }
+  lines.push(``, `────────────────────────────────────────`, ``);
+  return lines.join("\n");
 }
 
 const NO_ARCH = "No .arch/ project found here. Run /archkit-init to set one up, then decompose your ask with archkit_goal_intake.";
@@ -55,7 +67,7 @@ export const prompts = {
     config: {
       title: "archkit: start next goal",
       description:
-        "CGR relay — load the next eligible goal (marks it in-progress) and inject its payload. Run after /clear to advance the goal queue without copy-pasting the /goal payload.",
+        "CGR relay — load the next eligible goal (marks it in-progress) and inject its payload. Run after /clear to advance the goal queue without copy-pasting the /goal payload. Scan order: resume an in-progress goal first, else pending-first until the testing (verification-debt) backlog crosses the configured threshold (then drain testing first), and as a last resort resume an on-hold goal once nothing live is left.",
     },
     handler: async () => {
       const archDir = archDirOrNull();
@@ -68,7 +80,7 @@ export const prompts = {
       }
       startGoal(archDir, goal.slug);
       const { payload } = renderPayload(archDir, goal.slug);
-      return textMessage(relayHeader(goal.slug) + payload);
+      return textMessage(relayHeader(goal.slug, "in-progress") + payload);
     },
   },
 
@@ -88,7 +100,7 @@ export const prompts = {
         );
       }
       const { payload } = renderPayload(archDir, goal.slug);
-      return textMessage(relayHeader(goal.slug) + payload);
+      return textMessage(relayHeader(goal.slug, statusOf(goal)) + payload);
     },
   },
 
@@ -143,25 +155,43 @@ export const prompts = {
       if (!archDir) return textMessage(NO_ARCH);
       const all = listGoals(archDir);
       const active = all.find((g) => statusOf(g) === "in-progress");
-      const planned = all.filter((g) => statusOf(g) === "planned");
+      // pending = the queued-not-started bucket (statusOf normalizes the legacy
+      // `planned` alias to `pending`, so this single check covers both).
+      const pending = all.filter((g) => statusOf(g) === "pending");
+      const testing = all.filter((g) => statusOf(g) === "testing");
+      const onHold = all.filter((g) => statusOf(g) === "on-hold");
       const dDir = doneDir(archDir);
       const done = fs.existsSync(dDir)
         ? fs.readdirSync(dDir).filter((f) => f.endsWith(".md"))
         : [];
+      const aDir = archiveDir(archDir);
+      const archived = fs.existsSync(aDir)
+        ? fs.readdirSync(aDir).filter((f) => f.endsWith(".md")).length
+        : 0;
+      const digests = listDigests(archDir);
+      const fmt = (gs) => gs.length ? " (" + gs.map((g) => g.slug).join(", ") + ")" : "";
       const lines = [
-        `archkit CGR queue:`,
+        `archkit CGR queue (lifecycle: pending → in-progress → testing → completed; side states on-hold, abandoned):`,
         active
-          ? `  active (in-progress): ${active.slug} — ${active.meta.title || ""}`
-          : `  active: none`,
-        `  planned: ${planned.length}${planned.length ? " (" + planned.map((g) => g.slug).join(", ") + ")" : ""}`,
-        `  done:    ${done.length}`,
+          ? `  in-progress: ${active.slug} — ${active.meta.title || ""}`
+          : `  in-progress: none`,
+        `  testing:     ${testing.length}${fmt(testing)}`,
+        `  pending:     ${pending.length}${fmt(pending)}`,
+        `  on-hold:     ${onHold.length}${fmt(onHold)}`,
+        `  completed:   ${done.length} un-consolidated${archived ? ` + ${archived} archived` : ""}${digests.length ? ` (${digests.length} digest day${digests.length === 1 ? "" : "s"})` : ""}`,
         ``,
-        active
-          ? `Resume with /mcp__archkit__goal_resume, or finish it then /clear + /mcp__archkit__goal_next.`
-          : planned.length
-            ? `Start with /mcp__archkit__goal_next.`
-            : `Queue empty. Call archkit_goal_intake to decompose a new ask.`,
       ];
+      if (active) {
+        lines.push(`Resume with /mcp__archkit__goal_resume, or finish it then /clear + /mcp__archkit__goal_next.`);
+      } else if (testing.length) {
+        lines.push(`${testing.length} goal(s) await verification. Run /clear + /mcp__archkit__goal_next to drain the testing backlog (verify green, then archkit_goal_complete).`);
+      } else if (pending.length) {
+        lines.push(`Start with /clear + /mcp__archkit__goal_next.`);
+      } else if (onHold.length) {
+        lines.push(`Only on-hold (parked) goals remain. Run /clear + /mcp__archkit__goal_next to resume one, or archkit_goal_abandon to drop it.`);
+      } else {
+        lines.push(`Queue empty. Run archkit_goal_consolidate to fold any un-consolidated done/ goals into a dated digest, or archkit_goal_intake to decompose a new ask.`);
+      }
       return textMessage(lines.join("\n"));
     },
   },

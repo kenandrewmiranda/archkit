@@ -45,7 +45,7 @@ const { detectDecisions } = await import(path.join(LIB, "decision-detector.mjs")
 const { detectDeferredGoals } = await import(path.join(LIB, "goal-detector.mjs"));
 const {
   getActiveGoal, exitCriteriaOf, verifyCommandOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
-  writeGoalProposal, countGoalProposals,
+  writeGoalProposal, countGoalProposals, consolidateGoals,
 } = await import(path.join(LIB, "goals.mjs"));
 
 const UTILIZATION_TARGET = 75;
@@ -210,10 +210,15 @@ async function main() {
     const slug = activeGoal.slug;
     const criteria = exitCriteriaOf(activeGoal);
     const maxTurns = Number(activeGoal.meta["max-turns"]) || RELAY_TURN_CAP;
+    // A goal in `testing` has its edits applied but is NOT done — verification
+    // is still pending, so the guard keeps blocking until it's verified green
+    // and completed (ADR 0003: no premature release).
+    const inTesting = (activeGoal.meta.status || "") === "testing";
+    const phrase = inTesting ? "in testing (edits applied, verification pending)" : "still in progress";
     if (looksLikeQuestionToUser(assistantResponse)) {
       // Genuine question to the user — surface it, don't trap the agent.
       sections.push(
-        `CGR relay: goal "${slug}" is still in progress, but your last response reads as a question to the user — not blocking. When unblocked, finish the exit-criteria and call archkit_goal_complete ${slug}.`
+        `CGR relay: goal "${slug}" is ${phrase}, but your last response reads as a question to the user — not blocking. When unblocked, ${inTesting ? "verify the exit-criteria green" : "finish the exit-criteria"} and call archkit_goal_complete ${slug}.`
       );
     } else {
       const blocks = bumpLoopBlock(archDir, slug);
@@ -230,12 +235,16 @@ async function main() {
           ? `Test gate: archkit_goal_complete will run "${verifyCommand}" and REFUSE to complete on red — make sure tests pass first (archkit_goal_verify previews them).`
           : null;
         blockReason = [
-          `CGR relay: goal "${slug}" is still in progress (turn ${blocks}/${maxTurns}).`,
-          `Keep working until ALL exit-criteria are met:`,
+          inTesting
+            ? `CGR relay: goal "${slug}" is in TESTING — edits are applied but verification is still pending (turn ${blocks}/${maxTurns}). It is NOT done.`
+            : `CGR relay: goal "${slug}" is still in progress (turn ${blocks}/${maxTurns}).`,
+          inTesting
+            ? `Drain the verification window: confirm every exit-criterion holds, then run the verify-command green:`
+            : `Keep working until ALL exit-criteria are met:`,
           list,
           ...(testLine ? ["", testLine] : []),
           ``,
-          `When every criterion holds, call archkit_goal_complete ${slug} to release this guard and advance the queue. If you are genuinely blocked and need the user, end your message with a direct question.`,
+          `When every criterion holds${verifyCommand ? " and tests are green" : ""}, call archkit_goal_complete ${slug} to release this guard and advance the queue. If you are genuinely blocked and need the user, end your message with a direct question.`,
         ].join("\n");
       }
     }
@@ -248,6 +257,18 @@ async function main() {
       sections.push(
         `CGR relay: no goal in progress and "${next.slug}" is queued. Run /clear then /mcp__archkit__goal_next to start it in a fresh context.`
       );
+    } else {
+      // Queue fully drained (session-end safety net): incrementally consolidate
+      // any terminal goals not yet archived into the dated digest + preserve
+      // their raw CGRs. Idempotent and cheap when there's nothing to drain.
+      try {
+        const c = consolidateGoals(archDir);
+        if (c.consolidated > 0) {
+          sections.push(
+            `CGR relay: queue drained — consolidated ${c.consolidated} completed goal${c.consolidated === 1 ? "" : "s"} into the ${c.date} digest (.arch/goals/done/digest/${c.date}.md). Raw CGRs preserved under goals/done/archive/ for full-context recovery.`
+          );
+        }
+      } catch { /* non-fatal */ }
     }
   }
 

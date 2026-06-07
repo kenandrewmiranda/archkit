@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.10.0 — 2026-06-07
+
+Expands the Clear Goal Run lifecycle from `planned → in-progress → done` into the full state model locked by **ADR 0003**: `pending → in-progress → testing → completed`, plus the side states `on-hold` and `abandoned`, and an incremental consolidation/digest phase. Born from conference feedback that fast mass-edits were getting `goal_complete`-d the instant they landed — hiding *unverified* work in `done/` and letting verification debt accumulate silently. Five goals shipped as one unit (decomposed and run through CGR's own relay — archkit dogfooding itself). Purely additive and backward-compatible: existing goal files keep parsing, and projects that never call the new transitions see the old flow unchanged. Brings the MCP tool count from 28 to **31**.
+
+### Added — the `testing` state (verification debt made visible)
+
+- **New `testing` lifecycle state** (`src/lib/goals.mjs`): edits applied, verification still *pending*. `markTesting()` relocates an in-progress goal into the one loud dedicated drawer `.arch/goals/testing/<slug>.md` and flips `status: testing` (stamping `testing-since`). A testing goal **survives `/clear` and stays guarded** by the Stop hook — it is *not* done. The hard test gate still applies on completion: `archkit_goal_complete` from `testing` runs the `verify-command` and refuses on red, so the goal stays parked until it's actually green. `ensureGoalsLayout`/`listGoals`/`loadGoal`/`getActiveGoal`/`nextEligibleGoal` all recognize the new drawer; `startGoal` relocates a resumed testing goal back to `goals/` root. New MCP tool **`archkit_goal_testing`** + CLI `archkit goal testing <slug>`.
+
+### Added — the `on-hold` state (deliberately parked work)
+
+- **New `on-hold` side state** resolves the `deferred` naming collision (ADR 0003): `on-hold` is a real, queued goal *deliberately set aside*, distinct from a `proposed` follow-up (`archkit_goal_defer`) and from `depends-on` blocking. Unlike `testing`, parking **releases** the relay guard so the session can end, and `nextEligibleGoal` won't auto-select it ahead of pending/testing work — it's offered only as a last-resort resume once nothing live is left. Lives in `goals/` root (status is the source of truth, no per-state folder). New MCP tool **`archkit_goal_hold`** + CLI `archkit goal hold <slug>`.
+
+### Added — backlog-threshold ordering knob
+
+- **`nextEligibleGoal` is now pending-first until verification debt accumulates**, then drains testing. Configurable via `.arch/config.json` → `cgr.backlogThreshold` (`{ count, ageDays }`, default `5` items / `7` days); either trigger flips selection to testing-first. Resume-in-progress and `depends-on` resolution still take precedence. Default out-of-the-box behavior is the simple pending-first batch — the threshold only fires when debt genuinely piles up.
+
+### Added — incremental consolidation / digest
+
+- **`consolidateGoals()`** folds terminal goals at the top of `goals/done/` into a dated per-day digest (`goals/done/digest/<YYYY-MM-DD>.md`) and preserves each raw CGR **verbatim** under `goals/done/archive/<slug>.md` (copy-then-unlink) so full context stays recoverable. Incremental (not gated on an empty queue) and idempotent. Fires automatically at queue-drain (`archkit_goal_complete`) and session-end (the Stop hook), and on demand via the new **`archkit_goal_consolidate`** tool + CLI `archkit goal consolidate`. `isGoalDone` checks `done/` **and** `done/archive/` so `depends-on` survives archival. Digests are recallable through `archkit_goal_list` (`listDigests`/`searchDigests`, mirroring the decisions read-side).
+
+### Changed — MCP/prompt/doc wiring + status vocabulary
+
+- **Surfaced the expanded lifecycle** across the agent-facing layer: three new MCP tools (28→31), a status-aware relay header (a resumed `testing` goal is framed as verification-draining), a `goal_next` description documenting the scan order, and a `goal_status` prompt that reports testing/pending/on-hold buckets plus the consolidation history. README gains a goal-lifecycle section + state diagram; the SessionStart digest, plugin marketplace, and tool-count assertions all updated.
+- **Reconciled the status vocabulary to ADR 0003**: new goals are written as `pending` and completed goals as `completed`. The legacy values `planned`/`done` are accepted as **read aliases** (normalized in `statusOf`) so existing `.arch/goals/*.md` and `goals/done/*.md` keep parsing untouched. The `goals/done/` folder name is unchanged — only the `status:` value moved.
+
+### Tests
+
+- New suites: **`tests/cgr-testing/`**, **`tests/cgr-backlog/`**, **`tests/cgr-consolidation/`**, and **`tests/cgr-states-wiring/`** (on-hold transitions, guard release, ordering, the three new MCP handlers via `src/mcp/tools.mjs`, an end-to-end intake→testing→verify→complete→consolidate path, and status back-compat). `tests/mcp-server/` and `tests/silent-success-audit/` updated for the new tools; `tests/cgr-relay`, `tests/test-gate`, `tests/cgr-goals`, `tests/goal-proposals` updated for the archive/drain behavior and canonical status values. Suite total: **49/49 green**.
+
 ## v1.9.1 — 2026-06-06
 
 Hardens the CGR guardrail surface and tightens the spec-derivation hot path. Five goals shipped as one unit: a **PreToolUse guardrail** (the flagship — block boundary violations *before* the edit lands), **portable/committable hook config**, **workspace-aware drift precision**, **request-scoped parse caching**, and **test coverage for the CGR relay prompts**. Purely additive.

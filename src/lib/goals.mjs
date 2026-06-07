@@ -9,6 +9,7 @@
 //
 // Storage layout:
 //   .arch/goals/<slug>.md              — active or planned goals
+//   .arch/goals/testing/<slug>.md      — edits applied, verification pending
 //   .arch/goals/done/<slug>.md         — completed goals (kept for history)
 //
 // Goal-file format: simple key:value frontmatter (we don't take a YAML dep)
@@ -29,12 +30,22 @@ export function doneDir(archDir) {
   return path.join(goalsDir(archDir), "done");
 }
 
+// The ONE loud dedicated per-state folder (see ADR 0003). A goal in `testing`
+// has its edits applied but verification still pending — it lives here so a
+// fresh session can SEE and drain the verification debt instead of it hiding in
+// done/. Every other state stays in goals/ root and is distinguished by its
+// `status:` field (status is the source of truth, not the folder).
+export function testingDir(archDir) {
+  return path.join(goalsDir(archDir), "testing");
+}
+
 export function proposedDir(archDir) {
   return path.join(goalsDir(archDir), "proposed");
 }
 
 export function ensureGoalsLayout(archDir) {
   fs.mkdirSync(doneDir(archDir), { recursive: true });
+  fs.mkdirSync(testingDir(archDir), { recursive: true });
 }
 
 export function slugify(s) {
@@ -108,7 +119,7 @@ export function writeGoal(archDir, goal) {
   const meta = {
     slug,
     title: goal.title || slug,
-    status: goal.status || "planned",
+    status: goal.status || STATUS_PENDING,
     created: goal.created || new Date().toISOString().slice(0, 10),
     "exit-criteria": goal.exitCriteria || [],
     "files-to-touch": goal.filesToTouch || [],
@@ -140,32 +151,45 @@ function defaultBody(goal) {
   return lines.join("\n");
 }
 
+// Active goals are the flat .md files in goals/ root PLUS the verification-debt
+// files in goals/testing/. Subdirs (done/, proposed/, archive/, digest/) hold
+// terminal/proposal artifacts and are skipped — only testing/ contributes live
+// goals, so a goal awaiting verification stays in the queue.
 export function listGoals(archDir) {
-  const dir = goalsDir(archDir);
-  if (!fs.existsSync(dir)) return [];
   const out = [];
-  for (const name of fs.readdirSync(dir)) {
-    if (!name.endsWith(".md")) continue;
-    const filepath = path.join(dir, name);
-    try {
-      const { meta } = parseGoal(fs.readFileSync(filepath, "utf8"));
-      out.push({ slug: meta.slug || name.replace(/\.md$/, ""), filepath, meta });
-    } catch {}
+  for (const dir of [goalsDir(archDir), testingDir(archDir)]) {
+    if (!fs.existsSync(dir)) continue;
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".md")) continue;
+      const filepath = path.join(dir, name);
+      try {
+        if (!fs.statSync(filepath).isFile()) continue;
+        const { meta } = parseGoal(fs.readFileSync(filepath, "utf8"));
+        out.push({ slug: meta.slug || name.replace(/\.md$/, ""), filepath, meta });
+      } catch {}
+    }
   }
   return out;
 }
 
+// Resolve a goal by slug across both live locations: goals/ root and
+// goals/testing/. Terminal goals (done/, archive/) are intentionally NOT
+// resolved here — loadGoal is the handle the relay uses to act on live work.
 export function loadGoal(archDir, slug) {
-  const filepath = path.join(goalsDir(archDir), `${slug}.md`);
-  if (!fs.existsSync(filepath)) return null;
-  return { ...parseGoal(fs.readFileSync(filepath, "utf8")), filepath, slug };
+  for (const dir of [goalsDir(archDir), testingDir(archDir)]) {
+    const filepath = path.join(dir, `${slug}.md`);
+    if (fs.existsSync(filepath)) {
+      return { ...parseGoal(fs.readFileSync(filepath, "utf8")), filepath, slug };
+    }
+  }
+  return null;
 }
 
 export function completeGoal(archDir, slug, { notes = "", extraMeta = {} } = {}) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
   ensureGoalsLayout(archDir);
-  goal.meta.status = "done";
+  goal.meta.status = STATUS_COMPLETED;
   goal.meta["completed"] = new Date().toISOString().slice(0, 10);
   if (notes) goal.meta["completion-notes"] = notes;
   // Stamp objective completion evidence (e.g. tests-passed/-command/-at) so the
@@ -246,15 +270,51 @@ function ensureArray(v) {
 // the queue without copy-paste.
 // ───────────────────────────────────────────────────────────────────────────
 
-const STATUS_DONE = "done";
+// Canonical lifecycle vocabulary (ADR 0003): pending → in-progress → testing →
+// completed, plus side states on-hold and abandoned. The old values `planned`
+// and `done` are accepted as READ aliases (normalized in statusOf) so existing
+// .arch/goals/*.md and goals/done/*.md keep parsing — only the values we WRITE
+// changed. The `goals/done/` FOLDER name is unchanged; this reconciles the
+// `status:` value, not the archive path.
+export const STATUS_PENDING = "pending";
 const STATUS_ACTIVE = "in-progress";
+export const STATUS_COMPLETED = "completed";
+const STATUS_ALIASES = Object.freeze({ planned: STATUS_PENDING, done: STATUS_COMPLETED });
+// Edits applied, verification still pending (ADR 0003). A PERSISTENT state that
+// survives /clear — it replaces today's premature goal_complete. A `testing`
+// goal is NOT done: it stays guarded by the Stop hook until a (possibly later,
+// fresh) session runs the verify-command/exit-criteria green and completes it.
+export const STATUS_TESTING = "testing";
+// The deliberately-set-aside ACTIVE goal (ADR 0003). `on-hold` is the chosen
+// rename that resolves the `deferred` collision: it means a human/agent chose
+// to PARK real, queued work — distinct from `proposed`/`deferred` (follow-up
+// PROPOSALS awaiting promotion) and from `depends-on` blocking (auto-resolved).
+// Unlike `testing`, an on-hold goal is NOT guarded — parking is a deliberate
+// stop, so the Stop hook lets the session end. It lives in goals/ root (status
+// is the source of truth, not a folder) and is resumed via startGoal.
+export const STATUS_ON_HOLD = "on-hold";
+// States that keep the relay guard engaged — the goal is live work the Stop
+// hook must not let the session walk away from. `testing` is guarded precisely
+// because it is NOT done; `on-hold` is deliberately EXCLUDED (parking releases
+// the guard).
+const GUARDED_STATUSES = [STATUS_ACTIVE, STATUS_TESTING];
 
 export function isGoalDone(archDir, slug) {
-  return fs.existsSync(path.join(doneDir(archDir), `${slug}.md`));
+  // Terminal goals live at the top level of done/ until consolidation moves the
+  // raw file verbatim into done/archive/ — both locations count as "done" so
+  // depends-on resolution survives a consolidation pass (see consolidateGoals).
+  return (
+    fs.existsSync(path.join(doneDir(archDir), `${slug}.md`)) ||
+    fs.existsSync(path.join(archiveDir(archDir), `${slug}.md`))
+  );
 }
 
+// Canonical status for a goal — normalizes the legacy aliases (`planned`→
+// `pending`, `done`→`completed`) so callers compare against one vocabulary
+// regardless of when the file was written. Default is `pending`.
 export function statusOf(goal) {
-  return (goal?.meta?.status || "planned");
+  const raw = goal?.meta?.status || STATUS_PENDING;
+  return STATUS_ALIASES[raw] || raw;
 }
 
 export function exitCriteriaOf(goal) {
@@ -266,39 +326,185 @@ export function verifyCommandOf(goal) {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
-// The single in-progress goal, or null. In fresh-context relay there should be
-// at most one; if several exist we return the first by listGoals order.
+// The single guarded goal, or null. A goal is guarded while in-progress OR in
+// `testing` (verification pending) — both keep the Stop-hook relay engaged. In
+// fresh-context relay there should be at most one; prefer an in-progress goal,
+// then a testing goal, by listGoals order.
 export function getActiveGoal(archDir) {
-  return listGoals(archDir).find((g) => statusOf(g) === STATUS_ACTIVE) || null;
+  const goals = listGoals(archDir);
+  return goals.find((g) => statusOf(g) === STATUS_ACTIVE)
+    || goals.find((g) => statusOf(g) === STATUS_TESTING)
+    || null;
 }
 
 // Mark a goal in-progress — the relay "start" transition. Idempotent.
 // Clears any stale turn-cap counter so the guard starts fresh for this goal.
+// If the goal was sitting in goals/testing/ (resumed for verification), it is
+// relocated back to goals/ root so an in-progress goal never lingers in the
+// testing drawer — status frontmatter and folder stay consistent.
 export function startGoal(archDir, slug) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
+  ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_ACTIVE;
   if (!goal.meta.started) goal.meta.started = new Date().toISOString().slice(0, 10);
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
-  fs.writeFileSync(goal.filepath, out);
+  const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
+  fs.writeFileSync(targetPath, out);
+  if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
+    fs.rmSync(goal.filepath, { force: true });
+  }
   const state = readLoopState(archDir);
   if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
   return { slug, status: STATUS_ACTIVE };
 }
 
-// Next goal to hand to the agent: prefer an already in-progress goal (resume),
-// else the first planned goal whose depends-on are all complete.
+// The relay "verification" transition: move an active goal into `testing` —
+// edits applied, verification still pending. Physically relocates the file into
+// goals/testing/ (the loud verification drawer) and flips status to `testing`.
+// Persistent across /clear: the goal stays guarded (see getActiveGoal) until a
+// session runs verify green and completes it. Idempotent.
+export function markTesting(archDir, slug) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) throw new Error(`unknown goal: ${slug}`);
+  ensureGoalsLayout(archDir);
+  goal.meta.status = STATUS_TESTING;
+  if (!goal.meta["testing-since"]) goal.meta["testing-since"] = new Date().toISOString().slice(0, 10);
+  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+  const targetPath = path.join(testingDir(archDir), `${slug}.md`);
+  fs.writeFileSync(targetPath, out);
+  if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
+    fs.rmSync(goal.filepath, { force: true });
+  }
+  return { slug, status: STATUS_TESTING, filepath: targetPath };
+}
+
+// The relay "park" transition (ADR 0003): flip an active goal to `on-hold` —
+// deliberately set aside, but resumable. Unlike markTesting this does NOT move
+// the file (on-hold lives in goals/ root, distinguished by status). Releasing
+// the guard is the point: clears the turn-cap counter so the Stop hook lets the
+// session end, and nextEligibleGoal won't auto-pick it ahead of real pending
+// work (it returns only as a last-resort resume). Idempotent. If the goal was
+// parked from goals/testing/, it is relocated back to goals/ root so an on-hold
+// goal never lingers in the verification drawer.
+export function markOnHold(archDir, slug) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) throw new Error(`unknown goal: ${slug}`);
+  ensureGoalsLayout(archDir);
+  goal.meta.status = STATUS_ON_HOLD;
+  if (!goal.meta["on-hold-since"]) goal.meta["on-hold-since"] = new Date().toISOString().slice(0, 10);
+  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+  const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
+  fs.writeFileSync(targetPath, out);
+  if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
+    fs.rmSync(goal.filepath, { force: true });
+  }
+  // Parking releases the guard — drop any stale turn-cap counter for this goal.
+  const state = readLoopState(archDir);
+  if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
+  return { slug, status: STATUS_ON_HOLD, filepath: targetPath };
+}
+
+// ── Backlog-threshold ordering knob (cgr-backlog-ordering) ──
+//
+// Pure pending-first ordering optimizes for the reported failure mode: testing
+// (verification-debt) goals pile up mid-sprint and grow unbounded. The hybrid:
+// prefer pending work while the testing backlog is small, then force-drain
+// testing once the backlog crosses a configurable threshold (count OR age).
+//
+// Config knob — .arch/config.json → cgr.backlogThreshold (all optional):
+//   { "cgr": { "backlogThreshold": { "count": 5, "ageDays": 7 } } }
+// `count`   — switch to testing-first when the testing backlog reaches this many
+//             items. Set null/0 to disable the count trigger.
+// `ageDays` — switch to testing-first when the OLDEST testing goal has waited
+//             this many days (by testing-since). Set null/0 to disable.
+// The default below is deliberately slack so out-of-the-box behavior is the
+// simple pending-first batch — the threshold only fires when debt genuinely
+// accumulates.
+export const DEFAULT_BACKLOG_THRESHOLD = Object.freeze({ count: 5, ageDays: 7 });
+
+// Resolve the effective threshold: defaults overlaid with .arch/config.json.
+// A malformed/absent config silently falls back to defaults (never throws —
+// goal selection must not be blocked by a bad config file).
+export function backlogThreshold(archDir) {
+  let fromFile = {};
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(archDir, "config.json"), "utf8"));
+    if (cfg && typeof cfg === "object" && cfg.cgr && typeof cfg.cgr.backlogThreshold === "object") {
+      fromFile = cfg.cgr.backlogThreshold;
+    }
+  } catch { /* no/invalid config → defaults */ }
+  return { ...DEFAULT_BACKLOG_THRESHOLD, ...fromFile };
+}
+
+function daysBetween(fromISODate, now) {
+  const d = new Date(`${fromISODate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.floor((now.getTime() - d.getTime()) / 86400000);
+}
+
+// Has the testing backlog crossed the threshold? True once EITHER trigger fires:
+// the count reaches `count`, or the oldest testing goal's age reaches `ageDays`.
+// Exported for the relay/tests to introspect the ordering decision.
+export function testingBacklogOverThreshold(testing, threshold, now = new Date()) {
+  if (!Array.isArray(testing) || testing.length === 0) return false;
+  const { count, ageDays } = threshold || {};
+  if (count && testing.length >= count) return true;
+  if (ageDays) {
+    for (const g of testing) {
+      const since = g?.meta?.["testing-since"] || g?.meta?.started || g?.meta?.created;
+      if (!since) continue;
+      const age = daysBetween(String(since), now);
+      if (age != null && age >= ageDays) return true;
+    }
+  }
+  return false;
+}
+
+// Next goal to hand to the agent. Precedence:
+//   1. Resume an in-progress goal (genuine active work) — always first.
+//   2. Among eligible (deps-satisfied) goals, apply the backlog-threshold knob:
+//      pending-first by default, but testing-first once the testing backlog
+//      crosses the threshold (drain verification debt before it grows unbounded).
+//      Whichever bucket is preferred, fall through to the other if it's empty.
+// depends-on resolution and in-progress resume both take precedence over the
+// threshold ordering (see ADR 0003 / cgr-backlog-ordering exit criteria).
 export function nextEligibleGoal(archDir) {
   const goals = listGoals(archDir);
-  const active = goals.find((g) => statusOf(g) === STATUS_ACTIVE);
-  if (active) return active;
-  for (const g of goals) {
-    if (statusOf(g) === STATUS_DONE) continue;
+
+  // (1) Resume actively-worked goal first — never deferred by the threshold.
+  const inProgress = goals.find((g) => statusOf(g) === STATUS_ACTIVE);
+  if (inProgress) return inProgress;
+
+  // deps-satisfied = every depends-on already complete.
+  const depsSatisfied = (g) => {
     const deps = ensureArray(g.meta["depends-on"]);
-    const blocked = deps.some((d) => !isGoalDone(archDir, d));
-    if (!blocked) return g;
-  }
-  return null;
+    return !deps.some((d) => !isGoalDone(archDir, d));
+  };
+
+  // Eligible = not done, not parked (on-hold), and deps satisfied. `on-hold`
+  // goals are deliberately set aside, so they are NOT auto-selected ahead of
+  // real pending/testing work — they only surface as a last-resort resume below.
+  const eligible = goals.filter((g) => {
+    const s = statusOf(g);
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD) return false;
+    return depsSatisfied(g);
+  });
+  const testing = eligible.filter((g) => statusOf(g) === STATUS_TESTING);
+  const pending = eligible.filter((g) => statusOf(g) !== STATUS_TESTING);
+
+  // (2) Threshold ordering. Below threshold → pending-first (the simple default
+  // batch); at/above → testing-first to drain the backlog. Either way, fall
+  // through to the non-preferred bucket when the preferred one is empty.
+  const drainTesting = testingBacklogOverThreshold(testing, backlogThreshold(archDir));
+  const [preferred, fallback] = drainTesting ? [testing, pending] : [pending, testing];
+  if (preferred[0] || fallback[0]) return preferred[0] || fallback[0];
+
+  // (3) Nothing live to do — offer a deliberately-parked goal as a last resort.
+  // Resuming it is an explicit act (the user ran goal_next), so this respects
+  // "parked" while still keeping on-hold work discoverable instead of lost.
+  const onHold = goals.filter((g) => statusOf(g) === STATUS_ON_HOLD && depsSatisfied(g));
+  return onHold[0] || null;
 }
 
 // ── Turn-cap state for the goal-aware Stop hook ──
@@ -420,8 +626,183 @@ export function promoteGoalProposal(archDir, hash, overrides = {}) {
     exitCriteria: overrides.exitCriteria || p.exitCriteria || [],
     verifyCommand: overrides.verifyCommand || "",
     sourceAsk: p.contextExcerpt ? `Deferred during a prior session: ${String(p.contextExcerpt).slice(0, 200)}` : "",
-    status: "planned",
+    status: STATUS_PENDING,
   });
   fs.rmSync(file, { force: true });
   return { slug };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Incremental consolidation / digest (cgr-consolidation-digest)
+//
+// Completed/abandoned goals land as raw files at the TOP LEVEL of goals/done/.
+// Consolidation is an INCREMENTAL step — it is NOT gated on the queue being
+// empty. It summarizes every terminal goal currently sitting at the top level
+// of done/ into a dated per-day digest (goals/done/digest/<YYYY-MM-DD>.md),
+// then moves each raw CGR file verbatim into goals/done/archive/<slug>.md so an
+// agent can still pull full context after the summary is written. Because it
+// only ever drains what is already terminal, calling it while other goals are
+// still pending/in-progress is safe — that is what makes it incremental. The
+// relay triggers it at queue-drain / session-end (see runGoalComplete + the
+// Stop hook), and `archkit goal consolidate` triggers it on demand.
+// ───────────────────────────────────────────────────────────────────────────
+
+export function archiveDir(archDir) {
+  return path.join(doneDir(archDir), "archive");
+}
+export function digestDir(archDir) {
+  return path.join(doneDir(archDir), "digest");
+}
+
+const DIGEST_SLUG_RE = /<!-- cgr-digest-slug: (.+?) -->/g;
+
+function oneLine(text, max = 200) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
+}
+
+// Terminal goals sitting at the TOP LEVEL of done/ — completed/abandoned but
+// not yet consolidated. Subdirs (archive/, digest/) are skipped; only flat .md
+// files are un-consolidated terminal goals.
+export function listTerminalGoals(archDir) {
+  const dir = doneDir(archDir);
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".md")) continue;
+    const filepath = path.join(dir, name);
+    try {
+      if (!fs.statSync(filepath).isFile()) continue;
+      const { meta, body } = parseGoal(fs.readFileSync(filepath, "utf8"));
+      out.push({ slug: meta.slug || name.replace(/\.md$/, ""), filepath, meta, body });
+    } catch { /* skip unreadable/malformed */ }
+  }
+  return out;
+}
+
+function digestEntry(goal) {
+  const m = goal.meta || {};
+  const status = m.status || "completed";
+  const completedOn = m.completed || m.abandoned || m.created || "";
+  const tests = m["tests-passed"] ? ` (tests: ${m["tests-command"] || "verify"} passed)` : "";
+  const note = m["completion-notes"] || m["abandon-reason"] || "";
+  const lines = [];
+  lines.push(`<!-- cgr-digest-slug: ${goal.slug} -->`);
+  lines.push(`## ${goal.slug} — ${m.title || goal.slug}`);
+  lines.push(`- Outcome: ${status}${tests}`);
+  if (completedOn) lines.push(`- Date: ${completedOn}`);
+  if (note) lines.push(`- Notes: ${oneLine(note, 300)}`);
+  lines.push(`- Raw: goals/done/archive/${goal.slug}.md`);
+  return lines.join("\n");
+}
+
+// Drain every terminal goal currently at the top level of done/ into the dated
+// digest and preserve each raw file verbatim under done/archive/. Idempotent:
+// once drained, the raw files are gone from the top level so a re-run is a
+// no-op. Pass `date` to pin the digest day (tests / deterministic runs).
+export function consolidateGoals(archDir, { date } = {}) {
+  const day = date || new Date().toISOString().slice(0, 10);
+  const terminal = listTerminalGoals(archDir);
+  if (terminal.length === 0) {
+    return { date: day, consolidated: 0, archived: [], slugs: [], digestPath: null };
+  }
+
+  const aDir = archiveDir(archDir);
+  const dDir = digestDir(archDir);
+  fs.mkdirSync(aDir, { recursive: true });
+  fs.mkdirSync(dDir, { recursive: true });
+
+  const digestPath = path.join(dDir, `${day}.md`);
+  let existing = "";
+  try { existing = fs.readFileSync(digestPath, "utf8"); } catch { /* new digest */ }
+  const already = new Set();
+  for (const mm of existing.matchAll(DIGEST_SLUG_RE)) already.add(mm[1]);
+
+  const newEntries = [];
+  const archived = [];
+  const slugs = [];
+  for (const goal of terminal) {
+    // Preserve the raw CGR verbatim BEFORE removing the top-level copy:
+    // copy-then-unlink so a crash mid-consolidation can't lose content.
+    const target = path.join(aDir, `${goal.slug}.md`);
+    const raw = fs.readFileSync(goal.filepath, "utf8");
+    fs.writeFileSync(target, raw);
+    fs.rmSync(goal.filepath, { force: true });
+    archived.push(path.relative(archDir, target));
+    slugs.push(goal.slug);
+    if (!already.has(goal.slug)) newEntries.push(digestEntry(goal));
+  }
+
+  if (newEntries.length > 0) {
+    let content;
+    if (existing.trim()) {
+      content = existing.trimEnd() + "\n\n" + newEntries.join("\n\n") + "\n";
+    } else {
+      const header = [
+        `# CGR digest — ${day}`,
+        ``,
+        `Consolidated summary of CGR goals finished on ${day}. The raw goal files`,
+        `are preserved verbatim under goals/done/archive/ for full-context recovery.`,
+        ``,
+        ``,
+      ].join("\n");
+      content = header + newEntries.join("\n\n") + "\n";
+    }
+    fs.writeFileSync(digestPath, content);
+  }
+
+  return { date: day, consolidated: terminal.length, archived, slugs, digestPath };
+}
+
+// Read-side for digests — discoverable surface, sibling to listDecisions.
+// Most-recent day first.
+export function listDigests(archDir) {
+  const dir = digestDir(archDir);
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".md")) continue;
+    const filepath = path.join(dir, name);
+    try {
+      if (!fs.statSync(filepath).isFile()) continue;
+      const content = fs.readFileSync(filepath, "utf8");
+      const slugs = [...content.matchAll(DIGEST_SLUG_RE)].map((m) => m[1]);
+      const titles = [...content.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1].trim());
+      out.push({
+        date: name.replace(/\.md$/, ""),
+        filepath,
+        relativePath: path.relative(archDir, filepath),
+        slugs,
+        count: slugs.length,
+        summary: oneLine(titles.join("; "), 200),
+        content,
+      });
+    } catch { /* skip unreadable */ }
+  }
+  out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return out;
+}
+
+// Keyword-rank digests (slug matches weighted over body). No query → recent
+// list. Mirrors searchDecisions so digests are recallable the same way ADRs are.
+export function searchDigests(archDir, { query = "", limit = 10 } = {}) {
+  const all = listDigests(archDir);
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return all.slice(0, limit).map(({ content, ...d }) => d);
+  const terms = q.split(/\s+/).filter(Boolean);
+  return all
+    .map((d) => {
+      const slugStr = d.slugs.join(" ").toLowerCase();
+      const hay = `${d.date} ${d.content}`.toLowerCase();
+      let score = 0;
+      for (const t of terms) {
+        if (slugStr.includes(t)) score += 4;
+        if (hay.includes(t)) score += 1;
+      }
+      return { d, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || (a.d.date < b.d.date ? 1 : -1))
+    .slice(0, limit)
+    .map((x) => { const { content, ...rest } = x.d; return { ...rest, score: x.score }; });
 }

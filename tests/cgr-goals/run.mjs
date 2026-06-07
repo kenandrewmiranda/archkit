@@ -87,7 +87,7 @@ test("listGoals shows active goals; completeGoal archives to done/", () => {
     const donePath = path.join(archDir, "goals", "done", "goal-a.md");
     assert.ok(fs.existsSync(donePath), "goal-a should be archived to done/");
     const archived = parseGoal(fs.readFileSync(donePath, "utf8"));
-    assert.equal(archived.meta.status, "done");
+    assert.equal(archived.meta.status, "completed");
     assert.equal(archived.meta["completion-notes"], "shipped 2026-05-25");
   });
 });

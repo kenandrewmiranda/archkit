@@ -113,9 +113,14 @@ await test("complete SUCCEEDS and stamps tests-passed when verify-command is gre
     const out = runGoalComplete({ archDir, cwd: dir, slug: "green" });
     assert.ok(out.testGate && out.testGate.passed === true);
     assert.equal(isGoalDone(archDir, "green"), true, "archived to done/");
-    const archived = fs.readFileSync(path.join(archDir, "goals", "done", "green.md"), "utf8");
+    // Completing the only goal drains the queue, which triggers consolidation:
+    // the raw CGR (with its tests-passed stamp) is preserved verbatim under
+    // done/archive/. The stamp must survive the move.
+    const archivedPath = path.join(archDir, "goals", "done", "archive", "green.md");
+    const archived = fs.readFileSync(archivedPath, "utf8");
     assert.match(archived, /tests-passed: true/);
     assert.match(archived, /tests-command:/);
+    assert.ok(out.consolidation && out.consolidation.consolidated >= 1, "queue-drain consolidated the goal");
   });
 });
 

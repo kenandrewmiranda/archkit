@@ -11,7 +11,7 @@
         "source": "github",
         "repo": "kenandrewmiranda/archkit"
       },
-      "description": "Inject architectural thought into one-shot LLM coding: the archkit MCP server (28 tools, CGR relay prompts, @archkit: resources), four guardrail hooks (SessionStart, Stop, PostToolUse, UserPromptSubmit), and the /archkit-init wizard.",
+      "description": "Inject architectural thought into one-shot LLM coding: the archkit MCP server (31 tools, CGR relay prompts, @archkit: resources), four guardrail hooks (SessionStart, Stop, PostToolUse, UserPromptSubmit), and the /archkit-init wizard.",
       "author": {
         "name": "Ken Miranda"
       },

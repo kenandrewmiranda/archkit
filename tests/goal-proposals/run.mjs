@@ -89,8 +89,8 @@ test("promoteGoalProposal turns a proposal into a planned goal and removes it", 
     assert.ok(r && r.slug);
     assert.equal(countGoalProposals(archDir), 0, "proposal removed after promote");
     const goal = listGoals(archDir).find((g) => g.slug === r.slug);
-    assert.ok(goal, "planned goal exists");
-    assert.equal(statusOf(goal), "planned");
+    assert.ok(goal, "pending goal exists");
+    assert.equal(statusOf(goal), "pending");
     assert.deepEqual(goal.meta["exit-criteria"], ["retries work"]);
   });
 });

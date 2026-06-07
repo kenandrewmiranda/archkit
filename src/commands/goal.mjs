@@ -21,6 +21,10 @@ import {
   loadGoal,
   completeGoal,
   abandonGoal,
+  markTesting,
+  markOnHold,
+  statusOf,
+  STATUS_COMPLETED,
   exitCriteriaOf,
   verifyCommandOf,
   renderPayload,
@@ -32,6 +36,9 @@ import {
   removeGoalProposal,
   promoteGoalProposal,
   countGoalProposals,
+  consolidateGoals,
+  listDigests,
+  archiveDir,
 } from "../lib/goals.mjs";
 import crypto from "node:crypto";
 import { detectTestCommand, runTests } from "../lib/test-runner.mjs";
@@ -104,13 +111,30 @@ export function runGoalList({ archDir }) {
   if (fs.existsSync(dDir)) {
     for (const name of fs.readdirSync(dDir)) {
       if (!name.endsWith(".md")) continue;
+      const fp = path.join(dDir, name);
+      try { if (!fs.statSync(fp).isFile()) continue; } catch { continue; }
       done.push({ slug: name.replace(/\.md$/, "") });
     }
   }
+  // Consolidated history: raw CGRs preserved under done/archive/ + the dated
+  // digests that summarize them. Surfaces the consolidation output so the
+  // digest is discoverable here, not a dead file.
+  const aDir = archiveDir(archDir);
+  let archived = 0;
+  if (fs.existsSync(aDir)) {
+    archived = fs.readdirSync(aDir).filter((n) => n.endsWith(".md")).length;
+  }
+  const digests = listDigests(archDir).slice(0, 5).map((d) => ({
+    date: d.date,
+    count: d.count,
+    slugs: d.slugs,
+    relativePath: d.relativePath,
+    summary: d.summary,
+  }));
   const activeList = active.map((g) => ({
     slug: g.slug,
     title: g.meta.title || g.slug,
-    status: g.meta.status || "planned",
+    status: statusOf(g),
     created: g.meta.created || "",
   }));
   const goalsNote = activeList.length === 0 && done.length === 0
@@ -123,7 +147,7 @@ export function runGoalList({ archDir }) {
     : activeList.length === 0
       ? `Queue is empty. Call archkit_goal_intake with the next ask, or proceed without CGR.`
       : `Continue ${activeList[0].slug}. Call archkit_goal_payload ${activeList[0].slug} to re-render the /goal payload if needed.`;
-  return { active: activeList, done, goalsNote, nextStep };
+  return { active: activeList, done, archived, digests, goalsNote, nextStep };
 }
 
 export function runGoalPayload({ archDir, slug }) {
@@ -133,6 +157,51 @@ export function runGoalPayload({ archDir, slug }) {
     nextStep: out.withinBudget
       ? `Tell the user: run /clear, then /mcp__archkit__goal_next (fallback: paste this payload after /goal).`
       : `Payload is over the 3800-char budget. Trim required-reading or files-to-touch in .arch/goals/${slug}.md, then re-call.`,
+  };
+}
+
+// Move an active goal into the `testing` state — edits applied, verification
+// pending (ADR 0003). The file relocates to .arch/goals/testing/ and the goal
+// stays guarded by the Stop hook (it is NOT done) until a session verifies it
+// green and completes it. This replaces the premature-goal_complete antipattern
+// for fast mass-edits: park visible verification debt instead of hiding it.
+export function runGoalTesting({ archDir, slug }) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) {
+    const active = listGoals(archDir).map((g) => g.slug);
+    throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+      suggestion: active.length ? `Active goals: ${active.join(", ")}` : "No active goals — nothing to move to testing.",
+    });
+  }
+  const result = markTesting(archDir, slug);
+  const verifyCommand = verifyCommandOf(goal);
+  return {
+    ...result,
+    verifyCommand: verifyCommand || null,
+    nextStep: verifyCommand
+      ? `Goal "${slug}" parked in testing (.arch/goals/testing/${slug}.md) — edits applied, verification pending. It is NOT done: the Stop hook keeps guarding it. Run archkit_goal_verify ${slug} to preview the gate, then archkit_goal_complete ${slug} (re-runs "${verifyCommand}" and refuses on red).`
+      : `Goal "${slug}" parked in testing (.arch/goals/testing/${slug}.md) — edits applied, verification pending. It is NOT done: confirm the exit-criteria hold, then archkit_goal_complete ${slug}.`,
+  };
+}
+
+// Park an active goal in `on-hold` — deliberately set aside but resumable (ADR
+// 0003). Unlike `testing`, parking RELEASES the Stop-hook guard (the session may
+// end) and the goal is not auto-selected ahead of pending/testing work; a later
+// /mcp__archkit__goal_next resumes it (startGoal flips it back to in-progress)
+// only once nothing live is left. Distinct from archkit_goal_defer, which stashes
+// a follow-up PROPOSAL — on-hold parks a real, already-queued goal.
+export function runGoalHold({ archDir, slug }) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) {
+    const active = listGoals(archDir).map((g) => g.slug);
+    throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+      suggestion: active.length ? `Active goals: ${active.join(", ")}` : "No active goals — nothing to put on hold.",
+    });
+  }
+  const result = markOnHold(archDir, slug);
+  return {
+    ...result,
+    nextStep: `Goal "${slug}" parked on-hold (guard released — session can end). Resume later via /clear + /mcp__archkit__goal_next once nothing live is ahead of it; to DROP it instead, use archkit_goal_abandon ${slug}.`,
   };
 }
 
@@ -171,10 +240,22 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
   const result = completeGoal(archDir, slug, { notes, extraMeta });
   // Suggest the next goal's payload if any
   const remaining = listGoals(archDir);
-  const next = remaining.find((g) => (g.meta.status || "planned") !== "done");
+  const next = remaining.find((g) => statusOf(g) !== STATUS_COMPLETED);
+  // Queue-drain trigger: when nothing is left to work, fold the freshly-
+  // completed goal (and any earlier un-consolidated terminal goals) into a
+  // dated digest and archive the raw CGRs verbatim. Best-effort — a
+  // consolidation failure must never block marking the goal done.
+  let consolidation = null;
+  if (!next) {
+    try { consolidation = consolidateGoals(archDir); } catch { /* non-fatal */ }
+  }
+  const drainNote = consolidation && consolidation.consolidated > 0
+    ? ` Consolidated ${consolidation.consolidated} completed goal(s) into the ${consolidation.date} digest (raw archived under goals/done/archive/; searchable via archkit_goal_list).`
+    : "";
   return {
     ...result,
     testGate: verifyCommand ? { command: verifyCommand, passed: true } : null,
+    consolidation,
     nextGoal: next
       ? {
           slug: next.slug,
@@ -184,7 +265,22 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
       : null,
     nextStep: next
       ? `Tell the user: run /clear, then /mcp__archkit__goal_next to begin ${next.slug} (fallback: paste nextGoal.payload after /goal).`
-      : `All goals complete. Tell the user the CGR queue is empty and ask what to tackle next.`,
+      : `All goals complete.${drainNote} Tell the user the CGR queue is empty and ask what to tackle next.`,
+  };
+}
+
+// Incremental consolidation/digest on demand — drains terminal goals in
+// .arch/goals/done/ into a dated digest + archives raw CGRs. Safe to call with
+// goals still pending (NOT gated on an empty queue); the relay also fires this
+// automatically at queue-drain (runGoalComplete) and session-end (Stop hook).
+export function runGoalConsolidate({ archDir }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  const r = consolidateGoals(archDir);
+  return {
+    ...r,
+    nextStep: r.consolidated > 0
+      ? `Consolidated ${r.consolidated} terminal goal(s) into .arch/goals/done/digest/${r.date}.md. Raw CGRs preserved under goals/done/archive/ — full context recoverable. Recent digests surface in archkit_goal_list.`
+      : `Nothing to consolidate — no un-archived terminal goals in .arch/goals/done/.`,
   };
 }
 
@@ -197,7 +293,7 @@ export function runGoalAbandon({ archDir, slug, reason }) {
   }
   const result = abandonGoal(archDir, slug, { reason });
   const remaining = listGoals(archDir);
-  const next = remaining.find((g) => (g.meta.status || "planned") !== "done");
+  const next = remaining.find((g) => statusOf(g) !== STATUS_COMPLETED);
   return {
     ...result,
     nextGoal: next ? { slug: next.slug, ...renderPayload(archDir, next.slug) } : null,
@@ -248,6 +344,10 @@ export async function runGoalVerify({ archDir, cwd = process.cwd(), slug }) {
 
   const testsGreen = !verifyCommand || (tests?.ran && tests.passed);
   const clean = stagedReview.errors === 0 && testsGreen;
+  // A goal in `testing` IS the verification window (ADR 0003): edits already
+  // landed and we're now draining the verify debt. Surface that so the agent
+  // knows a green run here is the cue to complete.
+  const inTesting = (goal.meta.status || "") === "testing";
   const nextStep = stagedReview.errors > 0
     ? `Staged review has ${stagedReview.errors} error(s) — resolve them (archkit_review_staged for detail) before archkit_goal_complete ${slug}.`
     : verifyCommand && !tests.ran
@@ -261,6 +361,8 @@ export async function runGoalVerify({ archDir, cwd = process.cwd(), slug }) {
   return {
     slug,
     title: goal.meta.title || slug,
+    status: statusOf(goal),
+    verificationWindow: inTesting,
     exitCriteria,
     exitCriteriaNote: exitCriteria.length === 0 ? `Goal has no exit-criteria — can't verify completion objectively. Add some to .arch/goals/${slug}.md.` : undefined,
     filesToTouch: { touched, untouched },
@@ -374,7 +476,10 @@ async function main() {
     console.log(`${C.gray}    list                         List active + done goals${C.reset}`);
     console.log(`${C.gray}    show <slug>                  Print the goal's markdown${C.reset}`);
     console.log(`${C.gray}    payload <slug>               Print the /goal copy-paste payload${C.reset}`);
+    console.log(`${C.gray}    testing <slug>               Park a goal in testing/ (edits applied, verify pending)${C.reset}`);
+    console.log(`${C.gray}    hold <slug>                  Set a goal aside as on-hold (resumable, guard released)${C.reset}`);
     console.log(`${C.gray}    complete <slug> [--notes X]  Mark a goal done, archive to done/${C.reset}`);
+    console.log(`${C.gray}    consolidate                  Digest terminal goals → done/digest/, archive raw${C.reset}`);
     console.log(`${C.gray}    intake --json <json>         Accept decomposed-goals JSON (agent driver)${C.reset}`);
     console.log("");
     console.log(`${C.dim}  CGR workflow: type a sprawling ask in a fresh session → agent decomposes${C.reset}`);
@@ -432,6 +537,26 @@ async function main() {
         printPayload(out);
         break;
       }
+      case "testing": {
+        const slug = args[1];
+        if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal testing <slug>" });
+        const out = runGoalTesting({ archDir, slug });
+        if (isJson) { console.log(JSON.stringify(out)); break; }
+        commandBanner("archkit goal", `testing ${slug}`);
+        console.log(`\n  ${C.yellow}${I.dot}${C.reset} parked in testing: .arch/goals/testing/${slug}.md`);
+        console.log(`  ${C.dim}edits applied, verification pending — NOT done${C.reset}\n`);
+        break;
+      }
+      case "hold": {
+        const slug = args[1];
+        if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal hold <slug>" });
+        const out = runGoalHold({ archDir, slug });
+        if (isJson) { console.log(JSON.stringify(out)); break; }
+        commandBanner("archkit goal", `on-hold ${slug}`);
+        console.log(`\n  ${C.yellow}${I.dot}${C.reset} parked on-hold: .arch/goals/${slug}.md`);
+        console.log(`  ${C.dim}deliberately set aside — guard released, resume with /mcp__archkit__goal_next${C.reset}\n`);
+        break;
+      }
       case "complete": {
         const slug = args[1];
         if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal complete <slug>" });
@@ -449,6 +574,18 @@ async function main() {
           printPayload(out.nextGoal);
         } else {
           console.log(`  ${C.dim}all goals complete${C.reset}\n`);
+        }
+        break;
+      }
+      case "consolidate": {
+        const out = runGoalConsolidate({ archDir });
+        if (isJson) { console.log(JSON.stringify(out)); break; }
+        commandBanner("archkit goal", "consolidate completed goals");
+        if (out.consolidated > 0) {
+          console.log(`\n  ${C.green}${I.check}${C.reset} digest: .arch/goals/done/digest/${out.date}.md (${out.consolidated} goal${out.consolidated === 1 ? "" : "s"})`);
+          console.log(`  ${C.dim}raw preserved under goals/done/archive/${C.reset}\n`);
+        } else {
+          console.log(`\n  ${C.dim}nothing to consolidate${C.reset}\n`);
         }
         break;
       }

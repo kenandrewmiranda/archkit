@@ -189,13 +189,24 @@ await test("Stop hook nudges (no block) when no goal active but one is queued", 
   });
 });
 
-await test("Stop hook is silent once the goal is done and queue is empty", () => {
+await test("Stop hook consolidates once on queue-drain, then is silent", () => {
   withArchDir(({ dir, archDir }) => {
     writeGoal(archDir, { slug: "g1", title: "G1", exitCriteria: ["x"] });
     startGoal(archDir, "g1");
-    completeGoal(archDir, "g1");
-    const out = runHook({ cwd: dir, assistant_response: "All done." });
-    assert.equal(out, null, "no output / no block when nothing is queued");
+    completeGoal(archDir, "g1"); // raw lands in done/ un-consolidated
+    // First stop after drain: the session-end safety net consolidates the
+    // terminal goal into the digest + archives the raw CGR, and says so once.
+    const first = runHook({ cwd: dir, assistant_response: "All done." });
+    assert.ok(first && first.systemMessage, "produces a consolidation notice");
+    assert.match(first.systemMessage, /consolidated/i);
+    assert.ok(!first.decision, "never blocks when nothing is queued");
+    assert.ok(
+      fs.existsSync(path.join(archDir, "goals", "done", "archive", "g1.md")),
+      "raw CGR preserved verbatim under done/archive/"
+    );
+    // Idempotent: nothing left to drain → silent on the next stop.
+    const second = runHook({ cwd: dir, assistant_response: "Still nothing to do." });
+    assert.equal(second, null, "silent once the queue is drained and consolidated");
   });
 });
 

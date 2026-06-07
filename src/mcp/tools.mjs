@@ -23,7 +23,7 @@ import { runBoundaryCheckJson, runBoundaryProposeJson } from "../commands/bounda
 import { runDoctorJson } from "../commands/doctor.mjs";
 import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
-import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss } from "../commands/goal.mjs";
+import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate } from "../commands/goal.mjs";
 import { loadGoal } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
@@ -242,7 +242,7 @@ export const tools = {
   },
 
   archkit_goal_list: {
-    description: "List active and completed CGR goals in .arch/goals/. Use to check what's already in flight before calling archkit_goal_intake (avoid duplicating an existing goal), or to find the next goal's slug after completing one.",
+    description: "List active and completed CGR goals in .arch/goals/. Use to check what's already in flight before calling archkit_goal_intake (avoid duplicating an existing goal), or to find the next goal's slug after completing one. Also returns `digests` (recent dated consolidation summaries from goals/done/digest/, each with the slugs it covers + a relativePath) and `archived` (count of raw CGRs preserved verbatim under goals/done/archive/ for full-context recovery) — this is the discoverable surface for the incremental consolidation/digest produced at queue-drain.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -296,7 +296,7 @@ export const tools = {
   },
 
   archkit_goal_complete: {
-    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. HARD TEST GATE: if the goal has a verify-command (auto-detected at intake or set explicitly), this re-runs it and REFUSES to complete on red — erroring with test_gate_failed and the failing output tail. Fix the tests and retry, or archkit_goal_abandon if the goal is obsolete. On success it stamps tests-passed/tests-command/tests-at on the archived goal. Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
+    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. HARD TEST GATE: if the goal has a verify-command (auto-detected at intake or set explicitly), this re-runs it and REFUSES to complete on red — erroring with test_gate_failed and the failing output tail. Fix the tests and retry, or archkit_goal_abandon if the goal is obsolete. On success it stamps tests-passed/tests-command/tests-at on the archived goal. When this completion DRAINS the queue (no goal left), it also fires the incremental consolidation/digest: terminal goals are summarized into a dated digest at goals/done/digest/<date>.md and their raw CGR files are preserved verbatim under goals/done/archive/ (returned as `consolidation`). Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
     inputSchema: z.object({
       slug: z.string().min(1).describe("Goal slug to complete."),
       notes: z.string().optional().describe("Optional 1-2 sentence completion notes."),
@@ -304,6 +304,37 @@ export const tools = {
     handler: async ({ slug, notes }) => {
       const cwd = process.cwd();
       return runGoalComplete({ archDir: requireArchDir(cwd), cwd, slug, notes });
+    },
+  },
+
+  archkit_goal_testing: {
+    description: "CGR lifecycle transition: move an in-progress goal into the `testing` state — edits applied, verification still PENDING (ADR 0003). This is the antidote to the premature-completion antipattern: instead of calling archkit_goal_complete the instant a fast mass-edit lands (which hides unverified work in done/), park the goal as visible verification debt. The file relocates to .arch/goals/testing/<slug>.md (the one loud verification drawer) and the goal stays GUARDED by the Stop hook — it is NOT done. A goal in testing survives /clear and keeps blocking the relay until a (possibly later, fresh) session runs its verify-command/exit-criteria green and calls archkit_goal_complete. When to use: right after applying a goal's edits, BEFORE you've actually run the tests — especially when batching many edits whose verification you want to drain deliberately rather than rubber-stamp. Returns { slug, status:'testing', filepath, verifyCommand, nextStep }.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to move into the testing (verification-pending) state."),
+    }),
+    handler: async ({ slug }) => {
+      const cwd = process.cwd();
+      return runGoalTesting({ archDir: requireArchDir(cwd), slug });
+    },
+  },
+
+  archkit_goal_hold: {
+    description: "CGR lifecycle transition: park a real, queued goal as `on-hold` — deliberately set aside but resumable (ADR 0003). Distinct from archkit_goal_defer (which stashes a follow-up PROPOSAL) and from depends-on blocking (auto-resolved): on-hold means a human/agent chose to pause work that is already in the queue. Unlike `testing`, parking RELEASES the Stop-hook relay guard so the session can end, and the goal is NOT auto-selected ahead of pending/testing work — nextEligibleGoal only offers it as a last-resort resume once nothing live is left. The file stays in .arch/goals/ root (status frontmatter is the source of truth, not a folder). Resume later with /clear then /mcp__archkit__goal_next, which flips it back to in-progress. When to use: when you need to set the current goal aside (blocked on an external decision, reprioritized) without dropping it (use archkit_goal_abandon to drop). Returns { slug, status:'on-hold', filepath, nextStep }.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to park as on-hold (deliberately set aside, resumable)."),
+    }),
+    handler: async ({ slug }) => {
+      const cwd = process.cwd();
+      return runGoalHold({ archDir: requireArchDir(cwd), slug });
+    },
+  },
+
+  archkit_goal_consolidate: {
+    description: "Run the incremental CGR consolidation/digest phase on demand: fold every terminal goal currently sitting at the top level of .arch/goals/done/ into a dated per-day digest (goals/done/digest/<YYYY-MM-DD>.md) and preserve each raw CGR file verbatim under goals/done/archive/<slug>.md so an agent can still pull full context after the summary is written. INCREMENTAL — it only ever drains what is already terminal (completed/abandoned), so it is SAFE to call while other goals are still pending or in-progress; it is NOT gated on an empty queue. Idempotent: once a goal is archived it won't be re-digested. The relay also fires this automatically at queue-drain (archkit_goal_complete) and session-end (Stop hook); call this tool to trigger it explicitly (e.g. mid-sprint, to summarize a batch of finished goals). The resulting digests are discoverable via archkit_goal_list. Returns { date, consolidated, archived:[...], slugs:[...], digestPath, nextStep }.",
+    inputSchema: z.object({}),
+    handler: async () => {
+      const cwd = process.cwd();
+      return runGoalConsolidate({ archDir: requireArchDir(cwd) });
     },
   },
 
