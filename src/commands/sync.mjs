@@ -6,6 +6,7 @@ import { findArchDir } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { loadFile, parseIndex, parseSystem } from "../lib/parsers.mjs";
+import { archkitError } from "../lib/errors.mjs";
 import { PACKAGE_DOCS } from "../data/package-docs.mjs";
 import { SKILL_CATALOG } from "../data/app-types.mjs";
 
@@ -13,20 +14,30 @@ function banner() {
   commandBanner("arch-sync", "Detect .arch/ files that need updating");
 }
 
-function main() {
-  const args = process.argv.slice(2);
-  const srcDir = args.find(a => !a.startsWith("-")) || "src";
-  const jsonMode = args.includes("--json");
-
-  const archDir = findArchDir({ requireFile: "SYSTEM.md" });
-  if (!archDir) {
-    if (jsonMode) console.log(JSON.stringify({ error: "No .arch/ directory found" }));
-    else { banner(); log.error("No .arch/ directory found."); }
-    process.exit(1);
+// Summarize the staleness report into a one-line nextStep. The clean case
+// returns a useful sentence (never a silent empty) so the MCP silent-success
+// contract holds and the agent knows there's nothing to do rather than guessing.
+function buildSyncNextStep(suggestions) {
+  if (suggestions.length === 0) {
+    return ".arch/ is in sync with src/ (features, skills, and deps all match) — no stale files. Re-run after adding a feature or dependency.";
   }
+  const byType = {};
+  for (const s of suggestions) byType[s.type] = (byType[s.type] || 0) + 1;
+  const summary = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(", ");
+  const first = suggestions[0];
+  const action = first.command ? `Start: ${first.command}` : first.action;
+  return `${suggestions.length} .arch/ file(s) stale vs src/ (${summary}). ${action}`;
+}
 
-  if (!jsonMode) banner();
-  log.resolve("Comparing codebase against .arch/ files...");
+// Shared code path for the `sync` CLI and the archkit_sync MCP tool: compares
+// the codebase against .arch/ and returns the structured staleness report.
+// No logging / no process.exit so the MCP handler gets a clean object.
+export function runSyncJson({ archDir, srcDir = "src" }) {
+  if (!archDir) {
+    throw archkitError("no_arch_dir", "No .arch/ directory found", {
+      suggestion: "Run `archkit init` in your project root.",
+    });
+  }
 
   const suggestions = [];
 
@@ -147,12 +158,32 @@ function main() {
     }
   } catch {}
 
-  // Output
-  const result = {
+  return {
     archDir,
+    srcDir,
     suggestions,
     syncNeeded: suggestions.length > 0,
+    nextStep: buildSyncNextStep(suggestions),
   };
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  const srcDir = args.find(a => !a.startsWith("-")) || "src";
+  const jsonMode = args.includes("--json");
+
+  const archDir = findArchDir({ requireFile: "SYSTEM.md" });
+  if (!archDir) {
+    if (jsonMode) console.log(JSON.stringify({ error: "No .arch/ directory found" }));
+    else { banner(); log.error("No .arch/ directory found."); }
+    process.exit(1);
+  }
+
+  if (!jsonMode) banner();
+  log.resolve("Comparing codebase against .arch/ files...");
+
+  const result = runSyncJson({ archDir, srcDir });
+  const { suggestions } = result;
 
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));

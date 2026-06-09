@@ -36,6 +36,7 @@ const commands = {
   market:   "../src/commands/market.mjs",
   "boundary-check": "../src/commands/boundary.mjs",
   goal:     "../src/commands/goal.mjs",
+  worklog:  "../src/commands/worklog.mjs",
   doctor:   "../src/commands/doctor.mjs",
 };
 

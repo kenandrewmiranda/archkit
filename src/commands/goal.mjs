@@ -208,7 +208,7 @@ export function runGoalHold({ archDir, slug }) {
   };
 }
 
-export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
+export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, timeSpent }) {
   // HARD test gate: if the goal declares a verify-command, run it and refuse to
   // complete on red (or if it can't run). This is what makes "done" provably
   // mean tests pass instead of trusting the agent's say-so. Escape hatch: a
@@ -256,7 +256,7 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
     }
   } catch { /* non-fatal */ }
 
-  const result = completeGoal(archDir, slug, { notes, extraMeta });
+  const result = completeGoal(archDir, slug, { notes, extraMeta, timeSpent });
   // Suggest the next goal's payload if any
   const remaining = listGoals(archDir);
   const next = remaining.find((g) => statusOf(g) !== STATUS_COMPLETED);
@@ -276,6 +276,11 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
   const graphNote = graphReconciliation
     ? ` ${graphReconciliation.gaps.length} graph gap(s) — document via graphReconciliation while warm.`
     : "";
+  // Per-goal effort breadcrumb: explicit override if given, else derived
+  // wall-clock; silent for legacy date-only goals where neither is available.
+  const timeNote = result.effort && result.effort.display
+    ? ` Time ${result.effort.source === "explicit" ? "logged" : "elapsed"}: ${result.effort.display}.`
+    : "";
   return {
     ...result,
     testGate: verifyCommand ? { command: verifyCommand, passed: true } : null,
@@ -289,8 +294,8 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
         }
       : null,
     nextStep: next
-      ? `Run /clear, then /mcp__archkit__goal_next to begin ${next.slug}.${graphNote}`
-      : `CGR queue empty.${drainNote}${graphNote} Ask the user what to tackle next.`,
+      ? `Run /clear, then /mcp__archkit__goal_next to begin ${next.slug}.${timeNote}${graphNote}`
+      : `CGR queue empty.${drainNote}${timeNote}${graphNote} Ask the user what to tackle next.`,
   };
 }
 
@@ -558,7 +563,7 @@ async function main() {
     console.log(`${C.gray}    payload <slug>               Print the /goal copy-paste payload${C.reset}`);
     console.log(`${C.gray}    testing <slug>               Park a goal in testing/ (edits applied, verify pending)${C.reset}`);
     console.log(`${C.gray}    hold <slug>                  Set a goal aside as on-hold (resumable, guard released)${C.reset}`);
-    console.log(`${C.gray}    complete <slug> [--notes X]  Mark a goal done, archive to done/${C.reset}`);
+    console.log(`${C.gray}    complete <slug> [--notes X] [--time-spent 2h]  Mark a goal done, archive to done/${C.reset}`);
     console.log(`${C.gray}    consolidate                  Digest terminal goals → done/digest/, archive raw${C.reset}`);
     console.log(`${C.gray}    graph-accept <slug> --line X Apply an authored node line from a graph-proposal${C.reset}`);
     console.log(`${C.gray}    intake --json <json>         Accept decomposed-goals JSON (agent driver)${C.reset}`);
@@ -643,11 +648,14 @@ async function main() {
         if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal complete <slug>" });
         const notesIdx = args.indexOf("--notes");
         const notes = notesIdx > 0 ? (args[notesIdx + 1] || "") : "";
-        const out = runGoalComplete({ archDir, cwd: process.cwd(), slug, notes });
+        const timeIdx = args.indexOf("--time-spent");
+        const timeSpent = timeIdx > 0 ? (args[timeIdx + 1] || "") : "";
+        const out = runGoalComplete({ archDir, cwd: process.cwd(), slug, notes, timeSpent });
         if (isJson) { console.log(JSON.stringify(out)); break; }
         commandBanner("archkit goal", `completed ${slug}`);
         console.log(`\n  ${C.green}${I.check}${C.reset} archived: ${out.archivedAt}`);
         if (out.testGate) console.log(`  ${C.green}${I.check}${C.reset} test gate: ${out.testGate.command} passed`);
+        if (out.effort && out.effort.display) console.log(`  ${C.dim}time ${out.effort.source === "explicit" ? "logged" : "elapsed"}: ${out.effort.display}${C.reset}`);
         console.log("");
         if (out.nextGoal) {
           console.log(`  ${C.bold}Next goal:${C.reset} ${out.nextGoal.slug}`);

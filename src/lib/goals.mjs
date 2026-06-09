@@ -67,7 +67,7 @@ export function slugify(s) {
 
 export function parseGoal(content) {
   const m = content.match(FRONTMATTER_RE);
-  if (!m) return { meta: {}, body: content };
+  if (!m) return { meta: {}, body: content, elapsedMs: null };
   const meta = {};
   for (const line of m[1].split("\n")) {
     const colon = line.indexOf(":");
@@ -105,7 +105,10 @@ export function parseGoal(content) {
     }
   }
   flush();
-  return { meta, body: m[2] };
+  // elapsedMs exposed on the parsed goal record — derived wall-clock from the
+  // datetime stamps, or null for legacy date-only goals (deriveElapsedMs is
+  // hoisted; it's defined lower in the file).
+  return { meta, body: m[2], elapsedMs: deriveElapsedMs(meta.started, meta.completed) };
 }
 
 function emitFrontmatter(meta) {
@@ -194,13 +197,20 @@ export function loadGoal(archDir, slug) {
   return null;
 }
 
-export function completeGoal(archDir, slug, { notes = "", extraMeta = {} } = {}) {
+export function completeGoal(archDir, slug, { notes = "", extraMeta = {}, timeSpent = "" } = {}) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
   ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_COMPLETED;
-  goal.meta["completed"] = new Date().toISOString().slice(0, 10);
+  // Full ISO-8601 datetime (not date-only) so elapsed wall-clock is derivable
+  // from started→completed.
+  goal.meta["completed"] = new Date().toISOString();
   if (notes) goal.meta["completion-notes"] = notes;
+  // Explicit effort override (e.g. '2h'/'90m'): persisted as the time-spent
+  // frontmatter key and taking precedence over derived elapsed (wall-clock
+  // counts idle gaps, so an honest hand-entered figure is the truer effort).
+  const effort = normalizeEffort(timeSpent);
+  if (effort) goal.meta["time-spent"] = effort;
   // Stamp objective completion evidence (e.g. tests-passed/-command/-at) so the
   // archived goal records HOW it was verified, not just that it was claimed done.
   for (const [k, v] of Object.entries(extraMeta)) {
@@ -210,7 +220,7 @@ export function completeGoal(archDir, slug, { notes = "", extraMeta = {} } = {})
   const targetPath = path.join(doneDir(archDir), `${slug}.md`);
   fs.writeFileSync(targetPath, out);
   fs.rmSync(goal.filepath, { force: true });
-  return { slug, archivedAt: targetPath };
+  return { slug, archivedAt: targetPath, elapsedMs: deriveElapsedMs(goal.meta.started, goal.meta["completed"]), effort: effortOf({ meta: goal.meta }) };
 }
 
 // Build a compact graph neighborhood for the files a goal will touch, scoped by
@@ -558,6 +568,73 @@ function ensureArray(v) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Per-goal time capture (goal-time-capture)
+//
+// Transition stamps (started / testing-since / completed) are written as full
+// ISO-8601 datetimes so wall-clock elapsed is derivable. Goals written before
+// this carry date-only (YYYY-MM-DD) stamps with NO time component; derivation
+// declines on those rather than fabricating a midnight-to-midnight span, so
+// legacy goals degrade gracefully (no elapsed shown, no parse crash).
+// ───────────────────────────────────────────────────────────────────────────
+
+// The calendar-day portion (YYYY-MM-DD) of a stamp that may be a full datetime
+// or already date-only. Used wherever a DAY is wanted (digests, the done-today
+// breadcrumb, backlog-age) regardless of stamp precision — so day-grouping keeps
+// working across the date-only→datetime upgrade.
+export function stampDate(stamp) {
+  return String(stamp || "").trim().slice(0, 10);
+}
+
+// True only for a full ISO-8601 datetime stamp (carries a time component) — the
+// discriminator between a new datetime stamp and a legacy date-only one.
+function hasTimeComponent(stamp) {
+  return typeof stamp === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(stamp.trim());
+}
+
+// Wall-clock elapsed (ms) from started→completed, or null when it can't be
+// honestly derived: either stamp missing/unparseable, date-only (legacy — no
+// time component, so a span would be fiction), or completed-before-started.
+export function deriveElapsedMs(started, completed) {
+  if (!hasTimeComponent(started) || !hasTimeComponent(completed)) return null;
+  const a = Date.parse(started), b = Date.parse(completed);
+  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return null;
+  return b - a;
+}
+
+// Humanize a millisecond span compactly: "2h 15m", "45m", "30s". null/NaN/
+// negative → null (nothing worth showing).
+export function formatDuration(ms) {
+  if (ms == null || Number.isNaN(ms) || ms < 0) return null;
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.round(sec / 60);
+  const h = Math.floor(min / 60), m = min % 60;
+  if (h === 0) return `${m}m`;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+// Tidy an explicit effort entry ('2h', '90m', ' 1h30m ') for the time-spent
+// frontmatter key. Lenient — collapses inner whitespace but otherwise passes the
+// value through so a user's honest figure is never dropped. Blank → null.
+export function normalizeEffort(input) {
+  const s = String(input || "").replace(/\s+/g, " ").trim();
+  return s || null;
+}
+
+// Effective per-goal effort for a parsed goal record. The explicit user-entered
+// time-spent override WINS when present — wall-clock counts idle gaps, so an
+// honest hand-entered figure is the truer effort. Falls back to derived elapsed,
+// else nothing. `source` tells the caller which path produced `display`.
+export function effortOf(goal) {
+  const meta = goal?.meta || {};
+  const elapsedMs = deriveElapsedMs(meta.started, meta.completed);
+  const explicit = normalizeEffort(meta["time-spent"]);
+  if (explicit) return { source: "explicit", display: explicit, timeSpent: explicit, elapsedMs };
+  if (elapsedMs != null) return { source: "derived", display: formatDuration(elapsedMs), timeSpent: null, elapsedMs };
+  return { source: "none", display: null, timeSpent: null, elapsedMs: null };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // CGR fresh-context relay loop (prototype, proto/cgr-relay-loop)
 //
 // The base CGR flow tracks status: planned | done. The relay loop adds an
@@ -643,7 +720,7 @@ export function startGoal(archDir, slug) {
   if (!goal) throw new Error(`unknown goal: ${slug}`);
   ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_ACTIVE;
-  if (!goal.meta.started) goal.meta.started = new Date().toISOString().slice(0, 10);
+  if (!goal.meta.started) goal.meta.started = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
   fs.writeFileSync(targetPath, out);
@@ -665,7 +742,7 @@ export function markTesting(archDir, slug) {
   if (!goal) throw new Error(`unknown goal: ${slug}`);
   ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_TESTING;
-  if (!goal.meta["testing-since"]) goal.meta["testing-since"] = new Date().toISOString().slice(0, 10);
+  if (!goal.meta["testing-since"]) goal.meta["testing-since"] = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(testingDir(archDir), `${slug}.md`);
   fs.writeFileSync(targetPath, out);
@@ -734,7 +811,9 @@ export function backlogThreshold(archDir) {
 }
 
 function daysBetween(fromISODate, now) {
-  const d = new Date(`${fromISODate}T00:00:00Z`);
+  // Tolerate both date-only (legacy) and full-datetime stamps by comparing on
+  // the calendar day — a datetime `testing-since` must still age correctly.
+  const d = new Date(`${stampDate(fromISODate)}T00:00:00Z`);
   if (Number.isNaN(d.getTime())) return null;
   return Math.floor((now.getTime() - d.getTime()) / 86400000);
 }
@@ -979,7 +1058,8 @@ export function listTerminalGoals(archDir) {
 function digestEntry(goal) {
   const m = goal.meta || {};
   const status = m.status || "completed";
-  const completedOn = m.completed || m.abandoned || m.created || "";
+  // Day-granular for the digest summary (completed may now be a full datetime).
+  const completedOn = stampDate(m.completed || m.abandoned || m.created || "");
   const tests = m["tests-passed"] ? ` (tests: ${m["tests-command"] || "verify"} passed)` : "";
   const note = m["completion-notes"] || m["abandon-reason"] || "";
   const lines = [];
@@ -1077,6 +1157,243 @@ export function listDigests(archDir) {
   }
   out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   return out;
+}
+
+// Split a digest file's body into per-goal entries (slug/title/date/outcome),
+// mirroring digestEntry()'s emitted shape. Each entry is delimited by the
+// `<!-- cgr-digest-slug: SLUG -->` marker. Pure; tolerant of missing lines.
+function parseDigestEntries(content) {
+  const text = String(content || "");
+  const entries = [];
+  const re = /<!-- cgr-digest-slug: (.+?) -->([\s\S]*?)(?=<!-- cgr-digest-slug:|$)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const slug = m[1].trim();
+    const block = m[2] || "";
+    const titleM = block.match(/^##\s+.+?—\s+(.+)$/m);
+    const dateM = block.match(/^-\s+Date:\s+(.+)$/m);
+    const outcomeM = block.match(/^-\s+Outcome:\s+(.+)$/m);
+    entries.push({
+      slug,
+      title: titleM ? titleM[1].trim() : slug,
+      date: dateM ? dateM[1].trim() : "",
+      outcome: outcomeM ? outcomeM[1].trim() : "",
+    });
+  }
+  return entries;
+}
+
+// Goals marked completed on a given ISO day (YYYY-MM-DD), deduped by slug,
+// drawn from BOTH the un-consolidated raw files at done/ root AND consolidated
+// digest entries — so the relay's "done today" breadcrumb stays correct whether
+// or not consolidation has run. Abandoned goals are excluded (not "completed").
+// Title falls back to slug. Pure read of .arch/; never throws.
+export function goalsCompletedOn(archDir, day) {
+  const seen = new Set();
+  const out = [];
+  const add = (slug, title) => {
+    const s = String(slug || "").trim();
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push({ slug: s, title: String(title || "").trim() || s });
+  };
+
+  // 1) Un-consolidated raw terminal files at done/ root.
+  for (const g of listTerminalGoals(archDir)) {
+    if (statusOf(g) !== STATUS_COMPLETED) continue;
+    if (stampDate(g.meta?.completed) === day) add(g.slug, g.meta?.title);
+  }
+
+  // 2) Consolidated digest entries dated `day` with a completed outcome. Match
+  // on the per-entry Date (the goal's completion day), not the digest filename.
+  for (const dgst of listDigests(archDir)) {
+    for (const e of parseDigestEntries(dgst.content)) {
+      if (e.date === day && /^completed/i.test(e.outcome)) add(e.slug, e.title);
+    }
+  }
+  return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Worklog export (goal-worklog-export)
+//
+// A copy-pasteable day-by-day log of COMPLETED goals — title, outcome, time, and
+// completion notes — built as a pure report over completed-goal data already on
+// disk. The deliverable users asked for: something to post to Jira / standups so
+// the goal_next→/clear→goal_next loop stops losing track of what got done.
+//
+// Time honesty (mirrors effortOf): the explicit hand-entered effort (time-spent)
+// wins when set; otherwise the derived started→completed wall-clock is shown
+// tagged '(elapsed)' so an estimate is never misreported as logged effort; a
+// legacy date-only goal (no derivable span, no override) shows no time at all.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Parse a humanized duration ('2h', '90m', '1h 30m', '1h30m', '30s', '2h 15m')
+// back to milliseconds for summing into a range total. Tolerates the exact
+// strings formatDuration emits plus loose user input. Returns null when nothing
+// time-like is found (so an unparseable value is excluded from a total, never
+// counted as zero). Pure.
+export function effortToMs(text) {
+  const s = String(text || "").toLowerCase();
+  const re = /(\d+(?:\.\d+)?)\s*([hms])/g;
+  let m, ms = 0, matched = false;
+  while ((m = re.exec(s)) !== null) {
+    matched = true;
+    const n = parseFloat(m[1]);
+    if (m[2] === "h") ms += n * 3600000;
+    else if (m[2] === "m") ms += n * 60000;
+    else ms += n * 1000;
+  }
+  return matched ? Math.round(ms) : null;
+}
+
+// Resolve a worklog date range from optional --from/--to. Default is TODAY;
+// `from` alone runs from that day through today; `to` alone is open-started
+// (everything up to that day); both pins both ends (swapped order normalized).
+// Days are ISO YYYY-MM-DD, so lexical comparison is chronological.
+function resolveWorklogRange({ from, to, today }) {
+  const f = stampDate(from);
+  const t = stampDate(to);
+  if (!f && !t) return { from: today, to: today };
+  if (f && !t) return { from: f, to: today };
+  if (!f && t) return { from: "", to: t }; // open start
+  return f <= t ? { from: f, to: t } : { from: t, to: f };
+}
+
+// One worklog entry per COMPLETED goal, drawn from every source that records a
+// completion: un-consolidated raw files at done/ root, raw archives under
+// done/archive/, and — as a sparse fallback for goals whose raw file is gone —
+// consolidated digest entries. Deduped by slug, preferring a full-frontmatter
+// source (root/archive, which carry notes + time) over the sparse digest entry,
+// so each entry is as rich as the surviving data allows. Filtered to completions
+// whose day falls within [from,to] inclusive (an empty bound is open on that
+// side). Abandoned goals are excluded — a worklog is what got DONE. Pure read of
+// .arch/; never throws. Sorted most-recent completion first.
+export function collectWorklogEntries(archDir, { from = "", to = "" } = {}) {
+  const lo = stampDate(from);
+  const hi = stampDate(to);
+  const inRange = (day) => !!day && (!lo || day >= lo) && (!hi || day <= hi);
+
+  const bySlug = new Map();
+  const addRich = (goal) => {
+    if (statusOf(goal) !== STATUS_COMPLETED) return;
+    const day = stampDate(goal.meta?.completed);
+    if (!inRange(day)) return;
+    const eff = effortOf(goal);
+    const tests = goal.meta?.["tests-passed"]
+      ? ` (tests: ${goal.meta["tests-command"] || "verify"} passed)`
+      : "";
+    bySlug.set(goal.slug, {
+      slug: goal.slug,
+      title: goal.meta?.title || goal.slug,
+      day,
+      completed: goal.meta?.completed || day,
+      outcome: `${STATUS_COMPLETED}${tests}`,
+      notes: goal.meta?.["completion-notes"] || "",
+      effort: { source: eff.source, display: eff.display, elapsedMs: eff.elapsedMs },
+    });
+  };
+
+  // 1) Un-consolidated raw terminal files at done/ root (richest, freshest).
+  for (const g of listTerminalGoals(archDir)) addRich(g);
+
+  // 2) Raw archives preserved verbatim at consolidation — same full frontmatter.
+  const aDir = archiveDir(archDir);
+  if (fs.existsSync(aDir)) {
+    for (const name of fs.readdirSync(aDir)) {
+      if (!name.endsWith(".md")) continue;
+      const fp = path.join(aDir, name);
+      try {
+        if (!fs.statSync(fp).isFile()) continue;
+        const parsed = parseGoal(fs.readFileSync(fp, "utf8"));
+        const slug = parsed.meta.slug || name.replace(/\.md$/, "");
+        if (bySlug.has(slug)) continue; // a root copy is already at least as rich
+        addRich({ slug, meta: parsed.meta, body: parsed.body });
+      } catch { /* skip unreadable */ }
+    }
+  }
+
+  // 3) Sparse fallback — a consolidated digest entry whose raw archive is gone.
+  // Carries title/outcome/day only (no notes, no time), so it's used ONLY when
+  // nothing richer for that slug exists.
+  for (const dgst of listDigests(archDir)) {
+    for (const e of parseDigestEntries(dgst.content)) {
+      if (bySlug.has(e.slug)) continue;
+      if (!/^completed/i.test(e.outcome)) continue;
+      if (!inRange(e.date)) continue;
+      bySlug.set(e.slug, {
+        slug: e.slug,
+        title: e.title || e.slug,
+        day: e.date,
+        completed: e.date,
+        outcome: e.outcome,
+        notes: "",
+        effort: { source: "none", display: null, elapsedMs: null },
+      });
+    }
+  }
+
+  return [...bySlug.values()].sort((a, b) =>
+    a.completed < b.completed ? 1 : a.completed > b.completed ? -1 : a.slug < b.slug ? -1 : 1);
+}
+
+// Render the worklog as copy-pasteable markdown over a date or date range,
+// grouped by day (most recent first). Each entry shows title, outcome, time
+// (explicit effort, else elapsed-tagged wall-clock, else nothing) and completion
+// notes. A range total sums whatever effort is quantifiable (parsed explicit +
+// derived elapsed) and flags how many entries had untracked time, so the figure
+// is never silently incomplete. `today` is injectable for deterministic tests.
+// Returns { from, to, count, totalMs, totalDisplay, entries, markdown }.
+export function renderWorklog(archDir, { from = "", to = "", today } = {}) {
+  const day0 = today || new Date().toISOString().slice(0, 10);
+  const range = resolveWorklogRange({ from, to, today: day0 });
+  const entries = collectWorklogEntries(archDir, range);
+
+  const label = range.from === range.to
+    ? range.from
+    : `${range.from || "…"} → ${range.to}`;
+
+  let totalMs = 0, timed = 0;
+  for (const e of entries) {
+    const ms = e.effort.source === "explicit" ? effortToMs(e.effort.display)
+      : e.effort.source === "derived" ? e.effort.elapsedMs
+        : null;
+    if (ms != null) { totalMs += ms; timed++; }
+  }
+  const totalDisplay = timed > 0 ? formatDuration(totalMs) : null;
+
+  const lines = [`# Worklog — ${label}`, ""];
+  if (entries.length === 0) {
+    lines.push(`_No completed goals in ${label}._`);
+  } else {
+    let lastDay = null;
+    for (const e of entries) {
+      if (e.day !== lastDay) {
+        if (lastDay !== null) lines.push("");
+        lines.push(`## ${e.day}`, "");
+        lastDay = e.day;
+      }
+      const time = e.effort.display
+        ? ` — ${e.effort.display}${e.effort.source === "derived" ? " (elapsed)" : ""}`
+        : "";
+      lines.push(`- **${e.title}** (\`${e.slug}\`) — ${e.outcome}${time}`);
+      if (e.notes) lines.push(`  ${oneLine(e.notes, 300)}`);
+    }
+    lines.push("");
+    lines.push(totalDisplay
+      ? `_${entries.length} goal(s) · ~${totalDisplay} logged${timed < entries.length ? ` (${entries.length - timed} untracked)` : ""}_`
+      : `_${entries.length} goal(s) · time untracked_`);
+  }
+
+  return {
+    from: range.from,
+    to: range.to,
+    count: entries.length,
+    totalMs: timed > 0 ? totalMs : null,
+    totalDisplay,
+    entries,
+    markdown: lines.join("\n") + "\n",
+  };
 }
 
 // Keyword-rank digests (slug matches weighted over body). No query → recent

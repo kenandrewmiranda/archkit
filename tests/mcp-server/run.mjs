@@ -90,13 +90,14 @@ await log("initialize handshake succeeds", async () => {
   }
 });
 
-await log("tools/list returns all 32 tools", async () => {
+await log("tools/list returns all 36 tools", async () => {
   const tmp = makeFixture();
   try {
     await withClient(tmp, async (client) => {
       const { tools } = await client.listTools();
       const names = tools.map(t => t.name).sort();
       assert.deepEqual(names, [
+        "archkit_audit_spec",
         "archkit_boundary_check",
         "archkit_boundary_propose",
         "archkit_decisions_search",
@@ -129,6 +130,9 @@ await log("tools/list returns all 32 tools", async () => {
         "archkit_review",
         "archkit_review_staged",
         "archkit_stats",
+        "archkit_sync",
+        "archkit_verify_wiring",
+        "archkit_worklog",
       ]);
       const review = tools.find(t => t.name === "archkit_review");
       assert.ok(review.description.includes("When to use"), "description should include 'When to use' prose");

@@ -12,6 +12,8 @@ import { runReviewJson } from "../commands/review.mjs";
 import { runWarmupJson } from "../commands/resolve/warmup.mjs";
 import { runPreflightJson } from "../commands/resolve/preflight.mjs";
 import { runScaffoldJson } from "../commands/resolve/scaffold.mjs";
+import { runAuditSpecJson } from "../commands/resolve/audit-spec.mjs";
+import { runVerifyWiringJson } from "../commands/resolve/verify-wiring.mjs";
 import { runLookupJson } from "../commands/resolve.mjs";
 import { runGotchaListJson, runGotchaProposeJson } from "../commands/gotcha.mjs";
 import { runStatsJson } from "../commands/stats.mjs";
@@ -21,9 +23,11 @@ import { runPrdCheckJson } from "../commands/prd.mjs";
 import { runInitJson } from "../commands/init-mcp.mjs";
 import { runBoundaryCheckJson, runBoundaryProposeJson } from "../commands/boundary.mjs";
 import { runDoctorJson } from "../commands/doctor.mjs";
+import { runSyncJson } from "../commands/sync.mjs";
 import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
 import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGraphAccept } from "../commands/goal.mjs";
+import { runWorklog } from "../commands/worklog.mjs";
 import { loadGoal } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
@@ -189,6 +193,40 @@ export const tools = {
     },
   },
 
+  archkit_audit_spec: {
+    description: "Audit a spec/PRD's `- [ ] REQ-...` requirements against the source tree and report which appear implemented. This is requirement-by-requirement COVERAGE — the agent's 'did I build every REQ?' self-check — and is DISTINCT from archkit_prd_check, which scores archetype/mode DRIFT of a PRD vs SYSTEM.md (does the doc still match the declared architecture). Parses requirements from `- [ ] REQ-001: Description` checkbox lines or `| REQ-001 | ... |` table rows, then keyword-matches each against code under srcDir. Returns { total, covered, uncovered, coveragePercent, items:[{id,description,covered,coverage,...}], specFile, srcDir, nextStep }. A missing spec file, or a spec with zero REQ lines, returns a structured { error, suggestion, nextStep } envelope (never a throw or silent empty result). NOTE: coverage is a heuristic keyword match, not proof — treat uncovered as 'likely missing' and covered as 'likely present, verify'. When to use: after finishing a feature or CGR goal, to self-check requirement coverage before declaring done.",
+    inputSchema: z.object({
+      specFile: z.string().min(1).describe("Path (relative to cwd or absolute) to the spec/PRD/brief containing `- [ ] REQ-...` requirement lines."),
+      srcDir: z.string().optional().describe("Source directory to scan for implementation evidence. Default 'src'."),
+    }),
+    handler: async ({ specFile, srcDir = "src" }) => {
+      const cwd = process.cwd();
+      return runAuditSpecJson({ archDir: requireArchDir(cwd), specFile, srcDir });
+    },
+  },
+
+  archkit_sync: {
+    description: "Detect .arch/ spec files that have gone stale against the live src/ tree — the context-freshness scan. Compares the codebase to .arch/ and reports what an agent must author/update to keep its context current: new feature directories (src/features|modules|domains/* plus *.handler / *.chain files) missing from INDEX.md, installed package.json deps that match a known skill but have no .skill file, INDEX.md nodes whose basePath directory was deleted, and .skill version drift vs the installed package version. Returns { archDir, srcDir, suggestions:[{type,id,action,command?}], syncNeeded:boolean, nextStep }. DISTINCT from archkit_drift (which reconciles the cluster .graph node-graph against source files — drift is graph-internal consistency; sync is which .arch/ DOCS need writing after you add features or deps) and from archkit_doctor (which gauges whether the .arch/ surface is load-bearing at all). When to use: after adding a feature directory, installing/removing a dependency, or deleting code — to find which .arch/ files need updating so future-session context isn't stale.",
+    inputSchema: z.object({
+      srcDir: z.string().optional().describe("Source directory to compare against .arch/. Default 'src'."),
+    }),
+    handler: async ({ srcDir = "src" }) => {
+      const cwd = process.cwd();
+      return runSyncJson({ archDir: requireArchDir(cwd), srcDir });
+    },
+  },
+
+  archkit_verify_wiring: {
+    description: "Scan the source tree for exported functions/classes that are never imported outside their own directory — the dead-code / unwired-component check. The post-implementation 'is it actually wired?' question: after building a feature, confirm its exports are reachable, not orphaned. Walks srcDir (skips node_modules/dist/dotfiles and .test./.spec. files), builds an export map and a cross-file import graph, then flags any file whose exports have ZERO external importers. Files matching entry-point patterns (*.controller/route/router/middleware/handler.*, app.*, index.*) are excluded — they are mounted, not imported. Each finding is { file, exports:[...], internalImporters:[...], status } where status is DEAD_CODE (no importers at all) or INTERNAL_ONLY (imported only within its own dir). Supports .ts/.tsx/.js/.mjs; a non-JS/TS tree returns a warning, not findings. Returns { files, exports, unwired:[...], srcDir, nextStep } (or { error/warning, ... } envelopes). NOTE: a heuristic — dynamic imports, DI containers, and framework auto-loading can make a real component look unwired; treat findings as 'likely orphaned, verify' before deleting. DISTINCT from archkit_drift (reconciles the .arch/ graph against source) and archkit_review (rule/gotcha lint of named files). When to use: after finishing a feature or CGR goal, to catch components you wrote but forgot to wire in.",
+    inputSchema: z.object({
+      srcDir: z.string().optional().describe("Source directory to scan for unwired/dead components. Default 'src'."),
+    }),
+    handler: async ({ srcDir = "src" }) => {
+      const cwd = process.cwd();
+      return runVerifyWiringJson({ archDir: requireArchDir(cwd), srcDir });
+    },
+  },
+
   archkit_boundary_check: {
     description: "Enforce structured `BAN: source-glob -> target-glob` directives parsed from .arch/BOUNDARIES.md against either the git index (staged: true), the working tree diff (diff: true), or an explicit `files` list. For each import statement on a changed line, the tool checks whether the source file matches any rule's source-glob AND the imported module matches that rule's target-glob — a match is a violation. Languages supported: JS/TS/MJS/CJS/JSX/TSX (import + require) and Python (from-import + bare import). Other languages return zero violations rather than false positives. Response shape: { files, rules, violations: [{file, line, imported, rule, source}], warnings, pass:boolean }. Use case: pre-commit / pre-review enforcement of architectural import boundaries (e.g. `BAN: copilot/* -> execution/*` from arch-poly's dogfood). This is the machine-enforcement counterpart to BOUNDARIES.md prose rules — agents and humans should rely on this rather than reading BOUNDARIES.md and self-checking.",
     inputSchema: z.object({
@@ -296,14 +334,15 @@ export const tools = {
   },
 
   archkit_goal_complete: {
-    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records completion date, and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. HARD TEST GATE: if the goal has a verify-command (auto-detected at intake or set explicitly), this re-runs it and REFUSES to complete on red — erroring with test_gate_failed and the failing output tail. Fix the tests and retry, or archkit_goal_abandon if the goal is obsolete. On success it stamps tests-passed/tests-command/tests-at on the archived goal. When this completion DRAINS the queue (no goal left), it also fires the incremental consolidation/digest: terminal goals are summarized into a dated digest at goals/done/digest/<date>.md and their raw CGR files are preserved verbatim under goals/done/archive/ (returned as `consolidation`). Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
+    description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records the completion DATETIME (full ISO-8601), and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. HARD TEST GATE: if the goal has a verify-command (auto-detected at intake or set explicitly), this re-runs it and REFUSES to complete on red — erroring with test_gate_failed and the failing output tail. Fix the tests and retry, or archkit_goal_abandon if the goal is obsolete. On success it stamps tests-passed/tests-command/tests-at on the archived goal. TIME CAPTURE: started/completed are full datetimes, so the result carries derived wall-clock elapsed (`elapsedMs` / `effort`); pass the optional `timeSpent` (e.g. '2h', '90m') to record honest hands-on effort, which is persisted as the time-spent frontmatter key and TAKES PRECEDENCE over derived elapsed (wall-clock includes idle gaps). When this completion DRAINS the queue (no goal left), it also fires the incremental consolidation/digest: terminal goals are summarized into a dated digest at goals/done/digest/<date>.md and their raw CGR files are preserved verbatim under goals/done/archive/ (returned as `consolidation`). Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
     inputSchema: z.object({
       slug: z.string().min(1).describe("Goal slug to complete."),
       notes: z.string().optional().describe("Optional 1-2 sentence completion notes."),
+      timeSpent: z.string().optional().describe("Optional explicit hands-on effort (e.g. '2h', '90m', '1h30m'). Persisted as the time-spent frontmatter key and used in preference to derived wall-clock elapsed, which counts idle gaps. Omit to let archkit report the derived started→completed elapsed."),
     }),
-    handler: async ({ slug, notes }) => {
+    handler: async ({ slug, notes, timeSpent }) => {
       const cwd = process.cwd();
-      return runGoalComplete({ archDir: requireArchDir(cwd), cwd, slug, notes });
+      return runGoalComplete({ archDir: requireArchDir(cwd), cwd, slug, notes, timeSpent });
     },
   },
 
@@ -335,6 +374,18 @@ export const tools = {
     handler: async () => {
       const cwd = process.cwd();
       return runGoalConsolidate({ archDir: requireArchDir(cwd) });
+    },
+  },
+
+  archkit_worklog: {
+    description: "Render a copy-pasteable day-by-day worklog of COMPLETED CGR goals — title, outcome, time, and completion notes — for posting to Jira / standups. The deliverable that closes the goal_next→/clear→goal_next loop's loss-of-track: a pure REPORT over completed-goal data already on disk (un-consolidated done/ root, raw done/archive/, and consolidated done/digest/ as a sparse fallback) — it writes nothing. Each entry's TIME is the explicit hands-on effort (the time-spent override set at archkit_goal_complete) when present, otherwise the derived started→completed wall-clock TAGGED '(elapsed)' so an estimate is never misreported as logged effort; a legacy date-only goal shows no time. Entries are deduped by slug and grouped by day, most recent first; a range total sums the quantifiable effort and flags how many entries were untracked. Default range is TODAY. Pass `from`/`to` (ISO YYYY-MM-DD) for a range — `from` alone runs through today, `to` alone is open-started. Returns { from, to, count, totalMs, totalDisplay, entries:[{slug,title,day,outcome,notes,effort}], markdown, nextStep } — `markdown` is the copy-paste artifact to hand the user.",
+    inputSchema: z.object({
+      from: z.string().optional().describe("Start day (ISO YYYY-MM-DD). Omit for today. Alone (no `to`), runs from this day through today."),
+      to: z.string().optional().describe("End day (ISO YYYY-MM-DD), inclusive. Omit for today. Alone (no `from`), includes everything up to this day."),
+    }),
+    handler: async ({ from, to }) => {
+      const cwd = process.cwd();
+      return runWorklog({ archDir: requireArchDir(cwd), from, to });
     },
   },
 

@@ -57,6 +57,10 @@ function makeFixture() {
     "# Boundaries\n\n- BAN: src/copilot/* -> src/execution/*\n");
   fs.mkdirSync(path.join(tmp, "src", "features", "auth"), { recursive: true });
   fs.writeFileSync(path.join(tmp, "test-file.js"), "const x = 1;\nexport default x;\n");
+  // A spec with one REQ so archkit_audit_spec exercises its success path
+  // (requirement-coverage report) rather than the no-requirements error envelope.
+  fs.writeFileSync(path.join(tmp, "spec.md"),
+    "# Spec\n\n## Requirements\n- [ ] REQ-001: auth login handler with session token\n");
   // git init so boundary_check / review_staged paths don't crash on missing repo
   try {
     execFileSync("git", ["init", "-q"], { cwd: tmp, stdio: "ignore" });
@@ -123,6 +127,15 @@ function assertContract(toolName, data) {
     assert.ok(typeof data.hint === "string", `${toolName}: rules:0 but no hint`);
   }
 
+  // audit_spec: the success envelope must carry the covered/uncovered counts
+  // its nextStep summarizes (requirement-coverage report, not a bare ok).
+  if (toolName === "archkit_audit_spec") {
+    assert.equal(typeof data.total, "number", `${toolName}: missing numeric total`);
+    assert.equal(typeof data.covered, "number", `${toolName}: missing numeric covered`);
+    assert.equal(typeof data.uncovered, "number", `${toolName}: missing numeric uncovered`);
+    assert.ok(data.total >= 1, `${toolName}: expected at least one parsed REQ from the fixture spec`);
+  }
+
   // review/review_staged: files:0 must come with filesNote
   if ((toolName === "archkit_review" || toolName === "archkit_review_staged") && data.files === 0) {
     assert.ok(typeof data.filesNote === "string", `${toolName}: files:0 but no filesNote`);
@@ -159,6 +172,9 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_resolve_preflight", { feature: "auth", layer: "controller" }],
         ["archkit_resolve_scaffold", { feature: "auth" }],
         ["archkit_resolve_lookup", { id: "auth" }],
+        ["archkit_audit_spec", { specFile: "spec.md" }],
+        ["archkit_sync", { srcDir: "src" }],
+        ["archkit_verify_wiring", { srcDir: "src" }],
         ["archkit_gotcha_propose", { skill: "stripe", wrong: "x=1", right: "x=2", why: "audit-test" }],
         ["archkit_gotcha_list", {}],
         ["archkit_stats", {}],
@@ -180,6 +196,8 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_goal_hold", { slug: "audit-goal-two" }],
         ["archkit_goal_abandon", { slug: "audit-goal-two" }],
         ["archkit_goal_consolidate", {}],
+        // Worklog renders over the goal(s) completed/consolidated above.
+        ["archkit_worklog", {}],
         ["archkit_goal_defer", { title: "audit follow-up goal" }],
         ["archkit_goal_promote", { all: true }],
         ["archkit_goal_dismiss", { all: true }],

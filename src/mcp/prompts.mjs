@@ -26,6 +26,7 @@ import {
   archiveDir,
   listDigests,
   listGoalProposals,
+  goalsCompletedOn,
 } from "../lib/goals.mjs";
 
 function archDirOrNull() {
@@ -37,24 +38,48 @@ function textMessage(text) {
   return { messages: [{ role: "user", content: { type: "text", text } }] };
 }
 
+// One-liner clamp for the breadcrumb (avoid a goals.mjs export just for this).
+function clampLine(text, max = 48) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
+}
+
+// "Done today" breadcrumb: a single line tallying goals completed today (count
+// + titles, slug fallback), read from done/ + done/digest. Returns "" when
+// nothing was completed today so the header stays clean (graceful empty case).
+export function doneTodayTally(archDir, today) {
+  let done;
+  try { done = goalsCompletedOn(archDir, today); } catch { done = []; }
+  if (!done.length) return "";
+  const names = done.map((g) => clampLine(g.title || g.slug)).join(", ");
+  return `✓ Done today (${done.length}): ${names}`;
+}
+
 // Prepended to an injected goal payload so the agent treats this as a relay
 // turn: single goal, exit-criteria are the contract, goal_complete is the
 // release signal the Stop hook waits for. Status-aware: a goal resumed in the
 // `testing` state is framed as draining verification debt (edits already
-// landed) rather than fresh work.
-function relayHeader(slug, status = "in-progress") {
+// landed) rather than fresh work. When `tallyLine` is non-empty it leads as a
+// "done today" breadcrumb so the relay loop keeps yesterday/today's progress in
+// view across /clear. Each variant also asks the agent to restate the goal in
+// one sentence before working — orientation the user only ever sees here.
+export function relayHeader(slug, status = "in-progress", { tallyLine = "" } = {}) {
   const inTesting = status === "testing";
-  const lines = [
+  const lines = [];
+  if (tallyLine) lines.push(tallyLine, ``);
+  lines.push(
     `[archkit CGR relay] Active goal: ${slug}${inTesting ? " (TESTING — edits applied, verification pending)" : ""}`,
     `Work ONLY this goal to its exit-criteria. Do not start other goals in this context.`,
-  ];
+  );
   if (inTesting) {
     lines.push(
-      `This goal is in the verification window: its edits already landed. Re-run the verify-command and confirm every exit-criterion is green, then call archkit_goal_complete ${slug} (it re-runs the gate and refuses on red). It is NOT done until verified.`
+      `This goal is in the verification window: its edits already landed. Re-run the verify-command and confirm every exit-criterion is green, then call archkit_goal_complete ${slug} (it re-runs the gate and refuses on red). It is NOT done until verified.`,
+      `First, restate in ONE sentence what was already built and what still needs verifying — then verify it.`,
     );
   } else {
     lines.push(
-      `When ALL exit-criteria are met, call archkit_goal_complete ${slug} — that releases the Stop-hook guard and advances the queue. If edits are applied but you want a later session to verify, park it with archkit_goal_testing ${slug}; to deliberately set it aside, archkit_goal_hold ${slug}.`
+      `When ALL exit-criteria are met, call archkit_goal_complete ${slug} — that releases the Stop-hook guard and advances the queue. If edits are applied but you want a later session to verify, park it with archkit_goal_testing ${slug}; to deliberately set it aside, archkit_goal_hold ${slug}.`,
+      `First, restate this goal in ONE sentence (what you're about to build and its done-condition) — then start.`,
     );
   }
   lines.push(``, `────────────────────────────────────────`, ``);
@@ -81,7 +106,8 @@ export const prompts = {
       }
       startGoal(archDir, goal.slug);
       const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
-      return textMessage(relayHeader(goal.slug, "in-progress") + payload);
+      const today = new Date().toISOString().slice(0, 10);
+      return textMessage(relayHeader(goal.slug, "in-progress", { tallyLine: doneTodayTally(archDir, today) }) + payload);
     },
   },
 
@@ -101,7 +127,8 @@ export const prompts = {
         );
       }
       const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
-      return textMessage(relayHeader(goal.slug, statusOf(goal)) + payload);
+      const today = new Date().toISOString().slice(0, 10);
+      return textMessage(relayHeader(goal.slug, statusOf(goal), { tallyLine: doneTodayTally(archDir, today) }) + payload);
     },
   },
 

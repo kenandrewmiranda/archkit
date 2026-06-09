@@ -127,6 +127,33 @@ function countNonJsSourceFiles(srcDir) {
   return count;
 }
 
+// Derive a never-silent nextStep from the raw scan report so the MCP result
+// satisfies the silent-success contract — including the clean (zero-findings)
+// case, which still returns a useful "wiring is clean" signal rather than an
+// empty array with no guidance.
+function verifyWiringNextStep(report, srcDir) {
+  if (report.error) {
+    return `Source directory not found. Re-run archkit_verify_wiring with a valid srcDir (got "${srcDir}").`;
+  }
+  if (report.warning) {
+    return `0 supported (${SUPPORTED_EXTENSIONS.join("/")}) files scanned in ${srcDir} — nothing to wiring-check. ${report.files === 0 ? "Point srcDir at the JS/TS source root." : ""}`.trim();
+  }
+  const n = report.unwired.length;
+  if (n === 0) {
+    return `No unwired/dead components in ${srcDir} (${report.files} files, ${report.exports} exporting). Wiring is clean — proceed.`;
+  }
+  return `${n} potentially unwired component(s) in ${srcDir}. For each: wire it in, delete it if dead, or confirm it's an entry point (route/controller/index).`;
+}
+
+// archDir is accepted for signature parity with the other resolve/*Json exports
+// (the MCP handler resolves it via requireArchDir to guarantee we're in an
+// archkit project) — the scan itself only needs srcDir. Single source of truth:
+// the resolve CLI dispatch and the MCP handler both call this.
+export function runVerifyWiringJson({ archDir, srcDir = "src" }) {
+  const report = cmdVerifyWiring(path.resolve(srcDir));
+  return { ...report, srcDir, nextStep: verifyWiringNextStep(report, srcDir) };
+}
+
 function resolveImport(fromDir, importPath) {
   const extensions = [".ts", ".tsx", ".js", ".mjs", ""];
   // Strip existing extension for re-resolution (handles .js → .ts in ESM TypeScript)
