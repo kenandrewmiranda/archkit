@@ -19,6 +19,7 @@ import {
   nextEligibleGoal,
   startGoal,
   renderPayload,
+  RELAY_PAYLOAD_BUDGET,
   listGoals,
   statusOf,
   doneDir,
@@ -79,7 +80,7 @@ export const prompts = {
         );
       }
       startGoal(archDir, goal.slug);
-      const { payload } = renderPayload(archDir, goal.slug);
+      const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
       return textMessage(relayHeader(goal.slug, "in-progress") + payload);
     },
   },
@@ -99,7 +100,7 @@ export const prompts = {
           "No goal is in progress. Run /mcp__archkit__goal_next to start the next eligible goal, or archkit_goal_list to see the queue."
         );
       }
-      const { payload } = renderPayload(archDir, goal.slug);
+      const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
       return textMessage(relayHeader(goal.slug, statusOf(goal)) + payload);
     },
   },

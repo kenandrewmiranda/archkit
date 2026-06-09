@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.10.1 — 2026-06-09
+
+Closes the **CGR graph flywheel** (**ADR 0004**): completed goals now feed the node graph instead of accumulating as a write-only `goals/done/` archive. The graph (INDEX.md + `clusters/*.graph`) — the surface `resolve_warmup`/`resolve_preflight` actually read — gets richer as a side effect of doing the work, in both directions. Three follow-on CGRs shipped as one unit (the flywheel itself, the accept tool, and warmup surfacing — decomposed and run through archkit's own relay). Purely additive; degrades to a no-op on a missing/empty graph (safe on greenfield).
+
+### Added — slice-in at goal start (read)
+
+- **`renderPayload` now appends a goal-scoped graph neighborhood** (`graphSlice()` in `src/lib/goals.mjs`), keyed on `files-to-touch`: each touched path → its INDEX node by basePath prefix → the matching `.graph` node line (role + in/out flow) → the cross-reference edges touching those clusters. The relayed agent gets related files + edges up front instead of guessing. Silent when no touched file maps to a node. **Budget bifurcation**: `PAYLOAD_BUDGET` (3800) stays the tight `/goal` copy-paste ceiling; new `RELAY_PAYLOAD_BUDGET` (9000) carries the fuller slice + untruncated source-ask on the MCP-injected relay path (`goal_next`/`goal_resume`), which has no slash-arg limit.
+
+### Added — propose-out at goal complete (write)
+
+- **`archkit_goal_complete` runs a best-effort graph reconciliation** (`detectGraphGaps`): candidate files = `files-to-touch` ∪ git working-tree changes, minus established nodes, tests, and `.arch`/non-code. Remaining files are **proposed** as graph deltas — `undocumented-file` (append a node line to an existing cluster) or `unmapped-area` (needs a new cluster) — persisted to `.arch/graph-proposals/<slug>.json` (`writeGraphProposal`) and surfaced in the completion result. **Propose, never auto-merge**: archkit detects the gap mechanically; a human or the still-warm agent authors the node prose. Reconciliation never blocks marking a goal done.
+
+### Added — `archkit_graph_accept` (close the write-back loop)
+
+- **New MCP tool `archkit_graph_accept`** + `acceptGraphProposal()`: applies ONE authored node line from a persisted proposal to its cluster `.graph`, then drops the consumed gap (deleting the proposal once its last gap resolves) — the propose→accept partner to `archkit_boundary_propose`/`archkit_gotcha_propose`. The line is parse-validated **through `loadGraphCluster`** (the same loader warmup/preflight read with) on a throwaway probe; a malformed line is refused and the real `.graph` is left untouched. Only `undocumented-file` gaps are appendable; `unmapped-area` gaps are refused with guidance rather than guessed at. Brings the MCP tool count from 31 to **32**.
+
+### Added — graph debt visible at warmup (W015)
+
+- **`resolve_warmup` now surfaces pending graph-proposals** (`src/commands/resolve/warmup.mjs`): a new **W015** check reports the count + slugs of `.arch/graph-proposals/` via `listGraphProposals`, across the human banner (`log.warn` + `warnings`/`actions`) and the JSON/MCP result (`summary.pendingGraphProposals`), pointing at `archkit_graph_accept`. Silent when none pending, mirroring the W014 ADR-proposal check — so graph debt is visible, not a silent folder that rots.
+
+### Tests
+
+- Coverage added to **`tests/cgr-goals/`** (slice-in neighborhood, gap detection, propose/accept round-trip, parse-validation refusal) and **`tests/cgr-context-refresh/`** (W015 surfaces count+slugs in human + JSON; silent when clean). `tests/mcp-server/` and `tests/silent-success-audit/` updated for the new tool. Suite total: **49/49 green**.
+
 ## v1.10.0 — 2026-06-07
 
 Expands the Clear Goal Run lifecycle from `planned → in-progress → done` into the full state model locked by **ADR 0003**: `pending → in-progress → testing → completed`, plus the side states `on-hold` and `abandoned`, and an incremental consolidation/digest phase. Born from conference feedback that fast mass-edits were getting `goal_complete`-d the instant they landed — hiding *unverified* work in `done/` and letting verification debt accumulate silently. Five goals shipped as one unit (decomposed and run through CGR's own relay — archkit dogfooding itself). Purely additive and backward-compatible: existing goal files keep parsing, and projects that never call the new transitions see the old flow unchanged. Brings the MCP tool count from 28 to **31**.

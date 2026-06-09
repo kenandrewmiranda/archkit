@@ -23,7 +23,7 @@ import { strict as assert } from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { writeGoal, renderPayload } from "../../src/lib/goals.mjs";
+import { writeGoal, renderPayload, writeGraphProposal } from "../../src/lib/goals.mjs";
 import { runWarmupJson } from "../../src/commands/resolve/warmup.mjs";
 import { runDriftJson } from "../../src/commands/drift.mjs";
 
@@ -134,6 +134,62 @@ await test("runDriftJson re-derives findings from disk on each call (no stale ca
     const after = await runDriftJson({ archDir, cwd });
     assert.ok(after.summary.total > before.summary.total,
       "second drift call must see the drift introduced between calls — proves findings are re-derived, not cached");
+  } finally {
+    fs.rmSync(path.dirname(archDir), { recursive: true, force: true });
+  }
+});
+
+console.log("\n  cgr-context-refresh — warmup surfaces pending graph-proposals (ADR 0004)");
+
+await test("warmup surfaces count + slugs of pending graph-proposals (W015) in human + JSON", async () => {
+  const archDir = makeArchDir();
+  try {
+    // Two completed goals each left a persisted graph-proposal — the write-back
+    // half of the flywheel that warmup must make visible instead of leaving in a
+    // silent folder.
+    writeGraphProposal(archDir, "added-warmup-check", [
+      { kind: "undocumented-file", file: "src/commands/resolve/warmup.mjs", cluster: "resolve",
+        node: "@resolve", suggestedLine: "WarmupCmd [U] : src/commands/resolve/warmup.mjs — <role — fill in> | <flow — fill in>" },
+    ]);
+    writeGraphProposal(archDir, "added-graph-accept", [
+      { kind: "undocumented-file", file: "src/lib/goals.mjs", cluster: "goals",
+        node: "@goals", suggestedLine: "Goals [U] : src/lib/goals.mjs — <role — fill in> | <flow — fill in>" },
+    ]);
+
+    const result = await runWarmupJson({ archDir, deep: false });
+
+    // JSON/MCP surface: structured count + the W015 check carrying both slugs.
+    assert.equal(result.summary.pendingGraphProposals, 2,
+      "summary must report the count of pending graph-proposals");
+    const w015 = result.checks.find(c => c.id === "W015");
+    assert.ok(w015, "a W015 check must be present when graph-proposals are pending");
+    assert.match(w015.detail, /added-warmup-check/, "W015 detail must list proposal slugs");
+    assert.match(w015.detail, /added-graph-accept/, "W015 detail must list every pending slug");
+
+    // Human banner surface: a warning string the agent/human reads, naming the
+    // slugs and the accept path.
+    const warn = result.warnings.find(w => w.includes("graph-proposal"));
+    assert.ok(warn, "a human-readable warning must surface pending graph-proposals");
+    assert.match(warn, /added-warmup-check/, "warning must name the pending slugs");
+    assert.match(warn, /archkit_graph_accept/, "warning must point at the accept tool");
+  } finally {
+    fs.rmSync(path.dirname(archDir), { recursive: true, force: true });
+  }
+});
+
+await test("warmup stays silent about graph-proposals when none are pending", async () => {
+  const archDir = makeArchDir();
+  try {
+    // Base fixture has no .arch/graph-proposals/ at all — the clean case.
+    const result = await runWarmupJson({ archDir, deep: false });
+    assert.equal(result.summary.pendingGraphProposals, 0,
+      "count must be zero when no proposals are pending");
+    assert.ok(!result.checks.some(c => c.id === "W015"),
+      "no W015 check when clean — silent, mirroring the other warmup checks");
+    assert.ok(!result.warnings.some(w => w.includes("graph-proposal")),
+      "no graph-proposal warning when clean");
+    assert.ok(!result.actions.some(a => a.includes("graph-proposal")),
+      "no graph-proposal action when clean");
   } finally {
     fs.rmSync(path.dirname(archDir), { recursive: true, force: true });
   }

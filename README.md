@@ -17,7 +17,7 @@ archkit compiles your architecture into a machine-readable blueprint — graphs,
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-1.9.1-cyan.svg)]()
+[![Version](https://img.shields.io/badge/version-1.10.1-cyan.svg)]()
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-1-lightgrey.svg)]()
 
 [Website](https://thearchkit.com) · [Marketplace](https://market.thearchkit.com) · [Issues](https://github.com/kenandrewmiranda/archkit/issues)

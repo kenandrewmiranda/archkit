@@ -19,10 +19,17 @@ import {
   loadGoal,
   completeGoal,
   renderPayload,
+  graphSlice,
   parseGoal,
   PAYLOAD_BUDGET,
+  RELAY_PAYLOAD_BUDGET,
+  detectGraphGaps,
+  writeGraphProposal,
+  listGraphProposals,
+  acceptGraphProposal,
   slugify,
 } from "../../src/lib/goals.mjs";
+import { loadGraphCluster } from "../../src/lib/parsers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ARCHKIT = path.resolve(__dirname, "../../bin/archkit.mjs");
@@ -127,6 +134,248 @@ test("payload truncates if metadata pushes past budget", () => {
     const { payload, withinBudget } = renderPayload(archDir, "huge");
     assert.ok(payload.length <= PAYLOAD_BUDGET);
     assert.equal(withinBudget, true);
+  });
+});
+
+test("relay budget carries more than the copy-paste ceiling can", () => {
+  withArchDir(({ archDir }) => {
+    assert.ok(RELAY_PAYLOAD_BUDGET > PAYLOAD_BUDGET, "relay ceiling must exceed copy-paste");
+    const huge = Array.from({ length: 100 }, (_, i) => `criterion-${i} ` + "x".repeat(60));
+    writeGoal(archDir, { title: "Huge", exitCriteria: huge, sourceAsk: "x".repeat(2000) });
+    const tight = renderPayload(archDir, "huge");
+    const relay = renderPayload(archDir, "huge", { budget: RELAY_PAYLOAD_BUDGET });
+    assert.ok(tight.length <= PAYLOAD_BUDGET);
+    assert.ok(relay.length <= RELAY_PAYLOAD_BUDGET);
+    assert.ok(relay.length > tight.length, "relay payload should retain more content");
+    assert.equal(relay.withinBudget, true);
+  });
+});
+
+test("relay budget shows a fuller source-ask than the copy-paste teaser", () => {
+  withArchDir(({ archDir }) => {
+    writeGoal(archDir, { title: "Ask", exitCriteria: ["x"], sourceAsk: "S".repeat(600) });
+    const tight = renderPayload(archDir, "ask").payload;
+    const relay = renderPayload(archDir, "ask", { budget: RELAY_PAYLOAD_BUDGET }).payload;
+    assert.ok(tight.includes("S".repeat(240)) && !tight.includes("S".repeat(241)), "copy-paste caps source-ask at 240");
+    assert.ok(relay.includes("S".repeat(600)), "relay carries the full 600-char source-ask");
+  });
+});
+
+console.log("\n  goals — graphSlice (node-graph neighborhood)");
+
+// Minimal but realistic .arch graph: one INDEX with two nodes + a cross-ref,
+// and the matching lib.graph with a per-file node line.
+function withGraphArch(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-slice-"));
+  const archDir = path.join(dir, ".arch");
+  fs.mkdirSync(path.join(archDir, "clusters"), { recursive: true });
+  fs.writeFileSync(path.join(archDir, "SYSTEM.md"),
+    "# SYSTEM.md\n## Type: Internal\n## Pattern: layered\n## Rules\n- one\n## Reserved Words\n## Naming\nFiles: kebab\n");
+  fs.writeFileSync(path.join(archDir, "INDEX.md"), [
+    "# INDEX.md",
+    "## Nodes → Clusters → Files",
+    "@lib → [lib] → src/lib/",
+    "@cli → [cli] → src/commands/",
+    "## Cross-references",
+    "@cli → @lib (commands import pure helpers)",
+    "",
+  ].join("\n"));
+  fs.writeFileSync(path.join(archDir, "clusters", "lib.graph"),
+    "--- lib [feature] ---\nGoals [U] : src/lib/goals.mjs — list/read/move CGR goal files, pure | GoalCmd,StopHook → THIS\n---\n");
+  fs.writeFileSync(path.join(archDir, "clusters", "cli.graph"),
+    "--- cli [feature] ---\nGoalCmd [U] : src/commands/goal.mjs — CGR goal CLI | ArchkitBin → THIS → Goals\n---\n");
+  try { fn({ dir, archDir }); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test("graphSlice returns the matching node line + flow for a touched file", () => {
+  withGraphArch(({ archDir }) => {
+    const slice = graphSlice(archDir, ["src/lib/goals.mjs"]).join("\n");
+    assert.ok(slice.includes("@lib (src/lib/)"), `expected @lib header, got:\n${slice}`);
+    assert.ok(slice.includes("Goals: src/lib/goals.mjs"), "expected the Goals node line");
+    assert.ok(slice.includes("[GoalCmd,StopHook → THIS]"), "expected the node in/out flow");
+  });
+});
+
+test("graphSlice surfaces cross-reference edges touching the involved cluster", () => {
+  withGraphArch(({ archDir }) => {
+    const slice = graphSlice(archDir, ["src/lib/goals.mjs"]).join("\n");
+    assert.ok(/Edges:.*@cli → @lib/.test(slice), `expected @cli → @lib edge, got:\n${slice}`);
+  });
+});
+
+test("graphSlice stays silent for paths under no mapped node", () => {
+  withGraphArch(({ archDir }) => {
+    assert.deepEqual(graphSlice(archDir, [".arch/decisions/"]), []);
+    assert.deepEqual(graphSlice(archDir, []), []);
+  });
+});
+
+test("graphSlice never throws when INDEX/clusters are absent", () => {
+  withArchDir(({ archDir }) => {
+    assert.deepEqual(graphSlice(archDir, ["src/lib/goals.mjs"]), []);
+  });
+});
+
+test("renderPayload embeds the graph slice when files-to-touch map to nodes", () => {
+  withGraphArch(({ archDir }) => {
+    writeGoal(archDir, {
+      title: "Touch goals lib",
+      exitCriteria: ["done"],
+      filesToTouch: ["src/lib/goals.mjs"],
+    });
+    const { payload, withinBudget } = renderPayload(archDir, "touch-goals-lib");
+    assert.ok(payload.includes("Graph slice (related nodes & edges"), "payload should carry the slice header");
+    assert.ok(payload.includes("Goals: src/lib/goals.mjs"), "payload should carry the node line");
+    assert.equal(withinBudget, true);
+  });
+});
+
+console.log("\n  goals — detectGraphGaps (write-back reconciliation)");
+
+test("detectGraphGaps flags an undocumented file under an existing cluster", () => {
+  withGraphArch(({ archDir }) => {
+    // src/lib/ is @lib; goals.mjs is the only node line — new.mjs is undocumented.
+    const gaps = detectGraphGaps(archDir, ["src/lib/new.mjs"]);
+    assert.equal(gaps.length, 1);
+    assert.equal(gaps[0].kind, "undocumented-file");
+    assert.equal(gaps[0].cluster, "lib");
+    assert.equal(gaps[0].node, "@lib");
+    assert.ok(gaps[0].suggestedLine.startsWith("New [U] : src/lib/new.mjs"), gaps[0].suggestedLine);
+  });
+});
+
+test("detectGraphGaps stays silent for files already represented as nodes", () => {
+  withGraphArch(({ archDir }) => {
+    assert.deepEqual(detectGraphGaps(archDir, ["src/lib/goals.mjs"]), []);
+  });
+});
+
+test("detectGraphGaps flags a file under no cluster as unmapped-area", () => {
+  withGraphArch(({ archDir }) => {
+    const gaps = detectGraphGaps(archDir, ["src/payments/charge.mjs"]);
+    assert.equal(gaps.length, 1);
+    assert.equal(gaps[0].kind, "unmapped-area");
+  });
+});
+
+test("detectGraphGaps excludes tests, .arch/, and non-code paths", () => {
+  withGraphArch(({ archDir }) => {
+    assert.deepEqual(
+      detectGraphGaps(archDir, [
+        "tests/foo/run.mjs", "src/lib/thing.test.mjs", "__tests__/x.js",
+        ".arch/decisions/0001.md", "README.md", "src/lib/styles.css",
+      ]),
+      [],
+    );
+  });
+});
+
+test("writeGraphProposal persists gaps and listGraphProposals reads them back", () => {
+  withGraphArch(({ archDir }) => {
+    const gaps = detectGraphGaps(archDir, ["src/lib/new.mjs"]);
+    const written = writeGraphProposal(archDir, "some-goal", gaps);
+    assert.ok(written.proposalPath.endsWith("some-goal.json"));
+    assert.ok(fs.existsSync(written.proposalPath));
+    const proposals = listGraphProposals(archDir);
+    assert.equal(proposals.length, 1);
+    assert.equal(proposals[0].slug, "some-goal");
+    assert.equal(proposals[0].gaps.length, 1);
+    // No gaps → writes nothing, returns null.
+    assert.equal(writeGraphProposal(archDir, "empty-goal", []), null);
+  });
+});
+
+console.log("\n  goals — acceptGraphProposal (write-back accept)");
+
+test("acceptGraphProposal appends an authored node line to an existing .graph", () => {
+  withGraphArch(({ archDir }) => {
+    const gaps = detectGraphGaps(archDir, ["src/lib/new.mjs"]);
+    writeGraphProposal(archDir, "accept-goal", gaps);
+    const line = "New [S] : src/lib/new.mjs — new pure helper | GoalCmd → THIS";
+    const r = acceptGraphProposal(archDir, "accept-goal", { file: "src/lib/new.mjs", line });
+    assert.equal(r.ok, true);
+    assert.equal(r.cluster, "lib");
+    // The line is now a parseable node in lib.graph (validated via loadGraphCluster).
+    const cluster = loadGraphCluster(archDir, "lib");
+    const ids = cluster.nodes.map((n) => n.id);
+    assert.ok(ids.includes("New"), `expected New node, got: ${ids.join(", ")}`);
+    assert.ok(ids.includes("Goals"), "existing node must be preserved");
+  });
+});
+
+test("acceptGraphProposal removes the consumed proposal once its last gap is resolved", () => {
+  withGraphArch(({ archDir }) => {
+    const gaps = detectGraphGaps(archDir, ["src/lib/new.mjs"]);
+    writeGraphProposal(archDir, "accept-goal", gaps);
+    assert.equal(listGraphProposals(archDir).length, 1);
+    const r = acceptGraphProposal(archDir, "accept-goal", {
+      file: "src/lib/new.mjs",
+      line: "New [S] : src/lib/new.mjs — helper | GoalCmd → THIS",
+    });
+    assert.equal(r.proposalRemoved, true);
+    assert.equal(r.remainingGaps, 0);
+    assert.equal(listGraphProposals(archDir).length, 0);
+  });
+});
+
+test("acceptGraphProposal drops only the resolved gap when others remain", () => {
+  withGraphArch(({ archDir }) => {
+    const gaps = detectGraphGaps(archDir, ["src/lib/new.mjs", "src/commands/extra.mjs"]);
+    assert.equal(gaps.length, 2);
+    writeGraphProposal(archDir, "multi-goal", gaps);
+    const r = acceptGraphProposal(archDir, "multi-goal", {
+      file: "src/lib/new.mjs",
+      line: "New [S] : src/lib/new.mjs — helper | GoalCmd → THIS",
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.proposalRemoved, false);
+    assert.equal(r.remainingGaps, 1);
+    const [remaining] = listGraphProposals(archDir);
+    assert.equal(remaining.gaps.length, 1);
+    assert.equal(remaining.gaps[0].file, "src/commands/extra.mjs");
+  });
+});
+
+test("acceptGraphProposal rejects a malformed line and never corrupts the .graph", () => {
+  withGraphArch(({ archDir }) => {
+    const gaps = detectGraphGaps(archDir, ["src/lib/new.mjs"]);
+    writeGraphProposal(archDir, "accept-goal", gaps);
+    const before = fs.readFileSync(path.join(archDir, "clusters", "lib.graph"), "utf8");
+    const r = acceptGraphProposal(archDir, "accept-goal", {
+      file: "src/lib/new.mjs",
+      line: "this is not a node line at all",
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, "malformed_line");
+    // .graph untouched and the proposal is NOT consumed.
+    assert.equal(fs.readFileSync(path.join(archDir, "clusters", "lib.graph"), "utf8"), before);
+    assert.equal(listGraphProposals(archDir).length, 1);
+  });
+});
+
+test("acceptGraphProposal defers unmapped-area gaps with a clear reason (no silent no-op)", () => {
+  withGraphArch(({ archDir }) => {
+    const gaps = detectGraphGaps(archDir, ["src/payments/charge.mjs"]);
+    assert.equal(gaps[0].kind, "unmapped-area");
+    writeGraphProposal(archDir, "unmapped-goal", gaps);
+    const r = acceptGraphProposal(archDir, "unmapped-goal", {
+      file: "src/payments/charge.mjs",
+      line: "Charge [S] : src/payments/charge.mjs — x | y",
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, "unmapped_area");
+    // Proposal preserved — the gap is deferred, not consumed.
+    assert.equal(listGraphProposals(archDir).length, 1);
+  });
+});
+
+test("acceptGraphProposal surfaces unknown/ambiguous proposals instead of guessing", () => {
+  withGraphArch(({ archDir }) => {
+    assert.equal(acceptGraphProposal(archDir, "nope", { line: "X [S] : a | b" }).reason, "unknown_proposal");
+    const gaps = detectGraphGaps(archDir, ["src/lib/new.mjs", "src/commands/extra.mjs"]);
+    writeGraphProposal(archDir, "ambig-goal", gaps);
+    // No file given + >1 gap → ambiguous, not first-gap-wins.
+    assert.equal(acceptGraphProposal(archDir, "ambig-goal", { line: "X [S] : a | b" }).reason, "ambiguous_gap");
   });
 });
 

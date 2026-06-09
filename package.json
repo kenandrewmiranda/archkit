@@ -1,6 +1,6 @@
 {
   "name": "@kenandrewmiranda/archkit",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "description": "Context Engineering Scaffolder for AI-Assisted Development",
   "type": "module",
   "publishConfig": {

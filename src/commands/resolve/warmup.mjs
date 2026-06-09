@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { createArchReader } from "../../lib/parsers.mjs";
+import { listGraphProposals } from "../../lib/goals.mjs";
 import * as log from "../../lib/logger.mjs";
 import { archkitError } from "../../lib/errors.mjs";
 
@@ -158,6 +159,21 @@ export function cmdWarmup(archDir, deep) {
     }
   }
 
+  // 5c. Pending graph-proposals (ADR 0004 — graph gaps detected at goal_complete
+  //     and persisted to .arch/graph-proposals/<slug>.json). Surface them so the
+  //     write-back half of the flywheel is visible debt that gets accepted, not a
+  //     silent folder that rots. Silent when none pending, mirroring W014 above.
+  const graphProposals = listGraphProposals(archDir);
+  const pendingGraphProposals = graphProposals.length;
+  if (pendingGraphProposals > 0) {
+    const slugs = graphProposals.map(p => p.slug).filter(Boolean);
+    const slugList = slugs.join(", ");
+    checks.push({ id: "W015", check: "Pending graph proposals", status: "warn", detail: `${pendingGraphProposals} pending: ${slugList}` });
+    warnings.push(`${pendingGraphProposals} pending graph-proposal(s) from completed goals: ${slugList}. The node graph is missing files these goals touched. Accept with archkit_graph_accept to keep warmup/preflight context current.`);
+    actions.push(`Review ${pendingGraphProposals} graph-proposal(s) at .arch/graph-proposals/. For each undocumented-file: author the suggestedLine's <role>/<flow> and call archkit_graph_accept <slug>.`);
+    log.warn(`${pendingGraphProposals} pending graph-proposal(s): ${slugList}`);
+  }
+
   // ── DEEP MODE CHECKS (--deep flag) ────────────────────────────────────
 
   if (deep) {
@@ -270,6 +286,7 @@ export function cmdWarmup(archDir, deep) {
       staleSkills: staleSkills.length,
       pendingTodoGotchas: pendingGotchas.reduce((s, p) => s + p.count, 0),
       pendingDecisionProposals,
+      pendingGraphProposals,
     },
     blockers,
     warnings,

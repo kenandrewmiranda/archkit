@@ -39,6 +39,9 @@ import {
   consolidateGoals,
   listDigests,
   archiveDir,
+  detectGraphGaps,
+  writeGraphProposal,
+  acceptGraphProposal,
 } from "../lib/goals.mjs";
 import crypto from "node:crypto";
 import { detectTestCommand, runTests } from "../lib/test-runner.mjs";
@@ -237,6 +240,22 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
       "tests-at": new Date().toISOString().slice(0, 10),
     };
   }
+  // Graph reconciliation (write-back half of the flywheel): detect files this
+  // goal touched that the node graph doesn't yet represent and PROPOSE deltas —
+  // never auto-write the graph. Candidate set = declared files-to-touch ∪ git
+  // working-tree changes (covers both planned and incidental new modules).
+  // Best-effort: a reconciliation failure must never block marking the goal done.
+  let graphReconciliation = null;
+  try {
+    const plannedFiles = Array.isArray(goal.meta["files-to-touch"]) ? goal.meta["files-to-touch"] : [];
+    const candidates = [...new Set([...plannedFiles, ...gitModifiedFiles(cwd)])];
+    const gaps = detectGraphGaps(archDir, candidates);
+    if (gaps.length > 0) {
+      const written = writeGraphProposal(archDir, slug, gaps);
+      graphReconciliation = { gaps, proposalPath: written?.proposalPath || null };
+    }
+  } catch { /* non-fatal */ }
+
   const result = completeGoal(archDir, slug, { notes, extraMeta });
   // Suggest the next goal's payload if any
   const remaining = listGoals(archDir);
@@ -252,10 +271,16 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
   const drainNote = consolidation && consolidation.consolidated > 0
     ? ` Consolidated ${consolidation.consolidated} completed goal(s) into the ${consolidation.date} digest (raw archived under goals/done/archive/; searchable via archkit_goal_list).`
     : "";
+  // Terse flag only — full authoring guidance lives in the graphReconciliation
+  // field + the persisted proposal's note, so nextStep stays within budget.
+  const graphNote = graphReconciliation
+    ? ` ${graphReconciliation.gaps.length} graph gap(s) — document via graphReconciliation while warm.`
+    : "";
   return {
     ...result,
     testGate: verifyCommand ? { command: verifyCommand, passed: true } : null,
     consolidation,
+    graphReconciliation,
     nextGoal: next
       ? {
           slug: next.slug,
@@ -264,8 +289,8 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes }) {
         }
       : null,
     nextStep: next
-      ? `Tell the user: run /clear, then /mcp__archkit__goal_next to begin ${next.slug} (fallback: paste nextGoal.payload after /goal).`
-      : `All goals complete.${drainNote} Tell the user the CGR queue is empty and ask what to tackle next.`,
+      ? `Run /clear, then /mcp__archkit__goal_next to begin ${next.slug}.${graphNote}`
+      : `CGR queue empty.${drainNote}${graphNote} Ask the user what to tackle next.`,
   };
 }
 
@@ -281,6 +306,61 @@ export function runGoalConsolidate({ archDir }) {
     nextStep: r.consolidated > 0
       ? `Consolidated ${r.consolidated} terminal goal(s) into .arch/goals/done/digest/${r.date}.md. Raw CGRs preserved under goals/done/archive/ — full context recoverable. Recent digests surface in archkit_goal_list.`
       : `Nothing to consolidate — no un-archived terminal goals in .arch/goals/done/.`,
+  };
+}
+
+// Close the write-back half of the graph flywheel (ADR 0004): apply an authored
+// node `line` from a goal's persisted graph-proposal to its cluster .graph and
+// drop the consumed gap. The caller authors the node prose (archkit never
+// auto-merges a graph edit — a wrong node misleads every future warmup); this
+// parse-validates it and commits. Only undocumented-file gaps are appendable;
+// unmapped-area gaps need a whole new cluster + INDEX node and are refused with a
+// clear message rather than a silent no-op.
+export function runGraphAccept({ archDir, slug, file, line }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  if (!slug || !String(slug).trim()) {
+    throw archkitError("invalid_input", "slug required", { suggestion: "archkit_graph_accept needs the goal slug whose graph-proposal you're accepting." });
+  }
+  const r = acceptGraphProposal(archDir, slug, { file, line });
+  if (!r.ok) {
+    switch (r.reason) {
+      case "unknown_proposal":
+        throw archkitError("unknown_proposal", `No graph proposal for "${slug}" in .arch/graph-proposals/`, {
+          suggestion: "Graph proposals are written by archkit_goal_complete when a goal touches files the node graph doesn't represent. Nothing to accept here.",
+        });
+      case "unreadable_proposal":
+        throw archkitError("unreadable_proposal", `.arch/graph-proposals/${slug}.json is not valid JSON`, {
+          suggestion: "Inspect or delete the malformed proposal file.",
+        });
+      case "gap_not_found":
+        throw archkitError("gap_not_found", `No gap for file "${file}" in proposal "${slug}"`, {
+          suggestion: `Files in this proposal: ${r.gaps.map((g) => g.file).join(", ") || "(none)"}.`,
+        });
+      case "ambiguous_gap":
+        throw archkitError("ambiguous_gap", `Proposal "${slug}" has ${r.gaps.length} gaps — pass \`file\` to pick one`, {
+          suggestion: `Files: ${r.gaps.map((g) => g.file).join(", ")}.`,
+        });
+      case "unmapped_area":
+        throw archkitError("unmapped_area_deferred", `"${r.gap.file}" maps to NO existing cluster (unmapped-area) — archkit_graph_accept only appends to an existing cluster .graph.`, {
+          suggestion: `Scaffold a new cluster (suggested: "${r.gap.suggestedCluster}") + its INDEX node by hand, then add the node line. This tool deliberately won't invent a new cluster.`,
+        });
+      case "missing_line":
+        throw archkitError("invalid_input", `\`line\` is required — the authored node line to append`, {
+          suggestion: `Fill the <role>/<flow> placeholders in the proposal's suggestedLine and pass it as \`line\` (e.g. "${r.gap.suggestedLine}").`,
+        });
+      case "malformed_line":
+        throw archkitError("malformed_line", `Authored line does not parse as a graph node — refusing to write; the .graph is untouched.`, {
+          suggestion: `A node line is "NodeId [TAG] : path — role | flow". Got: ${r.authoredLine}`,
+        });
+      default:
+        throw archkitError("internal_error", `graph accept failed (${r.reason})`, { suggestion: "Inspect the proposal and cluster .graph by hand." });
+    }
+  }
+  return {
+    ...r,
+    nextStep: r.proposalRemoved
+      ? `Appended ${r.node} → .arch/clusters/${r.cluster}.graph and consumed proposal "${slug}" (graph back in sync). Run archkit_drift to confirm.`
+      : `Appended ${r.node} → .arch/clusters/${r.cluster}.graph. ${r.remainingGaps} gap(s) left in proposal "${slug}" — re-run archkit_graph_accept with the next file + authored line.`,
   };
 }
 
@@ -480,6 +560,7 @@ async function main() {
     console.log(`${C.gray}    hold <slug>                  Set a goal aside as on-hold (resumable, guard released)${C.reset}`);
     console.log(`${C.gray}    complete <slug> [--notes X]  Mark a goal done, archive to done/${C.reset}`);
     console.log(`${C.gray}    consolidate                  Digest terminal goals → done/digest/, archive raw${C.reset}`);
+    console.log(`${C.gray}    graph-accept <slug> --line X Apply an authored node line from a graph-proposal${C.reset}`);
     console.log(`${C.gray}    intake --json <json>         Accept decomposed-goals JSON (agent driver)${C.reset}`);
     console.log("");
     console.log(`${C.dim}  CGR workflow: type a sprawling ask in a fresh session → agent decomposes${C.reset}`);
@@ -587,6 +668,20 @@ async function main() {
         } else {
           console.log(`\n  ${C.dim}nothing to consolidate${C.reset}\n`);
         }
+        break;
+      }
+      case "graph-accept": {
+        const slug = args[1];
+        if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal graph-accept <slug> --line \"NodeId [TAG] : path — role | flow\" [--file <path>]" });
+        const lineIdx = args.indexOf("--line");
+        const fileIdx = args.indexOf("--file");
+        const line = lineIdx > 0 ? (args[lineIdx + 1] || "") : "";
+        const file = fileIdx > 0 ? (args[fileIdx + 1] || "") : undefined;
+        const out = runGraphAccept({ archDir, slug, line, file });
+        if (isJson) { console.log(JSON.stringify(out)); break; }
+        commandBanner("archkit goal", `graph-accept ${slug}`);
+        console.log(`\n  ${C.green}${I.check}${C.reset} appended ${out.node} → .arch/clusters/${out.cluster}.graph`);
+        console.log(`  ${C.dim}${out.proposalRemoved ? "proposal consumed" : `${out.remainingGaps} gap(s) remaining`}${C.reset}\n`);
         break;
       }
       case "intake": {

@@ -23,7 +23,7 @@ import { runBoundaryCheckJson, runBoundaryProposeJson } from "../commands/bounda
 import { runDoctorJson } from "../commands/doctor.mjs";
 import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
-import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate } from "../commands/goal.mjs";
+import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGraphAccept } from "../commands/goal.mjs";
 import { loadGoal } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
@@ -73,7 +73,7 @@ export const tools = {
   },
 
   archkit_resolve_warmup: {
-    description: "Run health checks on the .arch/ context system. Default (deep:false): structural checks only — SYSTEM.md present, INDEX.md parseable, clusters/ and skills/ readable, no obvious file-vs-index mismatches. Fast (<200ms typical) and safe to call repeatedly. deep:true adds: (W011) cross-references package.json deps against skill coverage to flag major packages with no .skill file; (W012) scans .arch/apis/*.api for unpopulated [VERSION]/[BASE_URL] stubs that would force the LLM to fall back on training data; (W013) validates .arch/extensions/registry.json for orphaned entries. Deep mode reads more files and is appropriate at session start or after dependency churn. Returns { pass, mode, checks[], blockers[], warnings[], actions[] }. When to use: at the START of a coding session (default); after `npm install` or major refactors (deep:true); whenever context drift is suspected.",
+    description: "Run health checks on the .arch/ context system. Default (deep:false): structural checks only — SYSTEM.md present, INDEX.md parseable, clusters/ and skills/ readable, no obvious file-vs-index mismatches. Fast (<200ms typical) and safe to call repeatedly. it also surfaces pending review debt: (W014) ADR proposals auto-drafted to .arch/decisions/proposed/, and (W015) graph-proposals persisted to .arch/graph-proposals/ at goal_complete (ADR 0004) whose count+slugs appear in checks/warnings and summary.pendingGraphProposals — accept them with archkit_graph_accept so the node graph stays current. deep:true adds: (W011) cross-references package.json deps against skill coverage to flag major packages with no .skill file; (W012) scans .arch/apis/*.api for unpopulated [VERSION]/[BASE_URL] stubs that would force the LLM to fall back on training data; (W013) validates .arch/extensions/registry.json for orphaned entries. Deep mode reads more files and is appropriate at session start or after dependency churn. Returns { pass, mode, checks[], blockers[], warnings[], actions[], summary }. When to use: at the START of a coding session (default); after `npm install` or major refactors (deep:true); whenever context drift is suspected.",
     inputSchema: z.object({
       deep: z.boolean().optional().describe("If true, also run W011 (package.json↔skills coverage), W012 (.api stub detection), W013 (extension registry integrity). Default false."),
     }),
@@ -335,6 +335,19 @@ export const tools = {
     handler: async () => {
       const cwd = process.cwd();
       return runGoalConsolidate({ archDir: requireArchDir(cwd) });
+    },
+  },
+
+  archkit_graph_accept: {
+    description: "Close the write-back half of the CGR graph flywheel (ADR 0004): apply ONE authored node line from a persisted graph-proposal to its cluster .graph, then drop the consumed gap. archkit_goal_complete only DETECTS graph gaps and writes a proposal to .arch/graph-proposals/<slug>.json (with a fill-in suggestedLine per undocumented file); this tool COMMITS the authored node — the propose→accept partner to archkit_boundary_propose / archkit_gotcha_propose. You (the warm agent) author the node prose: take the proposal's suggestedLine, replace the <role — fill in> / <flow — fill in> placeholders with the file's real role + in/out flow, and pass it as `line`. archkit NEVER auto-merges a graph edit (a wrong node misleads every future warmup), and it parse-validates the line through the same loader warmup/preflight use — a malformed line is REFUSED and the .graph is left untouched. Only undocumented-file gaps (a file sitting under an existing cluster's basePath) are appendable; unmapped-area gaps need a whole new cluster + INDEX node and are refused with guidance rather than guessed at. When a proposal has multiple gaps, pass `file` to pick one; the proposal file is deleted once its last gap is accepted. When to use: right after archkit_goal_complete reports graph gaps, while context is still warm. Returns { ok, cluster, node, appendedLine, clusterPath, remainingGaps, proposalRemoved, nextStep }.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug whose graph-proposal (.arch/graph-proposals/<slug>.json) you're accepting from."),
+      line: z.string().min(1).describe("The authored node line to append, e.g. \"WarmupCmd [S] : src/commands/resolve/warmup.mjs — session health checks | ArchkitBin → THIS → Parsers\". Take the proposal's suggestedLine and fill its <role>/<flow> placeholders. Must parse as a graph node or it is refused."),
+      file: z.string().optional().describe("Which gap to accept, when the proposal has more than one. The file path as it appears in the proposal's gaps. Omit when the proposal has a single gap."),
+    }),
+    handler: async ({ slug, line, file }) => {
+      const cwd = process.cwd();
+      return runGraphAccept({ archDir: requireArchDir(cwd), slug, line, file });
     },
   },
 

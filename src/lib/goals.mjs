@@ -17,11 +17,20 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createArchReader, loadGraphCluster } from "./parsers.mjs";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
-// Per Claude Code's slash-command argument limit. Empirically users wanted
-// "fits on a screen, quick to paste"; 3800 leaves slack for inline edits.
+// Copy-paste ceiling: the `archkit goal payload` / `/goal` fallback path pastes
+// the payload as a slash-command argument, which Claude Code caps. 3800 leaves
+// slack for inline edits. Still the default for renderPayload.
 export const PAYLOAD_BUDGET = 3800;
+
+// Relay ceiling: the /mcp__archkit__goal_next prompt injects the payload as an
+// MCP message directly into the conversation — no slash-command arg limit binds
+// it, so the relay path (now the primary workflow) can carry a fuller graph
+// slice + untruncated exit-criteria/source-ask. Kept finite so an injected goal
+// stays a compact pointer-into-.arch/, not a context dump.
+export const RELAY_PAYLOAD_BUDGET = 9000;
 
 export function goalsDir(archDir) {
   return path.join(archDir, "goals");
@@ -204,10 +213,288 @@ export function completeGoal(archDir, slug, { notes = "", extraMeta = {} } = {})
   return { slug, archivedAt: targetPath };
 }
 
+// Build a compact graph neighborhood for the files a goal will touch, scoped by
+// files-to-touch, so the injected payload hands the agent the related nodes +
+// edges up front instead of making it re-derive the whole graph or guess which
+// files are connected. Each touched path is matched to its INDEX node by
+// basePath prefix; the matching per-file lines from that cluster's .graph (role
+// + in/out flow) plus the cross-reference edges touching those clusters are
+// returned as ready-to-print lines. Returns [] when no touched file maps onto a
+// known node — keeps the common case (edits to already-mapped or non-code paths)
+// silent rather than emitting empty scaffolding. Pure read of .arch/; never
+// throws on a missing/empty graph.
+export function graphSlice(archDir, files) {
+  const paths = ensureArray(files).map(f => String(f).trim()).filter(Boolean);
+  if (paths.length === 0) return [];
+
+  let nodeCluster, crossRefs;
+  try {
+    const index = createArchReader(archDir).index();
+    nodeCluster = index.nodeCluster || {};
+    crossRefs = index.crossRefs || [];
+  } catch { return []; }
+  if (Object.keys(nodeCluster).length === 0) return [];
+
+  // touched file → INDEX node(s) whose basePath prefixes it. A node's basePath
+  // may be a comma-separated list; glob bases (src/features/*) are skipped — we
+  // only claim a file when a concrete prefix matches.
+  const matched = new Map(); // nodeId -> { cluster, basePath, files:Set }
+  for (const file of paths) {
+    for (const [nodeId, info] of Object.entries(nodeCluster)) {
+      const bases = String(info.basePath || "").split(",").map(s => s.trim()).filter(Boolean);
+      if (bases.some(b => !b.includes("*") && file.startsWith(b))) {
+        const entry = matched.get(nodeId) || { cluster: info.cluster, basePath: info.basePath, files: new Set() };
+        entry.files.add(file);
+        matched.set(nodeId, entry);
+      }
+    }
+  }
+  if (matched.size === 0) return [];
+
+  const lines = [];
+  const clusters = new Set();
+  for (const [nodeId, info] of matched) {
+    clusters.add(info.cluster);
+    lines.push(`  @${nodeId} (${info.basePath})`);
+    // Surface only the per-file .graph node lines that name a touched file —
+    // the agent gets that file's role + in/out flow without the whole cluster.
+    const graph = loadGraphCluster(archDir, info.cluster);
+    if (graph) {
+      for (const node of graph.nodes) {
+        if (![...info.files].some(f => (node.summary || "").includes(f))) continue;
+        const flow = node.flow ? `  [${node.flow}]` : "";
+        lines.push(`    ${node.id}: ${node.summary}${flow}`);
+      }
+    }
+  }
+
+  // Cross-reference edges touching any involved cluster — tells the agent which
+  // other areas import from / are imported by what it's about to change.
+  const edges = [...new Set(
+    crossRefs
+      .filter(e => clusters.has(e.from) || clusters.has(e.to) || matched.has(e.from) || matched.has(e.to))
+      .map(e => `@${e.from} → @${e.to}`),
+  )];
+  if (edges.length) lines.push(`  Edges: ${edges.join(", ")}`);
+
+  return lines;
+}
+
+// The graph maps source modules — not spec/meta/config/dotfiles. Reconciliation
+// only considers real code files so a goal that only edits .arch/ or docs never
+// proposes a node.
+const GRAPH_CANDIDATE_EXT = /\.(mjs|cjs|js|jsx|ts|tsx|py|go|rs|rb|java|kt|swift|php|cs)$/;
+// Test/spec/mock paths aren't graph nodes — the graph maps source modules. Most
+// goals touch a test, so without this every completion would propose noise.
+const TEST_PATH_RE = /(^|\/)(tests?|__tests__|__mocks__|spec|e2e)\/|\.(test|spec)\.[^/]+$|_test\.[^/]+$/;
+function isGraphCandidate(file) {
+  const f = String(file || "").replace(/^\.\//, "").trim();
+  if (!f || f.startsWith(".") || f.startsWith(".arch/")) return false;
+  if (f.includes("node_modules/")) return false;
+  if (TEST_PATH_RE.test(f)) return false;
+  return GRAPH_CANDIDATE_EXT.test(f);
+}
+
+// Derive a PascalCase node id from a file path: src/lib/test-runner.mjs → TestRunner.
+function nodeNameFor(file) {
+  const base = String(file).split("/").pop().replace(/\.[^.]+$/, "");
+  const name = base.split(/[-_.]/).filter(Boolean).map(s => s[0].toUpperCase() + s.slice(1)).join("");
+  return name || "Node";
+}
+
+// Reconciliation detector — the write-back half of the graph flywheel. Given the
+// files a just-finished goal touched, find the ones the node graph doesn't yet
+// represent, so completion can PROPOSE (never auto-write) graph deltas while the
+// authoring agent's context is still warm. Mirrors the boundary/gotcha propose
+// idiom: archkit detects the gap mechanically; a human (or the warm agent)
+// authors the node prose and accepts it. Two gap kinds:
+//   undocumented-file — file sits under an existing cluster's basePath but has
+//                       no node line in that cluster's .graph (→ add a node).
+//   unmapped-area     — file sits under NO cluster basePath (→ new cluster/@node).
+// "Established" = the file already appears in a node line of its cluster's
+// .graph; established files are silently skipped, so the common case (edits to
+// already-mapped files) proposes nothing. Pure read of .arch/; never throws.
+export function detectGraphGaps(archDir, files) {
+  const candidates = [...new Set(
+    ensureArray(files).map(f => String(f).replace(/^\.\//, "").trim()).filter(isGraphCandidate),
+  )];
+  if (candidates.length === 0) return [];
+
+  let nodeCluster;
+  try { nodeCluster = createArchReader(archDir).index().nodeCluster || {}; }
+  catch { return []; }
+
+  const graphCache = new Map();
+  const loadCluster = (id) => {
+    if (!graphCache.has(id)) graphCache.set(id, loadGraphCluster(archDir, id));
+    return graphCache.get(id);
+  };
+
+  const gaps = [];
+  for (const file of candidates) {
+    // Longest-prefix wins so a nested basePath (src/lib/sub/) beats a broad one.
+    let best = null;
+    for (const [nodeId, info] of Object.entries(nodeCluster)) {
+      const bases = String(info.basePath || "").split(",").map(s => s.trim()).filter(b => b && !b.includes("*"));
+      for (const b of bases) {
+        if (file.startsWith(b) && (!best || b.length > best.base.length)) {
+          best = { nodeId, cluster: info.cluster, base: b };
+        }
+      }
+    }
+
+    if (!best) {
+      gaps.push({ kind: "unmapped-area", file, suggestedCluster: file.split("/").slice(0, 2).pop() || file });
+      continue;
+    }
+
+    const graph = loadCluster(best.cluster);
+    if (graph && graph.nodes.some(n => (n.summary || "").includes(file))) continue; // established → silent
+
+    gaps.push({
+      kind: "undocumented-file",
+      file,
+      cluster: best.cluster,
+      node: `@${best.nodeId}`,
+      suggestedLine: `${nodeNameFor(file)} [U] : ${file} — <role — fill in> | <flow — fill in>`,
+    });
+  }
+  return gaps;
+}
+
+export function graphProposalsDir(archDir) {
+  return path.join(archDir, "graph-proposals");
+}
+
+// Persist a reconciliation proposal so a goal's detected graph gaps outlive the
+// completing session (mirrors boundary-proposals/). Propose-only by design:
+// archkit NEVER auto-writes INDEX.md or a .graph — a wrong node misleads every
+// future warmup — so this only records the gap + a fill-in node line for a human
+// or the warm agent to author and accept. Returns null (writes nothing) when
+// there are no gaps, keeping the common case clean.
+export function writeGraphProposal(archDir, slug, gaps) {
+  const list = ensureArray(gaps);
+  if (list.length === 0) return null;
+  const dir = graphProposalsDir(archDir);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${slug}.json`);
+  const proposal = {
+    slug,
+    created: new Date().toISOString().slice(0, 10),
+    gaps: list,
+    note: "Files this goal touched that the node graph does not yet represent. For each undocumented-file: fill the suggestedLine's <role>/<flow> and append it to .arch/clusters/<cluster>.graph. For each unmapped-area: scaffold a new cluster + INDEX node. archkit does not auto-merge graph changes.",
+  };
+  fs.writeFileSync(file, JSON.stringify(proposal, null, 2));
+  return { proposalPath: file, count: list.length };
+}
+
+// Read-side for graph proposals — sibling to listDigests/listGoalProposals.
+export function listGraphProposals(archDir) {
+  const dir = graphProposalsDir(archDir);
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    try { out.push(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"))); }
+    catch { /* skip unreadable */ }
+  }
+  return out;
+}
+
+// Append an authored node line to a cluster's .graph — but ONLY after confirming
+// the result still parses and the line added EXACTLY one node. Validation runs
+// THROUGH loadGraphCluster (the same parser warmup/preflight read with) on a
+// throwaway probe cluster, so "parses as a node" means precisely what every read
+// path means by it, and a malformed line can never touch the real .graph. Returns
+// { ok, ... }; on a parse failure ok:false and the target file is left untouched.
+function appendValidatedNodeLine(archDir, cluster, authoredLine) {
+  const dir = path.join(archDir, "clusters");
+  const target = path.join(dir, `${cluster}.graph`);
+  const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
+  const before = loadGraphCluster(archDir, cluster);
+  const beforeCount = before ? before.nodes.length : 0;
+  const candidate = (existing.trimEnd() ? existing.trimEnd() + "\n" : "") + authoredLine.trim() + "\n";
+
+  // Probe through loadGraphCluster on a throwaway cluster id so a bad line never
+  // reaches the real .graph. Always cleaned up, even on a parser throw.
+  fs.mkdirSync(dir, { recursive: true });
+  const probeId = `.accept-probe-${process.pid}`;
+  const probePath = path.join(dir, `${probeId}.graph`);
+  let probedCount = 0;
+  try {
+    fs.writeFileSync(probePath, candidate);
+    const probed = loadGraphCluster(archDir, probeId);
+    probedCount = probed ? probed.nodes.length : 0;
+  } finally {
+    fs.rmSync(probePath, { force: true });
+  }
+  if (probedCount !== beforeCount + 1) return { ok: false, beforeCount, probedCount };
+
+  fs.writeFileSync(target, candidate);
+  return { ok: true, beforeCount, afterCount: probedCount, clusterPath: target };
+}
+
+// Accept the write-back half of the graph flywheel (ADR 0004): apply ONE authored
+// node line from a persisted graph-proposal to its cluster .graph, then drop the
+// consumed gap (deleting the proposal once its last gap is resolved). Mirrors the
+// boundary/gotcha propose→accept idiom — archkit detected the gap; a human or the
+// warm agent authors the node prose and this commits it. Never auto-merges: the
+// line is supplied by the caller, parse-validated, and only undocumented-file
+// gaps (a file under an existing cluster) are appendable. unmapped-area gaps need
+// a whole new cluster + INDEX node, so they are refused here (reason:'unmapped_area')
+// with no silent no-op rather than guessed at. Returns { ok, ... } | { ok:false, reason }.
+export function acceptGraphProposal(archDir, slug, { file, line } = {}) {
+  const proposalPath = path.join(graphProposalsDir(archDir), `${slug}.json`);
+  if (!fs.existsSync(proposalPath)) return { ok: false, reason: "unknown_proposal" };
+  let proposal;
+  try { proposal = JSON.parse(fs.readFileSync(proposalPath, "utf8")); }
+  catch { return { ok: false, reason: "unreadable_proposal" }; }
+  const gaps = Array.isArray(proposal.gaps) ? proposal.gaps : [];
+
+  // Pick the gap: by file when given, else the sole gap. Ambiguity is surfaced,
+  // never silently resolved to the first gap.
+  let gap;
+  if (file) gap = gaps.find((g) => g.file === file);
+  else if (gaps.length === 1) gap = gaps[0];
+  if (!gap) {
+    return { ok: false, reason: file ? "gap_not_found" : "ambiguous_gap", gaps };
+  }
+
+  if (gap.kind === "unmapped-area") return { ok: false, reason: "unmapped_area", gap };
+
+  const authoredLine = String(line || "").trim();
+  if (!authoredLine) return { ok: false, reason: "missing_line", gap };
+
+  const appended = appendValidatedNodeLine(archDir, gap.cluster, authoredLine);
+  if (!appended.ok) return { ok: false, reason: "malformed_line", gap, authoredLine };
+
+  // Drop the consumed gap; delete the proposal once nothing is left in it.
+  const remaining = gaps.filter((g) => g.file !== gap.file);
+  let proposalRemoved = false;
+  if (remaining.length === 0) {
+    fs.rmSync(proposalPath, { force: true });
+    proposalRemoved = true;
+  } else {
+    fs.writeFileSync(proposalPath, JSON.stringify({ ...proposal, gaps: remaining }, null, 2));
+  }
+
+  return {
+    ok: true,
+    slug,
+    file: gap.file,
+    cluster: gap.cluster,
+    node: gap.node || `@${gap.cluster}`,
+    appendedLine: authoredLine,
+    clusterPath: path.relative(archDir, appended.clusterPath),
+    remainingGaps: remaining.length,
+    proposalRemoved,
+  };
+}
+
 // Render a tight, copy-pasteable payload for the user to paste after `/goal`
 // in a fresh /clear'ed session. Stays under PAYLOAD_BUDGET — the full goal
 // context lives on disk; the payload just points to it.
-export function renderPayload(archDir, slug) {
+export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
   const m = goal.meta;
@@ -236,6 +523,12 @@ export function renderPayload(archDir, slug) {
     for (const f of filesToTouch) lines.push(`- ${f}`);
     lines.push("");
   }
+  const slice = graphSlice(archDir, filesToTouch);
+  if (slice.length > 0) {
+    lines.push(`Graph slice (related nodes & edges — use instead of guessing):`);
+    lines.push(...slice);
+    lines.push("");
+  }
   if (verifyCommand) {
     lines.push(`Test gate: \`${verifyCommand}\` must pass — goal complete will run it and refuse on red.`);
     lines.push("");
@@ -243,16 +536,19 @@ export function renderPayload(archDir, slug) {
   lines.push(`When done: archkit goal complete ${slug}`);
   const ask = (m["source-ask"] || "").trim();
   if (ask) {
+    // The relay path has room to carry more of the originating ask; the tight
+    // copy-paste path keeps the terse 240-char teaser.
+    const askCap = budget > PAYLOAD_BUDGET ? 800 : 240;
     lines.push("");
-    lines.push(`Source ask: ${ask.slice(0, 240)}${ask.length > 240 ? "…" : ""}`);
+    lines.push(`Source ask: ${ask.slice(0, askCap)}${ask.length > askCap ? "…" : ""}`);
   }
 
   let payload = lines.join("\n");
-  if (payload.length > PAYLOAD_BUDGET) {
+  if (payload.length > budget) {
     // Trim source-ask and files-to-touch first — they're least load-bearing.
-    payload = payload.slice(0, PAYLOAD_BUDGET - 4) + "\n...";
+    payload = payload.slice(0, budget - 4) + "\n...";
   }
-  return { payload, length: payload.length, withinBudget: payload.length <= PAYLOAD_BUDGET };
+  return { payload, length: payload.length, withinBudget: payload.length <= budget };
 }
 
 function ensureArray(v) {
