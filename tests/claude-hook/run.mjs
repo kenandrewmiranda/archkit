@@ -254,18 +254,28 @@ test("--install-hooks --claude-only skips git hook", () => {
 
 test("--install-hooks --mcp skips registration cleanly when claude CLI is absent", () => {
   withGitDir((dir) => {
-    // Build an isolated PATH that contains node/which but not claude — exercises
-    // the graceful-degradation branch of installMcpEntry without breaking spawn.
+    // Build an isolated PATH that can run node + the CLI probe but has no
+    // `claude` — exercises the graceful-degradation branch of installMcpEntry.
     const isolatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-no-claude-"));
     try {
-      const nodePath = execFileSync("which", ["node"], { encoding: "utf8" }).trim();
-      const whichPath = execFileSync("which", ["which"], { encoding: "utf8" }).trim();
-      fs.symlinkSync(nodePath, path.join(isolatedDir, "node"));
-      fs.symlinkSync(whichPath, path.join(isolatedDir, "which"));
+      let pathValue;
+      if (process.platform === "win32") {
+        // Symlinks are privileged on Windows. Instead include node's own dir and
+        // System32 (so node + `where`/cmd resolve); `claude` is absent from both.
+        const nodeDir = path.dirname(process.execPath);
+        const sys32 = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+        pathValue = [isolatedDir, nodeDir, sys32].join(path.delimiter);
+      } else {
+        const nodePath = execFileSync("which", ["node"], { encoding: "utf8" }).trim();
+        const whichPath = execFileSync("which", ["which"], { encoding: "utf8" }).trim();
+        fs.symlinkSync(nodePath, path.join(isolatedDir, "node"));
+        fs.symlinkSync(whichPath, path.join(isolatedDir, "which"));
+        pathValue = isolatedDir;
+      }
 
-      const out = execFileSync("node", [ARCHKIT_BIN, "init", "--install-hooks", "--claude-only", "--mcp", "--json"], {
+      const out = execFileSync(process.execPath, [ARCHKIT_BIN, "init", "--install-hooks", "--claude-only", "--mcp", "--json"], {
         cwd: dir,
-        env: { ...process.env, PATH: isolatedDir },
+        env: { ...process.env, PATH: pathValue },
         stdio: ["pipe", "pipe", "pipe"],
         timeout: 10000,
       });

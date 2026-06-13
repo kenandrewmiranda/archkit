@@ -40,8 +40,12 @@ test("--install-hooks creates pre-commit hook", () => {
     const content = fs.readFileSync(hookPath, "utf8");
     assert.ok(content.includes("archkit drift"), "hook should contain 'archkit drift'");
 
-    const mode = fs.statSync(hookPath).mode;
-    assert.ok((mode & 0o111) !== 0, "hook file should be executable");
+    // NTFS has no Unix executable bit — git for Windows ignores it and runs the
+    // hook regardless, so this assertion is only meaningful on POSIX.
+    if (process.platform !== "win32") {
+      const mode = fs.statSync(hookPath).mode;
+      assert.ok((mode & 0o111) !== 0, "hook file should be executable");
+    }
   });
 });
 

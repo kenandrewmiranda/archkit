@@ -37,22 +37,32 @@ function makeFixture({ listMode = "empty" } = {}) {
   const binDir = path.join(tmp, "bin");
   fs.mkdirSync(binDir, { recursive: true });
   const logPath = path.join(tmp, "claude-invocations.log");
-  const listOutput = listMode === "present" ? "archkit: archkit-mcp\n" : "";
-  const fakeClaude = `#!/bin/sh
+  // Cross-platform fake `claude`: a POSIX shell script on Unix, a `.cmd` batch
+  // file on Windows (where `claude` resolves to claude.cmd and archkit invokes
+  // it through a shell). Both append argv to logPath and emit the list output.
+  if (process.platform === "win32") {
+    const listLine = listMode === "present"
+      ? 'if "%~1"=="mcp" if "%~2"=="list" echo archkit: archkit-mcp\r\n' : "";
+    const fakeClaude = `@echo off\r\necho %* >> "${logPath}"\r\n${listLine}exit /b 0\r\n`;
+    fs.writeFileSync(path.join(binDir, "claude.cmd"), fakeClaude);
+  } else {
+    const listOutput = listMode === "present" ? "archkit: archkit-mcp\n" : "";
+    const fakeClaude = `#!/bin/sh
 echo "$@" >> "${logPath}"
 if [ "$1" = "mcp" ] && [ "$2" = "list" ]; then
   printf '%s' "${listOutput}"
 fi
 exit 0
 `;
-  fs.writeFileSync(path.join(binDir, "claude"), fakeClaude, { mode: 0o755 });
+    fs.writeFileSync(path.join(binDir, "claude"), fakeClaude, { mode: 0o755 });
+  }
   return { tmp, home, binDir, logPath };
 }
 
 function runInit({ tmp, home, binDir }) {
   return execFileSync(process.execPath, [ARCHKIT, "init", "--install-hooks", "--mcp", "--yes"], {
     cwd: tmp,
-    env: { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH || ""}` },
+    env: { ...process.env, HOME: home, PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}` },
     stdio: ["pipe", "pipe", "pipe"],
   });
 }

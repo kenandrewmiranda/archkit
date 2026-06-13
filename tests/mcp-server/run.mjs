@@ -275,7 +275,14 @@ await log("server shuts down cleanly on SIGTERM", async () => {
   await new Promise(resolve => setTimeout(resolve, 500));
   child.kill("SIGTERM");
   const code = await new Promise(resolve => child.on("exit", resolve));
-  assert.equal(code, 0, `expected clean exit (0), got ${code}`);
+  if (process.platform === "win32") {
+    // Windows has no POSIX signals — kill() maps to TerminateProcess, so the
+    // child is force-terminated with a null exit code rather than exiting 0.
+    // The meaningful assertion is simply that the server stopped (exit fired).
+    assert.ok(code === null || code === 0, `server should terminate, got ${code}`);
+  } else {
+    assert.equal(code, 0, `expected clean exit (0), got ${code}`);
+  }
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

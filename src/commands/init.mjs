@@ -516,9 +516,17 @@ function installMcpEntry(log) {
   // Delegate to the canonical Claude Code mechanism: `claude mcp add`.
   // The legacy ~/.claude/mcp.json path is no longer read by Claude Code v2.x;
   // its source of truth is ~/.claude.json, written via the CLI.
+  // Cross-platform CLI probe + invocation. Windows has no `which` (it's `where`,
+  // which prints one match per line), and `claude` resolves to `claude.cmd` —
+  // a batch file Node can only execute through a shell (shell:true). On POSIX,
+  // `which` + direct exec. Without this, archkit silently never registers the
+  // MCP server on Windows.
+  const isWin = process.platform === "win32";
+  const claudeShellOpts = isWin ? { shell: true } : {};
   let claudeBin;
   try {
-    claudeBin = execFileSync("which", ["claude"], { encoding: "utf8", timeout: 3000 }).trim();
+    claudeBin = execFileSync(isWin ? "where" : "which", ["claude"], { encoding: "utf8", timeout: 3000 })
+      .split(/\r?\n/)[0].trim();
   } catch {
     log.warn("Claude Code CLI ('claude') not found on PATH. Skipping MCP registration.");
     log.warn("Install Claude Code, then run: claude mcp add archkit archkit-mcp --scope user");
@@ -532,7 +540,7 @@ function installMcpEntry(log) {
   // Already registered? `claude mcp list` prints "archkit:" on its own line.
   try {
     const list = execFileSync("claude", ["mcp", "list"], {
-      encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000,
+      encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000, ...claudeShellOpts,
     });
     if (/^archkit:/m.test(list)) {
       log.ok("MCP archkit server already registered with Claude Code");
@@ -544,7 +552,7 @@ function installMcpEntry(log) {
 
   try {
     execFileSync("claude", ["mcp", "add", "archkit", "archkit-mcp", "--scope", "user"], {
-      stdio: ["pipe", "pipe", "pipe"], timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"], timeout: 10000, ...claudeShellOpts,
     });
     log.ok("Registered archkit MCP server with Claude Code (user scope)");
     return { registered: true, alreadyPresent: false };
