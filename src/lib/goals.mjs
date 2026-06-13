@@ -188,29 +188,59 @@ export function listGoals(archDir) {
       } catch {}
     }
   }
-  out.sort(compareGoals);
-  return out;
+  return sortGoals(out);
 }
 
-// ── Intentional sequencing (cgr-goal-ordering) ──────────────────────────────
+// ── Intentional sequencing (cgr-goal-ordering; epic-primary per ADR 0006) ────
 // Goals carry an optional numeric `order` (stamped at intake from decomposition
 // order, or set by hand) and an optional `epic` group label. listGoals returns
-// goals sorted by that intent — order ascending, then epic, then slug — so
-// nextEligibleGoal and goal_list pick the next INTENDED goal instead of the
-// incidental readdir/alphabetical order. Goals with no `order` sort last
-// (Infinity), preserving stable alpha-by-slug among them — fully backward
-// compatible with goals written before this field existed.
+// goals sorted by intent so nextEligibleGoal and goal_list pick the next
+// INTENDED goal instead of incidental readdir/alphabetical order.
+//
+// Ordering is EPIC-PRIMARY: an epic runs to completion before the next begins
+// ("finish objective X before starting Y"). Epics are sequenced by their
+// EARLIEST `order` (the epic whose lowest-numbered goal comes first runs first),
+// and within an epic by `order`. Ungrouped goals (no epic) each stand alone,
+// slotted among the epics by their own order — so a lone goal is neither forced
+// ahead of nor behind every epic. Goals with no `order` rank last (Infinity),
+// preserving stable alpha-by-slug among them.
+//
+// Backward compatible: with no epics anywhere, every goal's group rank IS its
+// own order, so this collapses to pure order-ascending — identical to the
+// order-primary behavior shipped in v1.11.0 and to alpha-by-slug for goals
+// predating the fields entirely.
 function orderKey(g) {
   const n = Number(g?.meta?.order);
   return Number.isFinite(n) ? n : Infinity;
 }
-export function compareGoals(a, b) {
-  const oa = orderKey(a), ob = orderKey(b);
-  if (oa !== ob) return oa - ob;
-  const ea = String(a?.meta?.epic || ""), eb = String(b?.meta?.epic || "");
-  if (ea !== eb) return ea < eb ? -1 : 1;
-  const sa = a?.slug || "", sb = b?.slug || "";
-  return sa < sb ? -1 : sa > sb ? 1 : 0;
+export function sortGoals(goals) {
+  // Rank each epic by the minimum `order` among its goals — this is what keeps
+  // an epic's goals contiguous AND sequences the epics by where they started.
+  const epicRank = new Map();
+  for (const g of goals) {
+    const e = String(g?.meta?.epic || "");
+    if (!e) continue;
+    const o = orderKey(g);
+    if (!epicRank.has(e) || o < epicRank.get(e)) epicRank.set(e, o);
+  }
+  // Group rank: an epic'd goal inherits its epic's earliest order; an ungrouped
+  // goal is its own group, ranked by its own order.
+  const groupRank = (g) => {
+    const e = String(g?.meta?.epic || "");
+    return e ? epicRank.get(e) : orderKey(g);
+  };
+  return [...goals].sort((a, b) => {
+    const ra = groupRank(a), rb = groupRank(b);
+    if (ra !== rb) return ra - rb;
+    // Same group rank: keep an epic's goals together (epic label), then by
+    // order within the epic, then slug as the final stable tie-break.
+    const ea = String(a?.meta?.epic || ""), eb = String(b?.meta?.epic || "");
+    if (ea !== eb) return ea < eb ? -1 : 1;
+    const oa = orderKey(a), ob = orderKey(b);
+    if (oa !== ob) return oa - ob;
+    const sa = a?.slug || "", sb = b?.slug || "";
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
 }
 
 // Highest `order` currently assigned across live goals, +1 — the base for the

@@ -19,7 +19,7 @@ import {
   loadGoal,
   completeGoal,
   nextEligibleGoal,
-  compareGoals,
+  sortGoals,
   nextOrderBase,
   renderPayload,
   graphSlice,
@@ -469,11 +469,31 @@ test("nextEligibleGoal honors order over alphabetical slug", () => {
   });
 });
 
-test("compareGoals breaks ties by epic then slug", () => {
+test("sortGoals is epic-primary — an epic drains fully before the next begins", () => {
   const mk = (slug, order, epic) => ({ slug, meta: { order, epic } });
-  // Same order → epic decides; same epic → slug decides.
-  assert.ok(compareGoals(mk("x", 1, "a"), mk("y", 1, "b")) < 0, "epic a before b");
-  assert.ok(compareGoals(mk("y", 1, "a"), mk("x", 1, "a")) > 0, "same epic falls to slug");
+  // epic A = {0, 5}, epic B = {1}, ungrouped = {2}. A's earliest order (0) beats
+  // B's (1) and the lone goal (2), so ALL of A runs before B — even A's order-5
+  // goal jumps ahead of B's order-1 goal. That's "finish X before starting Y".
+  const sorted = sortGoals([
+    mk("a1", 0, "alpha"), mk("a2", 5, "alpha"),
+    mk("b1", 1, "beta"),
+    mk("u1", 2, ""),
+  ]).map((g) => g.slug);
+  assert.deepEqual(sorted, ["a1", "a2", "b1", "u1"]);
+});
+
+test("sortGoals keeps an epic contiguous and ordered within it", () => {
+  const mk = (slug, order, epic) => ({ slug, meta: { order, epic } });
+  const sorted = sortGoals([
+    mk("a-late", 9, "alpha"), mk("a-early", 3, "alpha"),
+  ]).map((g) => g.slug);
+  assert.deepEqual(sorted, ["a-early", "a-late"], "within-epic by order");
+});
+
+test("sortGoals collapses to pure order when no epics exist", () => {
+  const mk = (slug, order) => ({ slug, meta: { order } });
+  const sorted = sortGoals([mk("z", 2), mk("a", 1)]).map((g) => g.slug);
+  assert.deepEqual(sorted, ["a", "z"], "no epics → order-ascending, slug irrelevant");
 });
 
 test("nextOrderBase returns max assigned order + 1 (0 when none)", () => {
