@@ -1,6 +1,8 @@
 // Validates that import statements respect the architecture layer hierarchy.
 // Uses regex-based import extraction — no AST parser needed.
 
+import { toPosixPath } from "../../lib/shared.mjs";
+
 // Directories that are shared by design — never flag as cross-feature imports
 const SHARED_DIRS = new Set(["shared", "common", "lib", "utils", "helpers", "packages", "types", "config", "middleware", "infrastructure", "core"]);
 
@@ -68,6 +70,7 @@ function extractImports(code) {
 
 export function checkImportHierarchy(code, filepath) {
   const findings = [];
+  filepath = toPosixPath(filepath); // Windows: detectFeature matches `features/<id>/`, not backslash paths
   const sourceLayer = detectLayer(filepath);
   const sourceFeature = detectFeature(filepath);
 

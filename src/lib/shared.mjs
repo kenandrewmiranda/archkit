@@ -92,3 +92,16 @@ export function divider() {
   console.log(`${C.gray}  ${"─".repeat(64)}${C.reset}`);
 }
 
+/**
+ * Normalize a filesystem path to forward-slash (POSIX) separators. On Windows,
+ * path.join / readdir / the Edit-tool file_path all surface backslash paths;
+ * the review checks compare against `/`-delimited spec conventions and import
+ * specifiers (which are `/` on every OS), so a raw backslash path silently
+ * matches nothing. Normalizing at the comparison boundary is a no-op on POSIX.
+ * @param {string} p
+ * @returns {string}
+ */
+export function toPosixPath(p) {
+  return String(p == null ? "" : p).split(path.sep).join("/").split("\\").join("/");
+}
+

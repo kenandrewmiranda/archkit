@@ -20,7 +20,7 @@
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "node:child_process";
-import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { checkImportHierarchy } from "./review/import-checks.mjs";
@@ -142,6 +142,7 @@ function checkGotchas(code, skills) {
 
 function checkArchitectureRules(code, filepath, rules, reservedWords) {
   const findings = [];
+  filepath = toPosixPath(filepath); // Windows: feature/path checks compare against `/`-delimited specs
   const filename = path.basename(filepath);
   const dir = path.dirname(filepath);
 
@@ -277,7 +278,7 @@ function checkArchitectureRules(code, filepath, rules, reservedWords) {
 function checkFileLocation(filepath, graphs) {
   const findings = [];
   // Check if file is in a known cluster location
-  const parts = filepath.split("/");
+  const parts = toPosixPath(filepath).split("/");
   const featuresIdx = parts.indexOf("features");
   if (featuresIdx !== -1 && parts[featuresIdx + 1]) {
     const feature = parts[featuresIdx + 1];
