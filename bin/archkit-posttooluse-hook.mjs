@@ -22,13 +22,17 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// import() of an absolute path needs a file:// URL on Windows
+// (ERR_UNSUPPORTED_ESM_URL_SCHEME otherwise); no-op-shaped on POSIX.
+const importPath = (p) => import(pathToFileURL(p).href);
+
 const LIB = path.resolve(__dirname, "..", "src", "lib");
-const { loadOrInit, recordToolCall, save } = await import(path.join(LIB, "session-stats.mjs"));
+const { loadOrInit, recordToolCall, save } = await importPath(path.join(LIB, "session-stats.mjs"));
 
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rb", ".rs", ".java"]);
 const SKIP_DIRS = ["node_modules", "dist", "build", ".archkit", ".next", ".turbo", "coverage"];
@@ -83,7 +87,7 @@ function summarizeFindings(reviewResult) {
 async function tryReview(filePath, archDir, projectRoot) {
   try {
     // Lazy import — avoids cost on every PostToolUse for non-edit tools.
-    const { runReviewJson } = await import(path.resolve(__dirname, "..", "src", "commands", "review.mjs"));
+    const { runReviewJson } = await importPath(path.resolve(__dirname, "..", "src", "commands", "review.mjs"));
     const result = await runReviewJson({
       files: [filePath],
       archDir,

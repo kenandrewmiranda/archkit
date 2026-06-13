@@ -25,14 +25,18 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// import() of an absolute path needs a file:// URL on Windows
+// (ERR_UNSUPPORTED_ESM_URL_SCHEME otherwise); no-op-shaped on POSIX.
+const importPath = (p) => import(pathToFileURL(p).href);
+
 const LIB = path.resolve(__dirname, "..", "src", "lib");
-const { loadOrInit, startTask, save } = await import(path.join(LIB, "session-stats.mjs"));
-const { parseIndex } = await import(path.join(LIB, "parsers.mjs"));
+const { loadOrInit, startTask, save } = await importPath(path.join(LIB, "session-stats.mjs"));
+const { parseIndex } = await importPath(path.join(LIB, "parsers.mjs"));
 
 const CONTEXT_CAP_CHARS = 2000;
 const MIN_KEYWORD_HITS = 2;

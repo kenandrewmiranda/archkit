@@ -33,20 +33,24 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// import() of an absolute path needs a file:// URL on Windows
+// (ERR_UNSUPPORTED_ESM_URL_SCHEME otherwise); no-op-shaped on POSIX.
+const importPath = (p) => import(pathToFileURL(p).href);
+
 const LIB = path.resolve(__dirname, "..", "src", "lib");
-const { loadOrInit, computeUtilization, formatUtilizationLine, save } = await import(path.join(LIB, "session-stats.mjs"));
-const { detectViolations, formatViolation } = await import(path.join(LIB, "boundary-patterns.mjs"));
-const { detectDecisions } = await import(path.join(LIB, "decision-detector.mjs"));
-const { detectDeferredGoals } = await import(path.join(LIB, "goal-detector.mjs"));
+const { loadOrInit, computeUtilization, formatUtilizationLine, save } = await importPath(path.join(LIB, "session-stats.mjs"));
+const { detectViolations, formatViolation } = await importPath(path.join(LIB, "boundary-patterns.mjs"));
+const { detectDecisions } = await importPath(path.join(LIB, "decision-detector.mjs"));
+const { detectDeferredGoals } = await importPath(path.join(LIB, "goal-detector.mjs"));
 const {
   getActiveGoal, exitCriteriaOf, verifyCommandOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
   writeGoalProposal, countGoalProposals, consolidateGoals,
-} = await import(path.join(LIB, "goals.mjs"));
+} = await importPath(path.join(LIB, "goals.mjs"));
 
 const UTILIZATION_TARGET = 75;
 const BOUNDARIES_RULE_CAP = 12;

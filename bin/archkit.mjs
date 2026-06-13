@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import path from "path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Dynamic import() of an ABSOLUTE filesystem path fails on Windows
+// (ERR_UNSUPPORTED_ESM_URL_SCHEME: "d:\..." is not a valid URL scheme) — the
+// ESM loader requires a file:// URL there. pathToFileURL is a no-op-shaped
+// wrapper that is correct on every OS. Always route absolute-path imports
+// through this.
+const importPath = (p) => import(pathToFileURL(p).href);
 
 // Signal to command modules that they should self-execute
 process.env.ARCHKIT_RUN = "1";
@@ -45,16 +52,16 @@ const marketAliases = { login: true, logout: true, search: true, install: true, 
 
 if (command === "mcp") {
   // archkit mcp  →  archkit-mcp (stdio MCP server)
-  await import(path.resolve(__dirname, "../bin/archkit-mcp.mjs"));
+  await importPath(path.resolve(__dirname, "../bin/archkit-mcp.mjs"));
 } else if (command && marketAliases[command]) {
   // Rewrite argv so market.mjs sees the subcommand: [node, script, subcommand, ...rest]
   // No splice needed — market.mjs reads process.argv.slice(2) which already starts with the subcommand
-  await import(path.resolve(__dirname, "../src/commands/market.mjs"));
+  await importPath(path.resolve(__dirname, "../src/commands/market.mjs"));
 } else if (command && commands[command]) {
   // Pass remaining args
   process.argv.splice(2, 1);
-  await import(path.resolve(__dirname, commands[command]));
+  await importPath(path.resolve(__dirname, commands[command]));
 } else {
   // Default: run the scaffold wizard
-  await import(path.resolve(__dirname, "../src/scaffold.mjs"));
+  await importPath(path.resolve(__dirname, "../src/scaffold.mjs"));
 }
