@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "node:child_process";
-import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { parseBoundaries, normalizeImport } from "../lib/boundary-parser.mjs";
 import { extractImports } from "../lib/import-detector.mjs";
@@ -113,7 +113,9 @@ export function checkBoundaries({ archDir, files, cwd, hunkLines }) {
   for (const relFile of files) {
     const absFile = path.isAbsolute(relFile) ? relFile : path.resolve(cwd, relFile);
     if (!fs.existsSync(absFile)) continue;
-    const fileRel = path.relative(cwd, absFile);
+    // Match against `/`-delimited BAN globs — normalize Windows backslashes
+    // so e.g. `bot\copilot\x.py` matches the glob `bot/copilot/*`.
+    const fileRel = toPosixPath(path.relative(cwd, absFile));
     const code = fs.readFileSync(absFile, "utf8");
     const imports = extractImports(absFile, code);
     const allowedLines = hunkLines ? hunkLines.get(absFile) : null;

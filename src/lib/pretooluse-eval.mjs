@@ -18,6 +18,7 @@
 
 import { parseBoundaries, normalizeImport } from "./boundary-parser.mjs";
 import { extractImports } from "./import-detector.mjs";
+import { toPosixPath } from "./shared.mjs";
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
 
@@ -64,6 +65,10 @@ export function computePostEditContent(toolName, toolInput, currentContent = "")
 export function evaluateProposedEdit({ fileRel, filePath, toolName, toolInput, currentContent = "", boundariesContent }) {
   const { rules } = parseBoundaries(boundariesContent || "");
   if (rules.length === 0) return { violations: [] };
+
+  // Match against `/`-delimited BAN globs — normalize Windows backslashes so a
+  // proposed edit to `src\lib\x.mjs` matches the glob `src/lib/*`.
+  fileRel = toPosixPath(fileRel);
 
   // Only rules whose source glob covers this file can ever apply.
   const applicable = rules.filter((r) => r.sourceRe.test(fileRel));

@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { parseBoundaries } from "../lib/boundary-parser.mjs";
@@ -115,7 +115,7 @@ function checkUnappliedBans(archDir, cwd) {
   const repoFiles = walkRepo(cwd);
   const unapplied = [];
   for (const rule of rules) {
-    const matched = repoFiles.some(rel => rule.sourceRe.test(rel));
+    const matched = repoFiles.some(rel => rule.sourceRe.test(toPosixPath(rel)));
     if (!matched) {
       unapplied.push({
         source: rule.source,

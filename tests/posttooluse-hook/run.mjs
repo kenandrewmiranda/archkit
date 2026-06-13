@@ -4,11 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.resolve(__dirname, "../../bin/archkit-posttooluse-hook.mjs");
-const STATS_LIB = path.resolve(__dirname, "../../src/lib/session-stats.mjs");
+const STATS_LIB = pathToFileURL(path.resolve(__dirname, "../../src/lib/session-stats.mjs")).href;
 const { statsPathForSession, loadOrInit } = await import(STATS_LIB);
 
 let passed = 0;

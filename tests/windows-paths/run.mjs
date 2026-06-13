@@ -8,11 +8,11 @@
 
 import { strict as assert } from "node:assert";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SHARED = path.resolve(__dirname, "../../src/lib/shared.mjs");
-const IMPORTS = path.resolve(__dirname, "../../src/commands/review/import-checks.mjs");
+const SHARED = pathToFileURL(path.resolve(__dirname, "../../src/lib/shared.mjs")).href;
+const IMPORTS = pathToFileURL(path.resolve(__dirname, "../../src/commands/review/import-checks.mjs")).href;
 const { toPosixPath } = await import(SHARED);
 const { checkImportHierarchy } = await import(IMPORTS);
 
