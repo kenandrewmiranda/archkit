@@ -269,9 +269,11 @@ export const tools = {
         filesToTouch: z.array(z.string()).optional().describe("Best-guess files this goal will modify."),
         requiredReading: z.array(z.string()).optional().describe("Paths the agent must read first, e.g. .arch/skills/kalshi.skill."),
         dependsOn: z.array(z.string()).optional().describe("Other goal slugs that must complete first."),
+        epic: z.string().optional().describe("Optional group label tying this goal to a larger objective (e.g. \"oauth-migration\"). Goals sharing an epic are clustered in archkit_goal_list's `epics` view — the project-space segmentation. Slugified on write."),
+        order: z.number().optional().describe("Explicit relay sort key — lower runs first. Omit to auto-assign from this goal's position in the goals array (offset past existing live goals), so /mcp__archkit__goal_next honors the decomposition order instead of alphabetical slug order. Set explicitly to pin a sequence."),
         verifyCommand: z.string().optional().describe("Test/verify command that gates completion (e.g. \"npm test\", \"vitest run src/auth/\"). Auto-detected from package.json scripts.test if omitted. archkit_goal_complete re-runs it and refuses to complete on red — bakes test confirmation into the goal. Set explicitly to scope to the goal's slice of the suite."),
         body: z.string().optional().describe("Optional markdown body; auto-generated if omitted."),
-      })).min(1).describe("One or more goals. Order matters — payloads[0] is the first goal the user starts."),
+      })).min(1).describe("One or more goals. Order matters — the goals array order becomes each goal's relay `order` (honored by /mcp__archkit__goal_next), and payloads[0] is the first goal the user starts."),
     }),
     handler: async ({ sourceAsk, goals }) => {
       const cwd = process.cwd();
@@ -280,7 +282,7 @@ export const tools = {
   },
 
   archkit_goal_list: {
-    description: "List active and completed CGR goals in .arch/goals/. Use to check what's already in flight before calling archkit_goal_intake (avoid duplicating an existing goal), or to find the next goal's slug after completing one. Also returns `digests` (recent dated consolidation summaries from goals/done/digest/, each with the slugs it covers + a relativePath) and `archived` (count of raw CGRs preserved verbatim under goals/done/archive/ for full-context recovery) — this is the discoverable surface for the incremental consolidation/digest produced at queue-drain.",
+    description: "List active and completed CGR goals in .arch/goals/. Active goals are returned in RELAY QUEUE ORDER (by `order` then epic then slug), so active[0] is the goal /mcp__archkit__goal_next will pick next. When any goal carries an `epic`, also returns an `epics` map (epic label -> goal slugs in queue order) — the project-space segmentation view. Use to check what's already in flight before calling archkit_goal_intake (avoid duplicating an existing goal), or to find the next goal's slug after completing one. Also returns `digests` (recent dated consolidation summaries from goals/done/digest/, each with the slugs it covers + a relativePath) and `archived` (count of raw CGRs preserved verbatim under goals/done/archive/ for full-context recovery) — this is the discoverable surface for the incremental consolidation/digest produced at queue-drain.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();

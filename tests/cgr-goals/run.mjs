@@ -18,6 +18,9 @@ import {
   listGoals,
   loadGoal,
   completeGoal,
+  nextEligibleGoal,
+  compareGoals,
+  nextOrderBase,
   renderPayload,
   graphSlice,
   parseGoal,
@@ -415,6 +418,98 @@ test("intake writes files + emits payloads, complete returns nextGoal", () => {
 
     const finalOut = JSON.parse(runGoal(["complete", "second-goal", "--json"], dir));
     assert.equal(finalOut.nextGoal, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+console.log("\n  cgr-goal-ordering — intentional sequencing (order + epic)");
+
+test("writeGoal persists order + epic to parseable frontmatter", () => {
+  withArchDir(({ archDir }) => {
+    writeGoal(archDir, { slug: "g", title: "G", order: 3, epic: "OAuth Migration" });
+    const g = loadGoal(archDir, "g");
+    assert.equal(String(g.meta.order), "3");
+    assert.equal(g.meta.epic, "oauth-migration", "epic is slugified on write");
+  });
+});
+
+test("order=0 survives the round-trip (not dropped as falsy)", () => {
+  withArchDir(({ archDir }) => {
+    writeGoal(archDir, { slug: "z", title: "Z", order: 0 });
+    assert.equal(String(loadGoal(archDir, "z").meta.order), "0");
+  });
+});
+
+test("listGoals returns goals in order, not readdir/alpha order", () => {
+  withArchDir(({ archDir }) => {
+    // Slugs deliberately reverse-alpha vs intended order to prove order wins.
+    writeGoal(archDir, { slug: "aaa", title: "A", order: 2 });
+    writeGoal(archDir, { slug: "zzz", title: "Z", order: 1 });
+    const slugs = listGoals(archDir).map((g) => g.slug);
+    assert.deepEqual(slugs, ["zzz", "aaa"], "lower order first regardless of slug");
+  });
+});
+
+test("goals without order sort after ordered ones, alpha among themselves", () => {
+  withArchDir(({ archDir }) => {
+    writeGoal(archDir, { slug: "bbb", title: "B" });           // no order
+    writeGoal(archDir, { slug: "aaa", title: "A" });           // no order
+    writeGoal(archDir, { slug: "ordered", title: "O", order: 5 });
+    const slugs = listGoals(archDir).map((g) => g.slug);
+    assert.deepEqual(slugs, ["ordered", "aaa", "bbb"], "ordered first, then alpha fallback");
+  });
+});
+
+test("nextEligibleGoal honors order over alphabetical slug", () => {
+  withArchDir(({ archDir }) => {
+    writeGoal(archDir, { slug: "aaa-first-alpha", title: "A", order: 9 });
+    writeGoal(archDir, { slug: "zzz-last-alpha", title: "Z", order: 1 });
+    assert.equal(nextEligibleGoal(archDir).slug, "zzz-last-alpha", "order 1 picked before alpha");
+  });
+});
+
+test("compareGoals breaks ties by epic then slug", () => {
+  const mk = (slug, order, epic) => ({ slug, meta: { order, epic } });
+  // Same order → epic decides; same epic → slug decides.
+  assert.ok(compareGoals(mk("x", 1, "a"), mk("y", 1, "b")) < 0, "epic a before b");
+  assert.ok(compareGoals(mk("y", 1, "a"), mk("x", 1, "a")) > 0, "same epic falls to slug");
+});
+
+test("nextOrderBase returns max assigned order + 1 (0 when none)", () => {
+  withArchDir(({ archDir }) => {
+    assert.equal(nextOrderBase(archDir), 0, "0 when no goal carries an order");
+    writeGoal(archDir, { slug: "a", title: "A", order: 4 });
+    writeGoal(archDir, { slug: "b", title: "B" });            // no order, ignored
+    assert.equal(nextOrderBase(archDir), 5, "max(4)+1");
+  });
+});
+
+test("intake auto-stamps order from batch position, offset past existing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-goals-order-"));
+  try {
+    fs.mkdirSync(path.join(dir, ".arch"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".arch", "SYSTEM.md"),
+      "# SYSTEM.md\n## Type: Internal\n## Pattern: x\n## Rules\n- one\n## Reserved Words\n## Naming\nFiles: kebab\n");
+    const batch1 = JSON.stringify({ goals: [
+      { title: "First", exitCriteria: ["a"] },
+      { title: "Second", exitCriteria: ["b"] },
+    ] });
+    runGoal(["intake", "--json", batch1], dir);
+    const archDir = path.join(dir, ".arch");
+    assert.equal(String(loadGoal(archDir, "first").meta.order), "0");
+    assert.equal(String(loadGoal(archDir, "second").meta.order), "1");
+
+    // A follow-up intake appends after the current queue, not back at 0.
+    const batch2 = JSON.stringify({ goals: [{ title: "Third", exitCriteria: ["c"] }] });
+    runGoal(["intake", "--json", batch2], dir);
+    assert.equal(String(loadGoal(archDir, "third").meta.order), "2", "next batch offsets past existing");
+
+    // list surfaces queue order; explicit epic produces the grouped view.
+    writeGoal(archDir, { slug: "grouped", title: "Grouped", order: 10, epic: "alpha" });
+    const listOut = JSON.parse(runGoal(["list", "--json"], dir));
+    assert.deepEqual(listOut.active.map((g) => g.slug), ["first", "second", "third", "grouped"]);
+    assert.ok(listOut.epics && listOut.epics.alpha.includes("grouped"), "epics view groups by epic");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

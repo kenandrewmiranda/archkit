@@ -18,6 +18,7 @@ import { commandBanner } from "../lib/banner.mjs";
 import {
   writeGoal,
   listGoals,
+  nextOrderBase,
   loadGoal,
   completeGoal,
   abandonGoal,
@@ -84,11 +85,20 @@ export function runGoalIntake({ archDir, cwd, sourceAsk, goals }) {
   // that doesn't override it — so completion gates on green tests by default
   // (the agent can scope/override per goal via the goal's verifyCommand field).
   const detected = detectTestCommand(cwd);
+  // Auto-stamp `order` from decomposition order so /mcp__archkit__goal_next
+  // honors the sequence the agent intended (the goals array order), not the
+  // incidental alphabetical-slug fallback. Offset past any existing live goals
+  // so a follow-up intake appends after the current queue. An explicit `order`
+  // on a goal always wins (cgr-goal-ordering).
+  const orderBase = nextOrderBase(archDir);
   const written = [];
   const payloads = [];
+  let batchIndex = 0;
   for (const g of goals) {
     if (sourceAsk && !g.sourceAsk) g.sourceAsk = sourceAsk;
     if (!g.verifyCommand && detected) g.verifyCommand = detected.command;
+    if (g.order === undefined || g.order === null || g.order === "") g.order = orderBase + batchIndex;
+    batchIndex++;
     const { slug, filepath } = writeGoal(archDir, g);
     written.push({ slug, filepath: path.relative(cwd, filepath), verifyCommand: g.verifyCommand || null });
     const { payload, length, withinBudget } = renderPayload(archDir, slug);
@@ -139,7 +149,21 @@ export function runGoalList({ archDir }) {
     title: g.meta.title || g.slug,
     status: statusOf(g),
     created: g.meta.created || "",
+    // Intentional sequencing (cgr-goal-ordering): the relay sort key and epic
+    // group label. `active` is already sorted by listGoals, so this list is in
+    // queue order — activeList[0] is the goal /goal_next will pick next.
+    epic: g.meta.epic || undefined,
+    order: Number.isFinite(Number(g.meta.order)) ? Number(g.meta.order) : undefined,
   }));
+  // Epic-grouped view of live goals — the "project space" segmentation: each
+  // epic maps to its goal slugs in queue order. Goals with no epic collect under
+  // "(ungrouped)". Omitted entirely when no goal carries an epic.
+  const epics = {};
+  for (const g of activeList) {
+    const key = g.epic || "(ungrouped)";
+    (epics[key] ||= []).push(g.slug);
+  }
+  const hasEpics = activeList.some((g) => g.epic);
   const goalsNote = activeList.length === 0 && done.length === 0
     ? `No goals exist in .arch/goals/ yet. CGR hasn't been used in this project.`
     : activeList.length === 0
@@ -150,7 +174,7 @@ export function runGoalList({ archDir }) {
     : activeList.length === 0
       ? `Queue is empty. Call archkit_goal_intake with the next ask, or proceed without CGR.`
       : `Continue ${activeList[0].slug}. Call archkit_goal_payload ${activeList[0].slug} to re-render the /goal payload if needed.`;
-  return { active: activeList, done, archived, digests, goalsNote, nextStep };
+  return { active: activeList, ...(hasEpics ? { epics } : {}), done, archived, digests, goalsNote, nextStep };
 }
 
 export function runGoalPayload({ archDir, slug }) {

@@ -128,11 +128,18 @@ export function writeGoal(archDir, goal) {
   ensureGoalsLayout(archDir);
   const slug = goal.slug || slugify(goal.title);
   const filepath = path.join(goalsDir(archDir), `${slug}.md`);
+  const orderNum = Number(goal.order);
+  const hasOrder = goal.order !== undefined && goal.order !== null && goal.order !== "" && Number.isFinite(orderNum);
   const meta = {
     slug,
     title: goal.title || slug,
     status: goal.status || STATUS_PENDING,
     created: goal.created || new Date().toISOString().slice(0, 10),
+    // Intentional sequencing (cgr-goal-ordering): `epic` groups a goal under a
+    // larger objective; `order` is the relay sort key (lower runs first). Both
+    // optional and only stamped when provided, so existing goals are untouched.
+    ...(goal.epic ? { epic: slugify(goal.epic) } : {}),
+    ...(hasOrder ? { order: orderNum } : {}),
     "exit-criteria": goal.exitCriteria || [],
     "files-to-touch": goal.filesToTouch || [],
     "required-reading": goal.requiredReading || [],
@@ -181,7 +188,41 @@ export function listGoals(archDir) {
       } catch {}
     }
   }
+  out.sort(compareGoals);
   return out;
+}
+
+// ── Intentional sequencing (cgr-goal-ordering) ──────────────────────────────
+// Goals carry an optional numeric `order` (stamped at intake from decomposition
+// order, or set by hand) and an optional `epic` group label. listGoals returns
+// goals sorted by that intent — order ascending, then epic, then slug — so
+// nextEligibleGoal and goal_list pick the next INTENDED goal instead of the
+// incidental readdir/alphabetical order. Goals with no `order` sort last
+// (Infinity), preserving stable alpha-by-slug among them — fully backward
+// compatible with goals written before this field existed.
+function orderKey(g) {
+  const n = Number(g?.meta?.order);
+  return Number.isFinite(n) ? n : Infinity;
+}
+export function compareGoals(a, b) {
+  const oa = orderKey(a), ob = orderKey(b);
+  if (oa !== ob) return oa - ob;
+  const ea = String(a?.meta?.epic || ""), eb = String(b?.meta?.epic || "");
+  if (ea !== eb) return ea < eb ? -1 : 1;
+  const sa = a?.slug || "", sb = b?.slug || "";
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+// Highest `order` currently assigned across live goals, +1 — the base for the
+// next intake batch so sequential decompositions append after existing work
+// instead of colliding at 0. Returns 0 when no goal carries an order yet.
+export function nextOrderBase(archDir) {
+  let max = -1;
+  for (const g of listGoals(archDir)) {
+    const n = Number(g?.meta?.order);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max + 1;
 }
 
 // Resolve a goal by slug across both live locations: goals/ root and
