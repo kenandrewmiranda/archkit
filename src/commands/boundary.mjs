@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "node:child_process";
-import { C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
+import { isMainModule, C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { parseBoundaries, normalizeImport } from "../lib/boundary-parser.mjs";
 import { extractImports } from "../lib/import-detector.mjs";
@@ -267,6 +267,6 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

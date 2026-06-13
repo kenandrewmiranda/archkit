@@ -205,6 +205,9 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_install_hooks", {}],
         ["archkit_decisions_search", {}],
         ["archkit_init", {}],
+        // GENERATE path — fixture already has .arch/, so pass overwrite:true to
+        // exercise the success envelope (claudeMode:false keeps the write minimal).
+        ["archkit_init_generate", { appName: "audit-app", appType: "internal", features: [{ id: "core" }], claudeMode: false, overwrite: true }],
       ];
 
       for (const [name, args] of cases) {

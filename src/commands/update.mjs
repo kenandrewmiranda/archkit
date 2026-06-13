@@ -7,6 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
+import { isMainModule } from "../lib/shared.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = "kenandrewmiranda/archkit";
@@ -119,6 +120,6 @@ function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

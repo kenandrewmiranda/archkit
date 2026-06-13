@@ -2,7 +2,7 @@
 
 import fs from "fs";
 import path from "path";
-import { findArchDir, C } from "../lib/shared.mjs";
+import { isMainModule, findArchDir, C } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { loadFile, parseSystem } from "../lib/parsers.mjs";
@@ -169,6 +169,6 @@ function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

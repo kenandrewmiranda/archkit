@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import inquirer from "inquirer";
-import { C, ICONS, divider } from "./lib/shared.mjs";
+import { isMainModule, C, ICONS, divider } from "./lib/shared.mjs";
 import { showBanner } from "./lib/banner.mjs";
 import { stepAppName, stepAppType, stepStack, stepFeatures, stepSkills, stepOutput, stepPreview } from "./wizard/steps.mjs";
 import { generateFiles } from "./wizard/generate.mjs";
@@ -214,7 +214,7 @@ async function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main().catch(err => {
     console.error(`\n${C.red}  Error: ${err.message}${C.reset}\n`);
     process.exit(1);

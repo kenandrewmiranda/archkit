@@ -21,6 +21,7 @@ import { runDriftJson } from "../commands/drift.mjs";
 import { runLogDecisionJson } from "../commands/decisions.mjs";
 import { runPrdCheckJson } from "../commands/prd.mjs";
 import { runInitJson } from "../commands/init-mcp.mjs";
+import { runInitGenerateJson } from "../commands/init-generate.mjs";
 import { runBoundaryCheckJson, runBoundaryProposeJson } from "../commands/boundary.mjs";
 import { runDoctorJson } from "../commands/doctor.mjs";
 import { runSyncJson } from "../commands/sync.mjs";
@@ -507,6 +508,31 @@ export const tools = {
       let archDir = null;
       try { archDir = requireArchDir(cwd); } catch { /* greenfield — that's fine */ }
       return runInitJson({ cwd, archDir });
+    },
+  },
+
+  archkit_init_generate: {
+    description: "GENERATE the .arch/ scaffold from structured answers — the acting counterpart to archkit_init, which only INSTRUCTS. Use this to complete greenfield setup end-to-end: after archkit_init returns the wizard instructions, archetype skeletons, and PRD signal, decide the answers WITH the user (which archetype, what stack, the feature list) and call this tool to WRITE the files — no inquirer TTY required. It drives the same scaffold-generation core the interactive wizard wraps, so the output is identical: .arch/SYSTEM.md, INDEX.md, README.md, BOUNDARIES.md, CONTEXT.compact.md, clusters/*.graph (one per feature + infra + events), skills/*.skill, apis/*.api, lenses/*, and — when claudeMode (default true) — CLAUDE.md + .claude/rules/ + .claude/skills/ + .claude/settings.json hooks, plus a git pre-commit review hook when a .git dir is present. REFUSES to clobber an existing .arch/ unless overwrite:true. After it returns, call archkit_resolve_warmup to verify and archkit_log_decision to record the foundation ADR. Required: appName, appType. Everything else has archetype-derived defaults.",
+    inputSchema: z.object({
+      appName: z.string().min(1).describe("Project/app name shown in generated files (e.g. \"acme-billing\")."),
+      appType: z.enum(["saas", "ecommerce", "realtime", "data", "ai", "mobile", "internal", "content"]).describe("Archetype — determines architecture pattern, folder conventions, reserved words, default stack, and graph node templates. Pick from archkit_init's skeletonsIndex."),
+      stack: z.record(z.string()).optional().describe("Stack as a {layer: tool} map (e.g. {\"Frontend\":\"Next.js\",\"Database\":\"PostgreSQL\"}). Omit to use the archetype's default stack."),
+      features: z.array(z.object({
+        id: z.string().min(1).describe("Lowercase feature id (becomes the cluster filename), e.g. \"auth\"."),
+        name: z.string().optional().describe("Human display name. Defaults from id."),
+        keywords: z.string().optional().describe("Comma-separated routing keywords for INDEX.md. Defaults to id."),
+      })).optional().describe("Features to scaffold as clusters. Omit to use the archetype's suggested features. At least one feature is required (after defaults)."),
+      skills: z.array(z.string()).optional().describe("Package skill ids to scaffold (must exist in the skill catalog, e.g. \"postgres\", \"stripe\"). Unknown ids are rejected. Default none."),
+      crossRefs: z.union([z.literal("ai"), z.array(z.object({ from: z.string(), to: z.string(), reason: z.string() }))]).optional().describe("Feature dependency edges: \"ai\" to mark them AI-inferred at codegen time, or an explicit list of {from,to,reason}. Default none."),
+      claudeMode: z.boolean().optional().describe("Also generate Claude Code native files (CLAUDE.md, .claude/rules/, .claude/skills/, .claude/settings.json hooks). Default true — the integration is the point."),
+      outDir: z.string().optional().describe("Where to write the scaffold. Default \".arch\"."),
+      overwrite: z.boolean().optional().describe("Allow regenerating over an existing .arch/ scaffold (destructive). Default false — the tool refuses if SYSTEM.md already exists."),
+    }),
+    handler: async ({ overwrite, ...answers }) => {
+      const cwd = process.cwd();
+      let archDir = null;
+      try { archDir = requireArchDir(cwd); } catch { /* greenfield — expected */ }
+      return runInitGenerateJson({ cwd, archDir, answers, overwrite });
     },
   },
 };

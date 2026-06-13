@@ -25,7 +25,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { archkitError } from "../lib/errors.mjs";
-import { C, ICONS as I } from "../lib/shared.mjs";
+import { isMainModule, C, ICONS as I } from "../lib/shared.mjs";
 
 const PRD_CANDIDATES = [
   "PRD.md", "prd.md",
@@ -411,7 +411,7 @@ async function cliMode(args) {
 
 export { cliMode as main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   const args = process.argv.slice(2);
   cliMode(args).catch(err => {
     console.error(`${C.red}  Error: ${err.message}${C.reset}`);

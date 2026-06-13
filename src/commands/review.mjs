@@ -20,7 +20,7 @@
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "node:child_process";
-import { C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
+import { isMainModule, C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { checkImportHierarchy } from "./review/import-checks.mjs";
@@ -809,7 +809,7 @@ async function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main().catch(err => {
     console.error(`\x1b[31m  Error: ${err.message}\x1b[0m`);
     process.exit(1);

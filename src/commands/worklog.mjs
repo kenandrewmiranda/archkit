@@ -12,7 +12,7 @@
 // rendering itself lives in lib (renderWorklog); this is the CLI surface, the
 // MCP tool (archkit_worklog) calls runWorklog directly.
 
-import { C, findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { isMainModule, C, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { renderWorklog } from "../lib/goals.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -89,6 +89,6 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

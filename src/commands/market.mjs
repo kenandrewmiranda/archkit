@@ -3,6 +3,7 @@
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { getApiKey } from "../lib/marketplace.mjs";
+import { isMainModule } from "../lib/shared.mjs";
 
 function banner() {
   commandBanner("arch-market", "archkit marketplace — search, install, share configs");
@@ -88,7 +89,7 @@ async function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main().catch(err => {
     console.error(`\x1b[31m  Error: ${err.message}\x1b[0m`);
     process.exit(1);

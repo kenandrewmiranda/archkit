@@ -3,7 +3,7 @@
 import fs from "fs";
 import path from "path";
 import { execFileSync } from "child_process";
-import { findArchDir, C, ICONS } from "../lib/shared.mjs";
+import { isMainModule, findArchDir, C, ICONS } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
@@ -565,6 +565,6 @@ function installMcpEntry(log) {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

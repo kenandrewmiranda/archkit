@@ -1,0 +1,27 @@
+{
+  "slug": "mcp-interactive-wizard",
+  "created": "2026-06-13",
+  "gaps": [
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/generate.mjs",
+      "suggestedCluster": "wizard"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/steps.mjs",
+      "suggestedCluster": "wizard"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/scaffold.mjs",
+      "suggestedCluster": "scaffold.mjs"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/scaffold-core.mjs",
+      "suggestedCluster": "wizard"
+    }
+  ],
+  "note": "Files this goal touched that the node graph does not yet represent. For each undocumented-file: fill the suggestedLine's <role>/<flow> and append it to .arch/clusters/<cluster>.graph. For each unmapped-area: scaffold a new cluster + INDEX node. archkit does not auto-merge graph changes."
+}

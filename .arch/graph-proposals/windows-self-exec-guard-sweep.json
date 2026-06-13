@@ -1,0 +1,85 @@
+{
+  "slug": "windows-self-exec-guard-sweep",
+  "created": "2026-06-13",
+  "gaps": [
+    {
+      "kind": "unmapped-area",
+      "file": "src/scaffold.mjs",
+      "suggestedCluster": "scaffold.mjs"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/stats.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Stats [U] : src/commands/stats.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/gotcha.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Gotcha [U] : src/commands/gotcha.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/sync.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Sync [U] : src/commands/sync.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/update.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Update [U] : src/commands/update.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/export.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Export [U] : src/commands/export.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/prd.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Prd [U] : src/commands/prd.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/worklog.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Worklog [U] : src/commands/worklog.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/migrate.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Migrate [U] : src/commands/migrate.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/wizard.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "Wizard [U] : src/commands/wizard.mjs — <role — fill in> | <flow — fill in>"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/generate.mjs",
+      "suggestedCluster": "wizard"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/scaffold-core.mjs",
+      "suggestedCluster": "wizard"
+    }
+  ],
+  "note": "Files this goal touched that the node graph does not yet represent. For each undocumented-file: fill the suggestedLine's <role>/<flow> and append it to .arch/clusters/<cluster>.graph. For each unmapped-area: scaffold a new cluster + INDEX node. archkit does not auto-merge graph changes."
+}

@@ -12,7 +12,7 @@
 
 import fs from "fs";
 import path from "path";
-import { C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
+import { isMainModule, C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -425,6 +425,6 @@ async function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

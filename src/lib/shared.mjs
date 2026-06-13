@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "node:url";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TERMINAL COLORS & ICONS
@@ -86,6 +87,25 @@ export function findArchDir(opts = {}) {
     dir = parent;
   }
   return null;
+}
+
+/**
+ * Cross-platform check for whether the given module is being run directly as
+ * the entrypoint (i.e. `node src/commands/X.mjs`). Replaces the Windows-broken
+ * `import.meta.url === `file://${process.argv[1]}`` idiom: on Windows
+ * import.meta.url is `file:///D:/...` while the old template produced
+ * `file://D:\...`, so the guard never matched. pathToFileURL builds the URL the
+ * same way Node populates import.meta.url, so the comparison is correct on every
+ * OS and a no-op-shaped equivalent on POSIX.
+ *
+ * Preserves the `ARCHKIT_RUN` fallback: bin/archkit.mjs sets it when dispatching
+ * to a command module, so that dispatch path runs the entrypoint unchanged.
+ * @param {string} importMetaUrl - the caller's `import.meta.url`
+ * @returns {boolean}
+ */
+export function isMainModule(importMetaUrl) {
+  const entry = process.argv[1];
+  return (!!entry && importMetaUrl === pathToFileURL(entry).href) || !!process.env.ARCHKIT_RUN;
 }
 
 export function divider() {

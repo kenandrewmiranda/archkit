@@ -18,7 +18,7 @@
 
 import fs from "fs";
 import path from "path";
-import { findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { isMainModule, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { loadFile, parseSystem, parseIndex, loadGraphCluster, loadSkillGotchas, loadApiDigest } from "../lib/parsers.mjs";
 import { cmdWarmup } from "./resolve/warmup.mjs";
@@ -392,6 +392,6 @@ function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

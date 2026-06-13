@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
+import { isMainModule, C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { parseBoundaries } from "../lib/boundary-parser.mjs";
@@ -487,6 +487,6 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main();
 }

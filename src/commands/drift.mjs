@@ -2,7 +2,7 @@
 
 import fs from "fs";
 import path from "path";
-import { findArchDir } from "../lib/shared.mjs";
+import { isMainModule, findArchDir } from "../lib/shared.mjs";
 import { createArchReader } from "../lib/parsers.mjs";
 import { collectDeps, resolveWorkspaceGlobs } from "../lib/workspace-deps.mjs";
 import * as log from "../lib/logger.mjs";
@@ -235,7 +235,7 @@ async function main() {
 
 export { main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   main().catch(err => {
     console.error("Fatal error:", err);
     process.exit(1);

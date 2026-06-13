@@ -20,7 +20,7 @@ import inquirer from "inquirer";
 import fs from "fs";
 import path from "path";
 import { createHash } from "node:crypto";
-import { C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
+import { isMainModule, C, ICONS as I, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -844,7 +844,7 @@ export async function runGotchaProposeJson({ archDir, skill, wrong, right, why, 
 
 export { cliMode as main };
 
-if (import.meta.url === `file://${process.argv[1]}` || process.env.ARCHKIT_RUN) {
+if (isMainModule(import.meta.url)) {
   const args = process.argv.slice(2);
   cliMode(args).catch(err => {
     console.error(`${C.red}  Error: ${err.message}${C.reset}`);
