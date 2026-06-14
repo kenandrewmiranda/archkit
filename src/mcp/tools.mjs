@@ -515,7 +515,7 @@ export const tools = {
     description: "GENERATE the .arch/ scaffold from structured answers — the acting counterpart to archkit_init, which only INSTRUCTS. Use this to complete greenfield setup end-to-end: after archkit_init returns the wizard instructions, archetype skeletons, and PRD signal, decide the answers WITH the user (which archetype, what stack, the feature list) and call this tool to WRITE the files — no inquirer TTY required. It drives the same scaffold-generation core the interactive wizard wraps, so the output is identical: .arch/SYSTEM.md, INDEX.md, README.md, BOUNDARIES.md, CONTEXT.compact.md, clusters/*.graph (one per feature + infra + events), skills/*.skill, apis/*.api, lenses/*, and — when claudeMode (default true) — CLAUDE.md + .claude/rules/ + .claude/skills/ + .claude/settings.json hooks, plus a git pre-commit review hook when a .git dir is present. REFUSES to clobber an existing .arch/ unless overwrite:true. After it returns, call archkit_resolve_warmup to verify and archkit_log_decision to record the foundation ADR. Required: appName, appType. Everything else has archetype-derived defaults.",
     inputSchema: z.object({
       appName: z.string().min(1).describe("Project/app name shown in generated files (e.g. \"acme-billing\")."),
-      appType: z.enum(["saas", "ecommerce", "realtime", "data", "ai", "mobile", "internal", "content"]).describe("Archetype — determines architecture pattern, folder conventions, reserved words, default stack, and graph node templates. Pick from archkit_init's skeletonsIndex."),
+      appType: z.enum(["saas", "ecommerce", "realtime", "data", "ai", "mobile", "ios-swift", "internal", "content"]).describe("Archetype — determines architecture pattern, folder conventions, reserved words, default stack, and graph node templates. Pick from archkit_init's skeletonsIndex. \"ios-swift\" = native Swift/SwiftUI iOS app (MVVM) with decision-aware backend/storage option sets — see stackDecision."),
       stack: z.record(z.string()).optional().describe("Stack as a {layer: tool} map (e.g. {\"Frontend\":\"Next.js\",\"Database\":\"PostgreSQL\"}). Omit to use the archetype's default stack."),
       features: z.array(z.object({
         id: z.string().min(1).describe("Lowercase feature id (becomes the cluster filename), e.g. \"auth\"."),
@@ -524,6 +524,18 @@ export const tools = {
       })).optional().describe("Features to scaffold as clusters. Omit to use the archetype's suggested features. At least one feature is required (after defaults)."),
       skills: z.array(z.string()).optional().describe("Package skill ids to scaffold (must exist in the skill catalog, e.g. \"postgres\", \"stripe\"). Unknown ids are rejected. Default none."),
       crossRefs: z.union([z.literal("ai"), z.array(z.object({ from: z.string(), to: z.string(), reason: z.string() }))]).optional().describe("Feature dependency edges: \"ai\" to mark them AI-inferred at codegen time, or an explicit list of {from,to,reason}. Default none."),
+      stackDecision: z.object({
+        serverStack: z.object({
+          chosen: z.string().describe("Chosen server-stack option id (e.g. \"vapor\", \"hono\", \"fastapi\")."),
+          rationale: z.string().optional().describe("Why this option fits the project's stated needs."),
+          recommendations: z.array(z.object({ id: z.string(), pct: z.number() })).optional().describe("AI-assigned recommendation weighting per option id (percentages, weighted to the project's needs)."),
+        }).optional(),
+        storage: z.object({
+          chosen: z.string().describe("Chosen storage option id (e.g. \"minio\", \"local-disk-caddy\", \"postgres-only\")."),
+          rationale: z.string().optional(),
+          recommendations: z.array(z.object({ id: z.string(), pct: z.number() })).optional(),
+        }).optional(),
+      }).optional().describe("Decision-aware archetypes (ios-swift) carry annotated serverStackOptions + storageOptions instead of a hardcoded backend. Record the chosen option per group, a rationale, and an AI-weighted recommendation % per option — written into SYSTEM.md's Stack Decision section. Omit to fall back to the archetype defaults (vapor + minio for ios-swift); the response then echoes the available options so you can re-run with a recorded decision."),
       claudeMode: z.boolean().optional().describe("Also generate Claude Code native files (CLAUDE.md, .claude/rules/, .claude/skills/, .claude/settings.json hooks). Default true — the integration is the point."),
       outDir: z.string().optional().describe("Where to write the scaffold. Default \".arch\"."),
       overwrite: z.boolean().optional().describe("Allow regenerating over an existing .arch/ scaffold (destructive). Default false — the tool refuses if SYSTEM.md already exists."),

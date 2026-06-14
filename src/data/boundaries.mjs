@@ -34,6 +34,11 @@ const APP_TYPE_BOUNDARIES = {
   mobile: [
     "NEVER put business logic in screen components. Use hooks. (React Native docs)",
   ],
+  "ios-swift": [
+    "NEVER put networking or business logic in a SwiftUI View body. It belongs in the ViewModel/Service. (MVVM)",
+    "NEVER store auth tokens or secrets in UserDefaults. Use the Keychain. (Apple Security)",
+    "NEVER block the main actor with synchronous I/O. Use async/await off @MainActor. (Swift Concurrency)",
+  ],
   internal: [
     "NEVER perform destructive actions without audit logging. (SOC 2 — CC7.2)",
   ],

@@ -1,0 +1,32 @@
+{
+  "slug": "native-swift-swiftui-archetype",
+  "created": "2026-06-13",
+  "gaps": [
+    {
+      "kind": "unmapped-area",
+      "file": "src/data/app-types.mjs",
+      "suggestedCluster": "data"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/scaffold-core.mjs",
+      "suggestedCluster": "wizard"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/generate.mjs",
+      "suggestedCluster": "wizard"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/data/boundaries.mjs",
+      "suggestedCluster": "data"
+    },
+    {
+      "kind": "unmapped-area",
+      "file": "src/wizard/steps.mjs",
+      "suggestedCluster": "wizard"
+    }
+  ],
+  "note": "Files this goal touched that the node graph does not yet represent. For each undocumented-file: fill the suggestedLine's <role>/<flow> and append it to .arch/clusters/<cluster>.graph. For each unmapped-area: scaffold a new cluster + INDEX node. archkit does not auto-merge graph changes."
+}

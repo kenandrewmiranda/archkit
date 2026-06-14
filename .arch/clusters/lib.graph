@@ -9,3 +9,4 @@ Decisions   [U]   : src/lib/decisions.mjs — read/write ADR files under .arch/d
 Errors      [U]   : src/lib/errors.mjs — archkitError typed-error factory | AllCmds → THIS
 Shared      [U]   : src/lib/shared.mjs — findArchDir, color + icon constants | AllCmds → THIS
 ---
+StackDetect [U] : src/lib/stack-detect.mjs — detects whether a cfg's stack is JS/TS (and short-circuits false for non-JS archetypes) to gate verify-wiring guidance | Generators,ScaffoldCore → THIS

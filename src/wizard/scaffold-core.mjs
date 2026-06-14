@@ -20,6 +20,7 @@ import path from "path";
 import {
   genSystemMd, genIndexMd, genGraph, genInfraGraph, genEventsGraph,
   genSkillFile, genApiStub, genReadme, genBoundariesMd, genCompactContext,
+  namingLine, genHetznerArtifacts, genSelfHostArtifacts, resolveHostingChoice,
 } from "../lib/generators.mjs";
 import { hasJsTsStack } from "../lib/stack-detect.mjs";
 import { APP_TYPES, SKILL_CATALOG } from "../data/app-types.mjs";
@@ -67,9 +68,30 @@ export function normalizeAnswers(answers = {}) {
   }
 
   // Stack: explicit object wins, else archetype default.
-  const stack = (answers.stack && typeof answers.stack === "object" && Object.keys(answers.stack).length > 0)
-    ? answers.stack
-    : { ...at.defaultStack };
+  const explicitStack = answers.stack && typeof answers.stack === "object" && Object.keys(answers.stack).length > 0;
+  const stack = explicitStack ? answers.stack : { ...at.defaultStack };
+
+  // Decision-aware archetypes (e.g. ios-swift) carry annotated server/storage
+  // option sets instead of a single hardcoded backend. A recorded stackDecision
+  // (from the wizard or archkit_init_generate) selects an option per group and
+  // its chosen label flows into the fallback stack map (unless the caller passed
+  // an explicit stack). The rationale + AI-weighted % are recorded by genSystemMd.
+  const stackDecision = (answers.stackDecision && typeof answers.stackDecision === "object")
+    ? answers.stackDecision : null;
+  if (stackDecision && !explicitStack) {
+    if (at.serverStackOptions) {
+      const opt = at.serverStackOptions.find(o => o.id === stackDecision.serverStack?.chosen);
+      if (opt) stack["Server"] = opt.label;
+    }
+    if (at.storageOptions) {
+      const opt = at.storageOptions.find(o => o.id === stackDecision.storage?.chosen);
+      if (opt) stack["Object Storage"] = opt.label;
+    }
+    if (at.hostingOptions) {
+      const opt = at.hostingOptions.find(o => o.id === stackDecision.hosting?.chosen);
+      if (opt) stack["Hosting"] = opt.label;
+    }
+  }
 
   // Features: explicit list wins, else the archetype's suggested features.
   let features = Array.isArray(answers.features) && answers.features.length > 0
@@ -99,6 +121,7 @@ export function normalizeAnswers(answers = {}) {
     : (Array.isArray(answers.crossRefs) ? answers.crossRefs : []);
 
   const cfg = { appName, appType, stack, features, skills, crossRefs };
+  if (stackDecision) cfg.stackDecision = stackDecision;
   const outDir = answers.outDir || ".arch";
   const claudeMode = answers.claudeMode !== undefined ? !!answers.claudeMode : true;
 
@@ -191,6 +214,24 @@ export function generateScaffold(answers, opts = {}) {
   writeArch("lenses/lens-implement.md", LENS_IMPLEMENT);
   writeArch("lenses/lens-review.md", LENS_REVIEW);
 
+  // ── Hosting full stack (Cloud vs Self-host) ───────────────────────────
+  // Gated on the hosting decision. Cloud → Hetzner full IaC (Terraform/hcloud +
+  // cloud-init + Caddy + compose, project root infra/, + .arch/skills/hetzner.skill).
+  // Self-host → arch-server's vendored fleet plane (registry descriptor + app
+  // compose + Caddy TLS edge + Prometheus/Loki/Grafana + ntfy + backups + deploy,
+  // project root infra/, + .arch/skills/self-host.skill). Both parameterized by
+  // the recorded server stack + storage choice.
+  const hostingChoice = resolveHostingChoice(cfg);
+  if (hostingChoice === "cloud") {
+    const hetzner = genHetznerArtifacts(cfg);
+    for (const f of hetzner.arch) writeArch(f.path, f.content, { note: "Hetzner deploy runbook" });
+    for (const f of hetzner.root) writeRoot(f.path, f.content, { note: "Hetzner IaC artifact" });
+  } else if (hostingChoice === "self-host") {
+    const selfhost = genSelfHostArtifacts(cfg);
+    for (const f of selfhost.arch) writeArch(f.path, f.content, { note: "Self-host runbook" });
+    for (const f of selfhost.root) writeRoot(f.path, f.content, { note: "Self-host fleet artifact" });
+  }
+
   let claudeMdRenamed = false;
 
   // ── Claude Code native files ──────────────────────────────────────────
@@ -203,7 +244,7 @@ export function generateScaffold(answers, opts = {}) {
     at.rules.forEach(r => claudeMd += `- ${r}\n`);
     claudeMd += `\n## Reserved Words\n`;
     for (const [k, v] of Object.entries(at.reservedWords)) claudeMd += `- ${k} = ${v}\n`;
-    claudeMd += `\n## Naming\nFiles: kebab-case | Types: PascalCase | Funcs: camelCase | Tables: snake_case | Env: SCREAMING_SNAKE\n`;
+    claudeMd += `\n## Naming\n${namingLine(cfg)}\n`;
     claudeMd += `\n## Session Protocol (NON-NEGOTIABLE)\n`;
     claudeMd += `- BEFORE any code generation: run \`archkit resolve warmup\`\n`;
     claudeMd += `- If warmup returns blockers: FIX THEM. No exceptions.\n`;
@@ -239,6 +280,9 @@ export function generateScaffold(answers, opts = {}) {
         featureRule += `globs: ["src/handlers/${f.id}*", "src/domain/${f.id}*"]\n`;
       } else if (cfg.appType === "ai") {
         featureRule += `globs: ["src/chains/${f.id}*", "src/prompts/**/${f.id}*"]\n`;
+      } else if (cfg.appType === "ios-swift") {
+        const Id = f.id.charAt(0).toUpperCase() + f.id.slice(1);
+        featureRule += `globs: ["Sources/${Id}/**", "Sources/**/${Id}*.swift"]\n`;
       } else {
         featureRule += `globs: ["src/**/${f.id}*"]\n`;
       }

@@ -291,6 +291,188 @@ export const APP_TYPES = {
     ],
     graphGen: "mobile",
   },
+  "ios-swift": {
+    name: "Native iOS App (Swift / SwiftUI)",
+    desc: "Native iPhone/iPad app — SwiftUI + MVVM, async/await networking, optional self-hosted backend",
+    icon: "📱",
+    pattern: "MVVM — View → ViewModel → Service → API/LocalStore (SwiftUI + Observation)",
+    folderConv: "Sources/{Feature}/Views/{Name}View.swift | Sources/{Feature}/ViewModels/{Name}ViewModel.swift",
+    sharedConv: "Sources/Services/{Name}Service.swift | Sources/Models/{Name}.swift | Sources/Stores/{Name}Store.swift",
+    // Fallback default for non-interactive callers. The server + object-storage
+    // layers are decision points (see serverStackOptions / storageOptions); the
+    // values here are the sensible defaults (defaultServerStack/defaultStorage).
+    // Note: kept Swift-native so hasJsTsStack(cfg) === false for this archetype.
+    defaultStack: {
+      "UI": "SwiftUI",
+      "Language": "Swift 6 (strict concurrency)",
+      "Architecture": "MVVM + Observation (@Observable)",
+      "Networking": "URLSession + async/await",
+      "Local Store": "SwiftData (offline-first)",
+      "Auth": "Sign in with Apple + Keychain",
+      "Server": "Vapor (Swift)",
+      "Object Storage": "MinIO (S3-compatible)",
+      "Infrastructure": "Hetzner VPS + Docker + Caddy",
+    },
+    // ── Decision-aware option sets ────────────────────────────────────────
+    // The backend stack and storage are NOT hardcoded. The wizard and
+    // archkit_init_generate surface these with pros/cons so the user/AI can
+    // pick and record a rationale + AI-weighted recommendation per option.
+    serverStackOptions: [
+      {
+        id: "vapor",
+        label: "Vapor (Swift)",
+        pros: [
+          "One language end to end — share Codable models between app and API",
+          "Type-safe async/await routing, mature on Linux",
+          "Runs cleanly in Docker on a Hetzner VPS",
+        ],
+        cons: [
+          "Smaller ecosystem than JS or Python",
+          "Few managed hosts — you self-operate the server",
+          "Small Swift-on-server hiring pool",
+        ],
+      },
+      {
+        id: "hono",
+        label: "Hono (TypeScript)",
+        pros: [
+          "Tiny, fast, enormous JS/TS ecosystem",
+          "Abundant examples and libraries",
+          "Trivial to deploy to a VPS or the edge",
+        ],
+        cons: [
+          "Second language/runtime alongside Swift",
+          "No model sharing with the iOS app",
+          "Node runtime to operate and patch",
+        ],
+      },
+      {
+        id: "fastapi",
+        label: "FastAPI (Python)",
+        pros: [
+          "Batteries-included Python — strong for data/ML adjacencies",
+          "Automatic OpenAPI docs + Pydantic validation",
+          "Large talent pool and library ecosystem",
+        ],
+        cons: [
+          "Third language/runtime to operate",
+          "Async story less uniform than Vapor/Hono",
+          "GIL/concurrency caveats under heavy load",
+        ],
+      },
+    ],
+    storageOptions: [
+      {
+        id: "minio",
+        label: "MinIO (self-hosted S3)",
+        pros: [
+          "S3-compatible — presigned URLs + standard SDKs",
+          "Self-hosted on the Hetzner box, no per-GB cloud bill",
+          "Scales for media-heavy apps; offloads the API",
+        ],
+        cons: [
+          "One more service to run and back up",
+          "You own durability and replication",
+          "Memory/disk footprint on a small VPS",
+        ],
+      },
+      {
+        id: "local-disk-caddy",
+        label: "Local disk + Caddy file server",
+        pros: [
+          "Simplest possible — files on disk, Caddy serves them",
+          "Zero extra services; cheapest to start",
+          "Easy mental model for a solo builder",
+        ],
+        cons: [
+          "No S3 API — presigned URLs are DIY",
+          "Single-box durability; backups are manual",
+          "Does not scale past one server cleanly",
+        ],
+      },
+      {
+        id: "postgres-only",
+        label: "Postgres-only (bytea / large objects)",
+        pros: [
+          "One datastore — no separate object store to operate",
+          "Transactional with your relational data",
+          "Backups travel with the database",
+        ],
+        cons: [
+          "Bloats the DB + WAL with binary blobs",
+          "Poor fit for large media or streaming",
+          "Harder to CDN or offload later",
+        ],
+      },
+    ],
+    // ── Hosting decision (Cloud vs Self-host) ─────────────────────────────
+    // "Where does the backend run" is itself a decision-support choice, the
+    // same {id,label,pros,cons} + AI-weighted % pattern as server/storage.
+    // This archetype implements the Cloud branch (Hetzner full IaC); the
+    // Self-host branch is a sibling goal that plugs into this same layer.
+    hostingOptions: [
+      {
+        id: "cloud",
+        label: "Cloud VPS (Hetzner)",
+        pros: [
+          "Static public IP + automatic-TLS in minutes — App Store reviewers can reach it",
+          "Full IaC: Terraform/hcloud provisions server + firewall + SSH key reproducibly",
+          "Cheap, predictable monthly cost; no home-network uptime or NAT to manage",
+        ],
+        cons: [
+          "Recurring bill, however small",
+          "Your data lives on a third-party box (EU jurisdiction for Hetzner)",
+          "You still operate the box — patching, backups, monitoring are yours",
+        ],
+      },
+      {
+        id: "self-host",
+        label: "Self-host (local server / rig)",
+        pros: [
+          "Zero hosting bill; full physical control of your data",
+          "Reuse existing hardware (NAS, mini-PC, home-lab rig)",
+          "No per-GB egress or storage metering",
+        ],
+        cons: [
+          "Residential IP + NAT/dynamic DNS — hard to expose to App Store review",
+          "You own uptime: power, ISP, cooling, hardware failure",
+          "TLS + remote access need a tunnel (Tailscale/Cloudflare) or port-forwarding",
+        ],
+      },
+    ],
+    defaultServerStack: "vapor",
+    defaultStorage: "minio",
+    defaultHosting: "cloud",
+    rules: [
+      "Views are THIN SwiftUI structs. They bind to a ViewModel and render. ZERO networking or business logic in the view body.",
+      "ViewModels are @Observable and own all view state. They call Services; they never touch URLSession directly.",
+      "Services own networking + persistence orchestration. All I/O is async/await. Heavy work runs in a structured Task — never block the main actor.",
+      "UI state mutations happen on @MainActor. Annotate ViewModels @MainActor; hop off it for heavy work.",
+      "Models are Codable value types. Decode DTOs at the service boundary — never pass raw JSON dictionaries into views.",
+      "Offline-first: read from $local (SwiftData), refresh from $api, reconcile. The on-device store is the source of truth for the UI.",
+      "Networking goes through a single $api client (URLSession + async/await) with retry, token refresh, and typed errors. No ad-hoc URLSession in features.",
+      "Auth tokens live in the Keychain via $secure. NEVER in UserDefaults.",
+      "Navigation is typed via $route (NavigationStack + enum paths). No stringly-typed segues.",
+      "Images upload via presigned URL to $store. Never send base64 through the API.",
+      "Max complexity: ViewModels ≤ 200 lines, view body ≤ 5 nested conditionals, functions ≤ 50 lines.",
+      "Every Service has unit tests; ViewModels are tested by injecting a mock Service. No exceptions.",
+    ],
+    reservedWords: {
+      "$api": "URLSession async/await API client — retry, token refresh, typed errors. The ONLY place network calls live.",
+      "$local": "SwiftData on-device persistence — offline cache + source of truth for the UI",
+      "$store": "MinIO/S3 object storage for media via presigned URLs (server-side)",
+      "$auth": "Sign in with Apple + token validation; tokens stored in the Keychain",
+      "$secure": "Keychain wrapper for tokens and secrets — never UserDefaults",
+      "$route": "typed NavigationStack routes — enum-based, no stringly-typed paths",
+      "$model": "Codable domain models + SwiftData @Model entities",
+      "$db": "PostgreSQL on the backend (Hetzner VPS) — server-side source of truth",
+    },
+    suggestedFeatures: [
+      { id: "feed", name: "Content feed", keywords: "feed,home,list,refresh,load more" },
+      { id: "profile", name: "User profile", keywords: "profile,account,settings,avatar" },
+    ],
+    graphGen: "swift",
+  },
   internal: {
     name: "Internal Tools / Admin Dashboard",
     desc: "Employee-facing, connects to existing DBs, role-based, behind VPN",

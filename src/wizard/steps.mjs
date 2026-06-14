@@ -120,8 +120,59 @@ async function stepAppType(state) {
   return { appType };
 }
 
+// Decision-aware archetypes (ios-swift) carry annotated server/storage option
+// sets instead of one hardcoded backend. Present each option's pros/cons, let
+// the user pick, and record the choice (+ rationale) as a stackDecision that
+// flows into SYSTEM.md's Stack Decision section.
+async function promptStackDecision(state, at) {
+  const decision = {};
+  const groups = [
+    { key: "serverStack", title: "Server Stack", layer: "Server", options: at.serverStackOptions, fallback: at.defaultServerStack },
+    { key: "storage", title: "Storage", layer: "Object Storage", options: at.storageOptions, fallback: at.defaultStorage },
+    { key: "hosting", title: "Hosting", layer: "Hosting", options: at.hostingOptions, fallback: at.defaultHosting },
+  ];
+
+  for (const g of groups) {
+    if (!g.options || g.options.length === 0) continue;
+    console.log("");
+    subheading(`${g.title} — choose one (no hardcoded default):`);
+    g.options.forEach(opt => {
+      console.log(`  ${C.bold}${opt.label}${C.reset}${opt.id === g.fallback ? ` ${C.dim}(recommended default)${C.reset}` : ""}`);
+      console.log(`    ${C.green}+${C.reset} ${C.dim}${opt.pros.join("; ")}${C.reset}`);
+      console.log(`    ${C.yellow}-${C.reset} ${C.dim}${opt.cons.join("; ")}${C.reset}`);
+    });
+    const { chosen } = await inquirer.prompt([{
+      type: "list",
+      name: "chosen",
+      message: `${g.title}:`,
+      prefix: `  ${ICONS.arch}`,
+      choices: g.options.map(opt => ({ name: opt.label, value: opt.id, short: opt.label })),
+      default: g.fallback,
+    }]);
+    const { rationale } = await inquirer.prompt([{
+      type: "input",
+      name: "rationale",
+      message: `Why ${g.options.find(o => o.id === chosen)?.label}? (rationale, optional)`,
+      prefix: `  ${C.gray}${ICONS.gear}${C.reset}`,
+      default: "",
+    }]);
+    decision[g.key] = { chosen, ...(rationale.trim() ? { rationale: rationale.trim() } : {}) };
+  }
+  return decision;
+}
+
 async function stepStack(state) {
   const at = APP_TYPES[state.appType];
+
+  // Decision-aware archetypes: present annotated option sets first, then fold
+  // the chosen labels into the stack map shown below.
+  let stackDecision = state.stackDecision || null;
+  if (at.serverStackOptions || at.storageOptions || at.hostingOptions) {
+    divider();
+    heading(ICONS.package, `Step 3/7 — Backend Stack Decision`);
+    info("This archetype does not hardcode a backend or hosting. Compare the options below and pick.");
+    stackDecision = await promptStackDecision(state, at);
+  }
 
   divider();
   heading(ICONS.package, `Step 3/7 — Technology Stack`);
@@ -160,9 +211,25 @@ async function stepStack(state) {
     }
   }
 
+  // Fold decision-aware choices into the stack map (unless the user customized).
+  if (stackDecision && !wantCustomStack) {
+    if (at.serverStackOptions) {
+      const opt = at.serverStackOptions.find(o => o.id === stackDecision.serverStack?.chosen);
+      if (opt) stack["Server"] = opt.label;
+    }
+    if (at.storageOptions) {
+      const opt = at.storageOptions.find(o => o.id === stackDecision.storage?.chosen);
+      if (opt) stack["Object Storage"] = opt.label;
+    }
+    if (at.hostingOptions) {
+      const opt = at.hostingOptions.find(o => o.id === stackDecision.hosting?.chosen);
+      if (opt) stack["Hosting"] = opt.label;
+    }
+  }
+
   console.log("");
   success("Stack configured.");
-  return { stack };
+  return stackDecision ? { stack, stackDecision } : { stack };
 }
 
 async function stepFeatures(state) {

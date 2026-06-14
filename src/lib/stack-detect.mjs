@@ -19,7 +19,14 @@ const JS_TS_SIGNALS = [
   "echarts",
 ];
 
+// Archetypes whose scaffolded project is NOT a JS/TS codebase, regardless of
+// what backend stack is chosen. The native iOS app is Swift even when its API
+// is Hono/FastAPI, so `archkit resolve verify-wiring src/` (which scans JS/TS)
+// is always dead weight here — strip it unconditionally.
+const NON_JS_ARCHETYPES = new Set(["ios-swift"]);
+
 export function hasJsTsStack(cfg) {
+  if (cfg?.appType && NON_JS_ARCHETYPES.has(cfg.appType)) return false;
   if (!cfg?.stack || typeof cfg.stack !== "object") return true;
   const values = Object.values(cfg.stack);
   return values.some(

@@ -73,6 +73,41 @@ export async function runInitGenerateJson({ cwd, archDir, answers, overwrite } =
   const { archDir: writtenArchDir, written, cfg, claudeMode, claudeMdRenamed } = result;
   const relArch = path.relative(workingDir, writtenArchDir) || outDir;
 
+  // Decision-aware archetypes (ios-swift) carry annotated server/storage option
+  // sets instead of a hardcoded backend. Echo the options + pros/cons so the AI
+  // can compare and — if it didn't already pass a stackDecision — re-run with a
+  // recorded choice + AI-weighted recommendation % (written to SYSTEM.md).
+  const at = APP_TYPES[cfg.appType];
+  let stackDecisionEnvelope = {};
+  if (at && (at.serverStackOptions || at.storageOptions || at.hostingOptions)) {
+    const recorded = !!cfg.stackDecision;
+    const defaultsList = [at.defaultServerStack, at.defaultStorage, at.defaultHosting].filter(Boolean).join(" + ");
+    stackDecisionEnvelope = {
+      stackOptions: {
+        ...(at.serverStackOptions ? { serverStack: { default: at.defaultServerStack, options: at.serverStackOptions } } : {}),
+        ...(at.storageOptions ? { storage: { default: at.defaultStorage, options: at.storageOptions } } : {}),
+        ...(at.hostingOptions ? { hosting: { default: at.defaultHosting, options: at.hostingOptions } } : {}),
+      },
+      stackDecisionRecorded: recorded,
+      ...(recorded
+        ? {}
+        : { stackDecisionNote: `No stackDecision was passed — generated SYSTEM.md uses the archetype defaults (${defaultsList}). Review the pros/cons in stackOptions above, weight them to this project's needs, then re-run with overwrite:true and a stackDecision ({ serverStack:{chosen,rationale,recommendations:[{id,pct}]}, storage:{...}, hosting:{...} }) to record the rationale and recommended % per option.` }),
+    };
+    // The hosting branch emits a full stack under infra/ + a deploy runbook.
+    const hostingChoice = cfg.stackDecision?.hosting?.chosen || at.defaultHosting;
+    if (at.hostingOptions && hostingChoice === "cloud") {
+      stackDecisionEnvelope.hetznerIaC = {
+        emitted: true,
+        note: `Hosting = cloud → generated Hetzner full IaC: infra/terraform/ (server + SSH key + firewall + primary IP), infra/cloud-init.yaml (Docker, Caddy, ufw, fail2ban, deploy user), infra/Caddyfile + infra/docker-compose.yml (parameterized by the chosen server stack + storage), and .arch/skills/hetzner.skill (deploy runbook). Fill infra/terraform/terraform.tfvars.example and infra/.env.example before applying.`,
+      };
+    } else if (at.hostingOptions && hostingChoice === "self-host") {
+      stackDecisionEnvelope.selfHostStack = {
+        emitted: true,
+        note: `Hosting = self-host → vendored arch-server's full fleet plane (no runtime dep): infra/registry/apps/<app>.yaml (fleet descriptor, validated against the vendored schema), infra/<app>/compose.yaml + .env.example (the iOS backend: api + db${"" /* storage-dependent */} + storage), infra/caddy/ (automatic-TLS reverse proxy via \`tls internal\`), infra/monitoring/ (Prometheus/Loki/Grafana + Alertmanager→ntfy), infra/ntfy/ (push notifications), infra/backups/ (per-app backup engine + systemd timer), infra/deploy.sh (rsync → docker compose up -d), and .arch/skills/self-host.skill (provision→bootstrap→register→deploy→health/backup runbook). Fill the descriptor's source/serverPath and infra/<app>/.env.example before deploying.`,
+      };
+    }
+  }
+
   return {
     ok: true,
     archDir: relArch,
@@ -86,6 +121,7 @@ export async function runInitGenerateJson({ cwd, archDir, answers, overwrite } =
       : {}),
     claudeMode,
     claudeMdRenamed,
+    ...stackDecisionEnvelope,
     filesWritten: written.length,
     written: written.map(w => w.path),
     nextStep: `Scaffold generated (${written.length} files) under ${relArch}/. ${claudeMdRenamed ? "CLAUDE.md already existed — wrote CLAUDE.archkit.md to merge by hand. " : ""}Run archkit_resolve_warmup to verify the new context, then archkit_log_decision to record the foundation ADR (archetype, stack, why). Fill in .arch/skills/*.skill with real WRONG/RIGHT/WHY gotchas as you discover them.`,
