@@ -7,10 +7,17 @@
 // (<=3800 chars) per goal that the user pastes after `/goal` in a fresh,
 // /clear'ed session.
 //
-// Storage layout:
-//   .arch/goals/<slug>.md              — active or planned goals
-//   .arch/goals/testing/<slug>.md      — edits applied, verification pending
-//   .arch/goals/done/<slug>.md         — completed goals (kept for history)
+// Storage layout (cgr-queue-folder-layout — symmetric queue·testing·done map):
+//   .arch/goals/queue/<slug>.md            — pending (queued) goals
+//   .arch/goals/queue/<project>/<slug>.md  — pending goals grouped by feature set
+//   .arch/goals/<slug>.md                  — in-progress / on-hold (live, root)
+//   .arch/goals/testing/<slug>.md          — edits applied, verification pending
+//   .arch/goals/done/<slug>.md             — completed goals (kept for history)
+//
+// Backward-compat: pending goals historically sat at the goals/ ROOT. listGoals
+// and loadGoal DUAL-READ both root and queue/ so existing projects keep working,
+// and a one-time idempotent migration (migratePendingGoalsToQueue, run on any
+// write via ensureGoalsLayout) relocates legacy root pending goals into queue/.
 //
 // Goal-file format: simple key:value frontmatter (we don't take a YAML dep)
 // followed by free-form markdown body.
@@ -52,9 +59,94 @@ export function proposedDir(archDir) {
   return path.join(goalsDir(archDir), "proposed");
 }
 
+// The queue drawer (cgr-queue-folder-layout): where PENDING goals live, mirroring
+// testing/ and done/ so the state→folder map is symmetric (queue · testing · done).
+// A project's goals nest one level deeper under queue/<project>/ so a feature set
+// clusters on disk. In-progress and on-hold goals stay in goals/ root (status is
+// still the source of truth, ADR 0003) — only "queued, not started" lives here.
+export function queueDir(archDir) {
+  return path.join(goalsDir(archDir), "queue");
+}
+
 export function ensureGoalsLayout(archDir) {
   fs.mkdirSync(doneDir(archDir), { recursive: true });
   fs.mkdirSync(testingDir(archDir), { recursive: true });
+  fs.mkdirSync(queueDir(archDir), { recursive: true });
+  // Lazy, idempotent: relocate any legacy root pending goals into queue/ on the
+  // first write after upgrade. Pure-read paths (listGoals/loadGoal) deliberately
+  // do NOT trigger this — they dual-read instead, so reads never move files.
+  migratePendingGoalsToQueue(archDir);
+}
+
+// Top-level *.md goal files directly in `dir` (NOT subdirs), excluding the
+// coordination board. Shared by listGoals' dual-read across goals/ root + testing/.
+function flatGoalFiles(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".md")) continue;
+    if (name === CHAT_BOARD_FILENAME) continue;
+    out.push(path.join(dir, name));
+  }
+  return out;
+}
+
+// Every queued goal file: the .md files directly in goals/queue/ PLUS the .md
+// files one level deeper in per-project subfolders (goals/queue/<project>/). Only
+// one level of nesting is scanned — projects don't nest. Tolerant of an absent
+// queue dir (returns []).
+function queueGoalFiles(archDir) {
+  const qDir = queueDir(archDir);
+  if (!fs.existsSync(qDir)) return [];
+  const out = [];
+  for (const name of fs.readdirSync(qDir)) {
+    const full = path.join(qDir, name);
+    let st;
+    try { st = fs.statSync(full); } catch { continue; }
+    if (st.isDirectory()) {
+      for (const sub of fs.readdirSync(full)) {
+        if (!sub.endsWith(".md")) continue;
+        out.push(path.join(full, sub));
+      }
+    } else if (name.endsWith(".md")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+// One-time, idempotent migration (cgr-queue-folder-layout): relocate legacy
+// root-level *.md PENDING goals into goals/queue/. Pending is the only state that
+// belongs in the queue — in-progress/on-hold stay in goals/ root, and
+// testing/done/proposed already live in their own subdirs (never scanned here, as
+// this only reads top-level files of goals/ root). A project goal is filed under
+// queue/<project>/. Safe to call repeatedly: once moved, root holds no pending .md
+// so re-runs are a no-op readdir, and a name already present in the destination is
+// not overwritten. Never throws — a migration hiccup must not block the relay.
+export function migratePendingGoalsToQueue(archDir) {
+  const root = goalsDir(archDir);
+  let names;
+  try { names = fs.readdirSync(root); } catch { return { moved: [] }; }
+  const moved = [];
+  for (const name of names) {
+    if (!name.endsWith(".md")) continue;
+    if (name === CHAT_BOARD_FILENAME) continue;
+    const src = path.join(root, name);
+    try {
+      if (!fs.statSync(src).isFile()) continue;
+      const raw = fs.readFileSync(src, "utf8");
+      if (statusOf(parseGoal(raw)) !== STATUS_PENDING) continue; // only pending migrates
+      const project = String(parseGoal(raw).meta.project || "").trim();
+      const destDir = project ? path.join(queueDir(archDir), project) : queueDir(archDir);
+      const dest = path.join(destDir, name);
+      if (fs.existsSync(dest)) { fs.rmSync(src, { force: true }); continue; } // already migrated
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.writeFileSync(dest, raw);
+      fs.rmSync(src, { force: true });
+      moved.push(name.replace(/\.md$/, ""));
+    } catch { /* skip this file, keep going */ }
+  }
+  return { moved };
 }
 
 export function slugify(s) {
@@ -127,7 +219,13 @@ function emitFrontmatter(meta) {
 export function writeGoal(archDir, goal) {
   ensureGoalsLayout(archDir);
   const slug = goal.slug || slugify(goal.title);
-  const filepath = path.join(goalsDir(archDir), `${slug}.md`);
+  // New goals are QUEUED under goals/queue/ (cgr-queue-folder-layout). A goal
+  // tagged with a `project` is filed under goals/queue/<project>/ so a feature
+  // set's CGRs cluster on disk — the agent works them on one branch (ADR 0010).
+  const projectSlug = goal.project ? slugify(goal.project) : "";
+  const targetDir = projectSlug ? path.join(queueDir(archDir), projectSlug) : queueDir(archDir);
+  fs.mkdirSync(targetDir, { recursive: true });
+  const filepath = path.join(targetDir, `${slug}.md`);
   const orderNum = Number(goal.order);
   const hasOrder = goal.order !== undefined && goal.order !== null && goal.order !== "" && Number.isFinite(orderNum);
   const meta = {
@@ -140,6 +238,12 @@ export function writeGoal(archDir, goal) {
     // optional and only stamped when provided, so existing goals are untouched.
     ...(goal.epic ? { epic: slugify(goal.epic) } : {}),
     ...(hasOrder ? { order: orderNum } : {}),
+    // Branch-isolated feature set (cgr-project-branch-grouping, ADR 0007):
+    // `project` marks a goal as part of a feature set that lives on its own git
+    // branch (feat/<project>). Distinct from `epic` (a sequencing group): a
+    // project drives the branch-prework guidance in renderPayload so parallel
+    // agents isolate their work. Slugified on write; absent on legacy goals.
+    ...(projectSlug ? { project: projectSlug } : {}),
     "exit-criteria": goal.exitCriteria || [],
     "files-to-touch": goal.filesToTouch || [],
     "required-reading": goal.requiredReading || [],
@@ -170,23 +274,26 @@ function defaultBody(goal) {
   return lines.join("\n");
 }
 
-// Active goals are the flat .md files in goals/ root PLUS the verification-debt
-// files in goals/testing/. Subdirs (done/, proposed/, archive/, digest/) hold
-// terminal/proposal artifacts and are skipped — only testing/ contributes live
-// goals, so a goal awaiting verification stays in the queue.
+// Active goals, DUAL-READ across all live locations (cgr-queue-folder-layout):
+//   - goals/queue/ (+ per-project subfolders) — pending, the new home
+//   - goals/ root — legacy pending (pre-migration) + live in-progress/on-hold
+//   - goals/testing/ — verification debt
+// Terminal subdirs (done/, proposed/, archive/, digest/) hold terminal/proposal
+// artifacts and are skipped. The coordination board (chat.md) lives in goals/ for
+// discoverability but is NOT a goal — excluded by name (cgr-agent-chat-coordination-board).
 export function listGoals(archDir) {
   const out = [];
-  for (const dir of [goalsDir(archDir), testingDir(archDir)]) {
-    if (!fs.existsSync(dir)) continue;
-    for (const name of fs.readdirSync(dir)) {
-      if (!name.endsWith(".md")) continue;
-      const filepath = path.join(dir, name);
-      try {
-        if (!fs.statSync(filepath).isFile()) continue;
-        const { meta } = parseGoal(fs.readFileSync(filepath, "utf8"));
-        out.push({ slug: meta.slug || name.replace(/\.md$/, ""), filepath, meta });
-      } catch {}
-    }
+  const files = [
+    ...queueGoalFiles(archDir),
+    ...flatGoalFiles(goalsDir(archDir)),
+    ...flatGoalFiles(testingDir(archDir)),
+  ];
+  for (const filepath of files) {
+    try {
+      if (!fs.statSync(filepath).isFile()) continue;
+      const { meta } = parseGoal(fs.readFileSync(filepath, "utf8"));
+      out.push({ slug: meta.slug || path.basename(filepath).replace(/\.md$/, ""), filepath, meta });
+    } catch {}
   }
   return sortGoals(out);
 }
@@ -255,12 +362,19 @@ export function nextOrderBase(archDir) {
   return max + 1;
 }
 
-// Resolve a goal by slug across both live locations: goals/ root and
-// goals/testing/. Terminal goals (done/, archive/) are intentionally NOT
+// Resolve a goal by slug across every live location, DUAL-READ
+// (cgr-queue-folder-layout): goals/queue/ (+ project subfolders) first, then the
+// legacy goals/ root, then goals/testing/. Queue-first so a migrated copy wins
+// over a stale root one. Terminal goals (done/, archive/) are intentionally NOT
 // resolved here — loadGoal is the handle the relay uses to act on live work.
 export function loadGoal(archDir, slug) {
-  for (const dir of [goalsDir(archDir), testingDir(archDir)]) {
-    const filepath = path.join(dir, `${slug}.md`);
+  const want = `${slug}.md`;
+  const candidates = [
+    ...queueGoalFiles(archDir).filter((f) => path.basename(f) === want),
+    path.join(goalsDir(archDir), want),
+    path.join(testingDir(archDir), want),
+  ];
+  for (const filepath of candidates) {
     if (fs.existsSync(filepath)) {
       return { ...parseGoal(fs.readFileSync(filepath, "utf8")), filepath, slug };
     }
@@ -269,9 +383,14 @@ export function loadGoal(archDir, slug) {
 }
 
 export function completeGoal(archDir, slug, { notes = "", extraMeta = {}, timeSpent = "" } = {}) {
+  // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
+  // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
+  // the root path, migration would move it, and the relocate-write below would
+  // leave a duplicate. With layout ensured first, loadGoal resolves the final
+  // location and the filepath!=target rmSync cleans the source.
+  ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
-  ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_COMPLETED;
   // Full ISO-8601 datetime (not date-only) so elapsed wall-clock is derivable
   // from started→completed.
@@ -291,6 +410,9 @@ export function completeGoal(archDir, slug, { notes = "", extraMeta = {}, timeSp
   const targetPath = path.join(doneDir(archDir), `${slug}.md`);
   fs.writeFileSync(targetPath, out);
   fs.rmSync(goal.filepath, { force: true });
+  // If completing this goal drains the ungrouped queue, drop the recorded
+  // cgr-queue-<date> branch so the next batch mints a fresh dated branch.
+  clearQueueBranchIfDrained(archDir);
   return { slug, archivedAt: targetPath, elapsedMs: deriveElapsedMs(goal.meta.started, goal.meta["completed"]), effort: effortOf({ meta: goal.meta }) };
 }
 
@@ -594,6 +716,66 @@ export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   lines.push("");
   lines.push(`Then run: archkit resolve warmup`);
   lines.push("");
+  // Branch-prework block (cgr-project-branch-grouping, ADR 0007): when a goal
+  // belongs to a `project`, instruct the agent to isolate the feature set on its
+  // own git branch so parallel agents don't collide. archkit only EMITS this
+  // guidance — it never runs git itself (instruct-not-act).
+  const project = typeof m.project === "string" ? m.project.trim() : "";
+  if (project) {
+    lines.push(`Branch prework (project: ${project}) — do this BEFORE editing:`);
+    lines.push(`- Put this feature set on its own branch: \`git switch -c feat/${project}\` (or \`git switch feat/${project}\` if it already exists).`);
+    lines.push(`- Commit each completed CGR to that branch before advancing the queue.`);
+    lines.push(`- archkit only emits this guidance — YOU run the git commands.`);
+    lines.push("");
+  } else if (listGoals(archDir).some((g) => String(g?.meta?.project || "").trim())) {
+    // Queue-branch prework (cgr-relay-queue-vs-project-routing): the ungrouped
+    // complement to feat/<project>. Only emitted when the parallel-work regime is
+    // active (some live goal carries a project) — single-track projects keep their
+    // pre-feature behavior (no branch ceremony). All ungrouped queue goals in the
+    // batch share ONE dated branch: if archkit has already recorded it, switch to
+    // it; otherwise this is the first queue goal — create it. archkit stamps the
+    // date and records the name; it never runs git (instruct-not-act). The two
+    // schemes never collide: feat/<project> vs cgr-queue-<date>.
+    const recorded = readQueueBranch(archDir);
+    const branch = recorded || queueBranchName();
+    lines.push(`Branch prework (shared queue branch) — do this BEFORE editing:`);
+    if (recorded) {
+      lines.push(`- This batch's queue branch already exists: \`git switch ${branch}\`.`);
+    } else {
+      lines.push(`- Put the ungrouped queue on its shared dated branch: \`git switch -c ${branch}\`.`);
+    }
+    lines.push(`- Every ungrouped queue goal in this batch shares ${branch} — reuse it, don't create a new branch per pick.`);
+    lines.push(`- Commit each completed CGR to that branch before advancing the queue.`);
+    lines.push(`- archkit only emits this guidance — YOU run the git commands.`);
+    lines.push("");
+  }
+  // Conflict prework block (cgr-files-to-touch-conflict-detection): when another
+  // LIVE goal (in-progress/testing) declares a file this goal will also touch,
+  // warn up front so parallel agents coordinate instead of colliding. Silent when
+  // there's no overlap. Cross-branch (cross-project) overlaps are the dangerous
+  // case — flagged loudly; same-branch overlaps are noted as lower-risk.
+  const conflicts = detectFileConflicts(archDir, slug);
+  if (conflicts.length > 0) {
+    lines.push(`⚠ CONFLICT — other live CGRs touch files you will edit (coordinate BEFORE editing):`);
+    for (const c of conflicts) {
+      const proj = c.project ? ` [feat/${c.project}]` : "";
+      const risk = c.crossProject ? " (cross-branch — high risk)" : "";
+      lines.push(`- ${c.slug}${proj}${risk}: ${c.files.join(", ")}`);
+    }
+    lines.push(`- These goals are in-progress or testing right now. Expect edit/merge collisions on the shared files — sequence, rebase, or split the work rather than editing blind.`);
+    lines.push("");
+  }
+  // Coordination-board prework (cgr-agent-chat-coordination-board): always point
+  // the agent at the SHARED gitignored board — the human-readable layer over the
+  // structured conflict detection above. archkit only instructs; the agent does
+  // the read/append.
+  lines.push(`Coordination board — \`${CHAT_BOARD_REL}\` (shared, gitignored):`);
+  lines.push(`- BEFORE editing: READ the board to see what other agents are touching, then APPEND an announce-entry — this goal (${slug})${project ? `, branch feat/${project}` : ""}, and your files-to-touch.`);
+  if (conflicts.length > 0) {
+    lines.push(`- A conflict is flagged above — CHECK the board and coordinate there before you touch the shared files.`);
+  }
+  lines.push(`- archkit only emits this guidance — YOU read and append the board.`);
+  lines.push("");
   if (exitCriteria.length > 0) {
     lines.push(`Work until ALL exit-criteria are met:`);
     exitCriteria.forEach((c, i) => lines.push(`${i + 1}. ${c}`));
@@ -781,15 +963,199 @@ export function getActiveGoal(archDir) {
     || null;
 }
 
+// ── Cross-CGR file-overlap detection (cgr-files-to-touch-conflict-detection) ──
+//
+// Every goal already declares files-to-touch, so archkit can mechanically warn
+// when a goal would edit a file another LIVE goal is also editing — the reliable
+// backbone for parallel work. "Live" = in-progress OR testing (the set the Stop
+// hook guards): a goal can only collide with yours while it's actually being
+// worked; pending/on-hold/completed/abandoned goals can't. This is the same set
+// as GUARDED_STATUSES by definition, kept as its own constant so the conflict
+// scope is self-documenting and won't drift if the guard set ever diverges.
+const LIVE_STATUSES = [STATUS_ACTIVE, STATUS_TESTING];
+
+// A goal's declared files-to-touch, normalized for overlap comparison (strip a
+// leading ./, trim, drop blanks, dedupe). Tolerant of a missing/scalar/empty
+// field — always returns an array, never throws.
+export function filesToTouchOf(goal) {
+  const out = [];
+  const seen = new Set();
+  for (const f of ensureArray(goal?.meta?.["files-to-touch"])) {
+    const p = String(f).replace(/^\.\//, "").trim();
+    if (p && !seen.has(p)) { seen.add(p); out.push(p); }
+  }
+  return out;
+}
+
+// PURE overlap core: given a target goal and the full goal set, return the
+// conflicts — other LIVE goals whose files-to-touch intersect the target's.
+// Each conflict: { slug, title, project, crossProject, files: [shared paths] }.
+//
+// Scoping (exit-criterion 4): cross-project overlap is the HIGH-SIGNAL case —
+// two goals on different feature branches (feat/<project>) editing the same file
+// will collide at merge time, so each conflict carries `crossProject` to let the
+// payload flag those loudly. Same-project (or both project-less) overlaps share a
+// branch and are sequential, so they're surfaced but marked lower-risk. The
+// target itself is excluded by slug. Tolerant of empty files-to-touch on either
+// side (no overlap → not reported); never throws.
+export function computeFileConflicts(target, allGoals) {
+  const targetFiles = new Set(filesToTouchOf(target));
+  if (targetFiles.size === 0) return [];
+  const targetSlug = target?.slug || target?.meta?.slug || "";
+  const targetProject = String(target?.meta?.project || "").trim();
+
+  const out = [];
+  for (const g of ensureArray(allGoals)) {
+    const slug = g?.slug || g?.meta?.slug || "";
+    if (!slug || slug === targetSlug) continue;
+    if (!LIVE_STATUSES.includes(statusOf(g))) continue;
+    const shared = filesToTouchOf(g).filter((f) => targetFiles.has(f));
+    if (shared.length === 0) continue;
+    const project = String(g?.meta?.project || "").trim();
+    out.push({
+      slug,
+      title: g?.meta?.title || slug,
+      project: project || null,
+      crossProject: project !== targetProject,
+      files: shared.sort(),
+    });
+  }
+  // Cross-project (high-risk) first, then by slug for stable output.
+  return out.sort((a, b) =>
+    (a.crossProject === b.crossProject)
+      ? (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0)
+      : (a.crossProject ? -1 : 1));
+}
+
+// archDir read wrapper around computeFileConflicts: load the target goal + every
+// live goal and compute the overlap. Pure read of .arch/ — returns [] (never
+// throws) for an unknown slug, an unreadable goals dir, or a target that declares
+// no files-to-touch.
+export function detectFileConflicts(archDir, slug) {
+  let target, all;
+  try {
+    target = loadGoal(archDir, slug);
+    all = listGoals(archDir);
+  } catch { return []; }
+  if (!target) return [];
+  return computeFileConflicts(target, all);
+}
+
+// ── Shared agent coordination board (cgr-agent-chat-coordination-board) ──
+//
+// A human-readable layer on top of the structured file-overlap detection above:
+// a single SHARED chat.md where parallel agents announce what they're about to
+// touch and talk through potential collisions. Critical design constraint: the
+// board must live in a NON-branch-isolated location, so it is GITIGNORED — a
+// chat.md committed per feature branch is invisible across branches and defeats
+// the purpose. It sits under goals/ for discoverability but is NOT a goal: it is
+// excluded from listGoals scanning by filename (see listGoals).
+export const CHAT_BOARD_FILENAME = "chat.md";
+
+// Conventional repo-relative path shown to the agent in payload prework. archDir
+// is conventionally <repo>/.arch, so the board reads as .arch/goals/chat.md —
+// matching how renderPayload prints the other goal paths.
+export const CHAT_BOARD_REL = `.arch/goals/${CHAT_BOARD_FILENAME}`;
+
+export function chatBoardPath(archDir) {
+  return path.join(goalsDir(archDir), CHAT_BOARD_FILENAME);
+}
+
+// Machine-readable half of each entry: a JSON blob in an HTML comment so reads
+// round-trip exactly while the rendered markdown below it stays human-readable.
+const CHAT_ENTRY_RE = /<!-- cgr-chat (\{[\s\S]*?\}) -->/g;
+
+const CHAT_BOARD_HEADER = [
+  "# CGR agent coordination board",
+  "",
+  "Shared, GITIGNORED scratchpad for parallel agents. BEFORE editing, READ what",
+  "others have posted and APPEND an announce-entry (your goal, branch, and the",
+  "files you're about to touch). If someone is already in a file you need,",
+  "coordinate here instead of colliding. Not committed, not a goal — safe to prune.",
+  "",
+  "",
+].join("\n");
+
+// Append a stamped entry to the coordination board, creating it (with a header)
+// on first write. Each entry records WHO (goal slug + project/branch), WHEN (ISO
+// timestamp) and WHAT (files-touched) so an agent reading the board sees who is
+// in which files. Tolerant of a missing goals dir/file — it creates the layout
+// first and never throws on a failed write (returns written:false instead).
+export function appendChatEntry(archDir, { slug = "", project = "", branch = "", files = [], note = "" } = {}) {
+  const filepath = chatBoardPath(archDir);
+  const at = new Date().toISOString();
+  const fileList = [...new Set(
+    ensureArray(files).map((f) => String(f).replace(/^\.\//, "").trim()).filter(Boolean),
+  )];
+  const proj = String(project || "").trim();
+  const branchLabel = String(branch || (proj ? `feat/${proj}` : "")).trim();
+  const entry = {
+    at,
+    slug: String(slug || "").trim(),
+    project: proj || null,
+    branch: branchLabel || null,
+    files: fileList,
+    note: String(note || "").trim(),
+  };
+  const block = [
+    `<!-- cgr-chat ${JSON.stringify(entry)} -->`,
+    `**${at}** · \`${entry.slug || "unknown"}\`${branchLabel ? ` on \`${branchLabel}\`` : ""}`,
+    fileList.length ? `- Files: ${fileList.join(", ")}` : `- Files: (none declared)`,
+    ...(entry.note ? [`- ${entry.note}`] : []),
+  ].join("\n");
+
+  try {
+    ensureGoalsLayout(archDir);
+    const existing = fs.existsSync(filepath) ? fs.readFileSync(filepath, "utf8") : "";
+    const content = existing.trim()
+      ? existing.trimEnd() + "\n\n" + block + "\n"
+      : CHAT_BOARD_HEADER + block + "\n";
+    fs.writeFileSync(filepath, content);
+  } catch {
+    return { ...entry, filepath, written: false };
+  }
+  return { ...entry, filepath, written: true };
+}
+
+// Read recent board entries, NEWEST FIRST. Tolerant of a missing file (returns
+// []) and unparseable entries (skipped) — never throws. `limit` caps the count
+// (<=0 / non-number → all).
+export function readChatBoard(archDir, { limit = 20 } = {}) {
+  let content;
+  try { content = fs.readFileSync(chatBoardPath(archDir), "utf8"); }
+  catch { return []; }
+  const entries = [];
+  for (const m of content.matchAll(CHAT_ENTRY_RE)) {
+    try {
+      const e = JSON.parse(m[1]);
+      entries.push({
+        at: e.at || "",
+        slug: e.slug || "",
+        project: e.project || null,
+        branch: e.branch || null,
+        files: Array.isArray(e.files) ? e.files : [],
+        note: e.note || "",
+      });
+    } catch { /* skip a malformed entry, keep the rest */ }
+  }
+  entries.reverse(); // appended in time order → reverse for newest-first
+  return (typeof limit === "number" && limit > 0) ? entries.slice(0, limit) : entries;
+}
+
 // Mark a goal in-progress — the relay "start" transition. Idempotent.
 // Clears any stale turn-cap counter so the guard starts fresh for this goal.
 // If the goal was sitting in goals/testing/ (resumed for verification), it is
 // relocated back to goals/ root so an in-progress goal never lingers in the
 // testing drawer — status frontmatter and folder stay consistent.
 export function startGoal(archDir, slug) {
+  // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
+  // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
+  // the root path, migration would move it, and the relocate-write below would
+  // leave a duplicate. With layout ensured first, loadGoal resolves the final
+  // location and the filepath!=target rmSync cleans the source.
+  ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
-  ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_ACTIVE;
   if (!goal.meta.started) goal.meta.started = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
@@ -800,6 +1166,12 @@ export function startGoal(archDir, slug) {
   }
   const state = readLoopState(archDir);
   if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
+  // Queue-branch routing (cgr-relay-queue-vs-project-routing): starting an
+  // UNGROUPED (no-project) goal mints/records the batch's shared cgr-queue-<date>
+  // branch on first use; project goals branch per feat/<project> instead.
+  // renderPayload reads this AFTER (the relay renders before starting), so the
+  // first queue goal sees "create -c" and every later one sees "switch".
+  if (!String(goal.meta.project || "").trim()) ensureQueueBranch(archDir);
   return { slug, status: STATUS_ACTIVE };
 }
 
@@ -809,9 +1181,14 @@ export function startGoal(archDir, slug) {
 // Persistent across /clear: the goal stays guarded (see getActiveGoal) until a
 // session runs verify green and completes it. Idempotent.
 export function markTesting(archDir, slug) {
+  // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
+  // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
+  // the root path, migration would move it, and the relocate-write below would
+  // leave a duplicate. With layout ensured first, loadGoal resolves the final
+  // location and the filepath!=target rmSync cleans the source.
+  ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
-  ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_TESTING;
   if (!goal.meta["testing-since"]) goal.meta["testing-since"] = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
@@ -832,9 +1209,14 @@ export function markTesting(archDir, slug) {
 // parked from goals/testing/, it is relocated back to goals/ root so an on-hold
 // goal never lingers in the verification drawer.
 export function markOnHold(archDir, slug) {
+  // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
+  // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
+  // the root path, migration would move it, and the relocate-write below would
+  // leave a duplicate. With layout ensured first, loadGoal resolves the final
+  // location and the filepath!=target rmSync cleans the source.
+  ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
-  ensureGoalsLayout(archDir);
   goal.meta.status = STATUS_ON_HOLD;
   if (!goal.meta["on-hold-since"]) goal.meta["on-hold-since"] = new Date().toISOString().slice(0, 10);
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
@@ -953,6 +1335,70 @@ export function nextEligibleGoal(archDir) {
   return onHold[0] || null;
 }
 
+// ── Queue-vs-project routing (cgr-relay-queue-vs-project-routing) ──
+//
+// `project` (ADR 0010) splits the live queue into two tracks: project-grouped
+// goals (each a branch-isolated feature set on feat/<project>) and UNGROUPED
+// goals (the plain "queue", worked on a single shared dated branch — see
+// ensureQueueBranch). When BOTH tracks have ready work, auto-picking one silently
+// is wrong — the user may want to push a feature set or drain the queue. So the
+// relay SURFACES A CHOICE instead of guessing. When only one track has work it
+// auto-picks exactly as nextEligibleGoal does (no extra prompt).
+//
+// Precedence is preserved (exit-criterion 4): an in-progress goal is resumed
+// before any choice (a genuinely active goal is never interrupted), and the
+// choice considers only deps-satisfied goals (a dependency-blocked goal never
+// triggers a prompt). The testing-backlog threshold is a WITHIN-track refinement
+// and does not pre-empt the cross-track choice.
+//
+// Returns one of:
+//   { kind: "resume", goal }   — an in-progress goal to continue
+//   { kind: "single", goal }   — exactly one track had work; auto-picked
+//   { kind: "choice", queue, queueNext, projects, projectNext }
+//                              — both tracks have work; caller prompts the user
+//   { kind: "none" }           — nothing eligible (empty/blocked queue)
+export function routeNextGoal(archDir) {
+  const goals = listGoals(archDir);
+
+  // (1) Resume actively-worked goal first — never interrupted by the choice.
+  const inProgress = goals.find((g) => statusOf(g) === STATUS_ACTIVE);
+  if (inProgress) return { kind: "resume", goal: inProgress };
+
+  const depsSatisfied = (g) => {
+    const deps = ensureArray(g.meta["depends-on"]);
+    return !deps.some((d) => !isGoalDone(archDir, d));
+  };
+  // Eligible = not done, not parked, deps satisfied — the same gate
+  // nextEligibleGoal applies before its threshold ordering.
+  const eligible = goals.filter((g) => {
+    const s = statusOf(g);
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD) return false;
+    return depsSatisfied(g);
+  });
+  const projectOf = (g) => String(g?.meta?.project || "").trim();
+  const grouped = eligible.filter((g) => projectOf(g));
+  const ungrouped = eligible.filter((g) => !projectOf(g));
+
+  // (2) Both tracks have ready work → surface a choice rather than auto-pick.
+  if (grouped.length > 0 && ungrouped.length > 0) {
+    const projects = {};
+    for (const g of grouped) (projects[projectOf(g)] ||= []).push(g.slug);
+    const projectNext = {};
+    for (const [p, slugs] of Object.entries(projects)) projectNext[p] = slugs[0];
+    return {
+      kind: "choice",
+      queue: ungrouped.map((g) => g.slug),
+      queueNext: ungrouped[0].slug,
+      projects,
+      projectNext,
+    };
+  }
+
+  // (3) One track (or neither) → auto-pick with the existing threshold ordering.
+  const goal = nextEligibleGoal(archDir);
+  return goal ? { kind: "single", goal } : { kind: "none" };
+}
+
 // ── Turn-cap state for the goal-aware Stop hook ──
 // Counts how many consecutive turns the hook has blocked the active goal, so a
 // stuck loop releases instead of trapping the agent forever (mirrors /goal's
@@ -978,13 +1424,200 @@ export function resetLoopState(archDir) {
   try { fs.rmSync(loopStatePath(archDir), { force: true }); } catch { /* ignore */ }
 }
 
+// ── Shared dated queue branch (cgr-relay-queue-vs-project-routing) ──
+//
+// The ungrouped (no-project) complement to feat/<project>: every plain queue
+// goal in the current batch is worked on ONE shared branch named
+// cgr-queue-<YYYY-MM-DD>. The name is RECORDED ONCE when first minted (state
+// below) so every subsequent queue goal REUSES it instead of spawning a branch
+// per pick. archkit stamps the date and records the NAME only — it never runs
+// git (instruct-not-act, ADR 0010). State lives beside the goals as JSON, so
+// listGoals (which only scans .md) never picks it up. Cleared when the ungrouped
+// queue drains (completeGoal) so the next batch mints a fresh dated branch.
+function queueStatePath(archDir) {
+  return path.join(goalsDir(archDir), ".queue-state.json");
+}
+
+// Derive the queue branch name for a given day (defaults to today). archkit owns
+// the date stamp; `date` is injectable for deterministic tests.
+export function queueBranchName(date) {
+  const day = stampDate(date) || new Date().toISOString().slice(0, 10);
+  return `cgr-queue-${day}`;
+}
+
+// The recorded queue branch for the current batch, or null when none is minted
+// yet. Pure read; tolerant of a missing/garbage state file (never throws).
+export function readQueueBranch(archDir) {
+  try {
+    const s = JSON.parse(fs.readFileSync(queueStatePath(archDir), "utf8"));
+    const b = String(s?.branch || "").trim();
+    return b || null;
+  } catch { return null; }
+}
+
+// Record the batch's queue branch the FIRST time an ungrouped goal is started,
+// then REUSE it for every later queue goal. Returns the effective branch name.
+// Idempotent: once recorded it returns the existing name unchanged (so the whole
+// batch shares one branch). Best-effort write — a state-write hiccup degrades to
+// re-deriving today's name, never blocks the relay.
+export function ensureQueueBranch(archDir, { date } = {}) {
+  const existing = readQueueBranch(archDir);
+  if (existing) return existing;
+  const branch = queueBranchName(date);
+  try {
+    ensureGoalsLayout(archDir);
+    fs.writeFileSync(queueStatePath(archDir), JSON.stringify({
+      branch,
+      minted: stampDate(date) || new Date().toISOString().slice(0, 10),
+    }, null, 2));
+  } catch { /* best-effort: re-derivable from date */ }
+  return branch;
+}
+
+// Drop the recorded queue branch once no ungrouped (queue) goal remains live, so
+// the next batch of plain goals mints a fresh cgr-queue-<date> rather than
+// reusing a stale day's branch. Project goals are irrelevant here (they branch
+// per feat/<project>). Never throws.
+export function clearQueueBranchIfDrained(archDir) {
+  try {
+    const stillQueued = listGoals(archDir).some((g) =>
+      statusOf(g) !== STATUS_COMPLETED && !String(g?.meta?.project || "").trim());
+    if (!stillQueued) fs.rmSync(queueStatePath(archDir), { force: true });
+  } catch { /* ignore */ }
+}
+
+// ── End-of-bucket completion: merge-or-archive (cgr-project-completion-merge-or-archive) ──
+//
+// Teardown counterpart to the branch-prework block renderPayload emits at the
+// START of a feature set. When completing a goal DRAINS the last live goal of its
+// bucket — a project feature set (feat/<project>) or the ungrouped queue
+// (cgr-queue-<date>) — the branch-isolated work is finished, and there is a
+// landing choice: merge the branch into a mainline, or archive only (let the
+// CGRs consolidate into done/ as every completion already does, leaving the
+// branch unmerged). archkit only EMITS git guidance here; it never runs git
+// (instruct-not-act, ADR 0010) — the agent presents the choice and the user runs
+// the commands on 'merge'.
+//
+// "Live" for drain purposes = pending | in-progress | testing (the states that
+// represent unfinished work). on-hold (deliberately parked), completed, and
+// abandoned do NOT keep a bucket alive — a bucket holding only parked/terminal
+// goals counts as drained.
+const DRAIN_LIVE_STATUSES = [STATUS_PENDING, STATUS_ACTIVE, STATUS_TESTING];
+
+// PURE: does completing `slug` drain the last live goal of its bucket? `goals` is
+// the full live goal set (as from listGoals, INCLUDING the goal being completed,
+// which is typically still in-progress). The goal being completed is excluded
+// from the remaining-count (we ask "after this completes, is anything live left
+// in the same bucket?"). Returns { drained, bucket:'project'|'queue', project,
+// remaining }. drained is false (bucket/project still resolved) when other live
+// goals remain; { drained:false, bucket:null, project:null } when the slug isn't
+// in the set. Tolerates ungrouped goals (bucket:'queue', project:null) and never
+// throws.
+export function detectBucketDrain(goals, slug) {
+  const list = ensureArray(goals);
+  const want = String(slug || "");
+  const target = list.find((g) => (g?.slug || g?.meta?.slug) === want);
+  if (!target) return { drained: false, bucket: null, project: null, remaining: 0 };
+  const project = String(target?.meta?.project || "").trim();
+  const bucket = project ? "project" : "queue";
+  const sameBucket = (g) => {
+    const p = String(g?.meta?.project || "").trim();
+    return project ? p === project : !p;
+  };
+  let remaining = 0;
+  for (const g of list) {
+    const s = g?.slug || g?.meta?.slug;
+    if (!s || s === want) continue;
+    if (!sameBucket(g)) continue;
+    if (DRAIN_LIVE_STATUSES.includes(statusOf(g))) remaining++;
+  }
+  return { drained: remaining === 0, bucket, project: project || null, remaining };
+}
+
+// The mainline branch a drained bucket's feature branch merges INTO. Config wins
+// (.arch/config.json → cgr.mainline); otherwise detect main/master from the
+// repo's refs WITHOUT running git (instruct-not-act — archkit reads the
+// filesystem, never shells out), defaulting to "main". archDir is conventionally
+// <repo>/.arch, so .git sits one level up. Never throws.
+export function detectMainline(archDir) {
+  // 1) explicit config override.
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(archDir, "config.json"), "utf8"));
+    const m = cfg?.cgr?.mainline;
+    if (typeof m === "string" && m.trim()) return { mainline: m.trim(), source: "config" };
+  } catch { /* no/invalid config → detect */ }
+  const gitDir = path.join(path.dirname(archDir), ".git");
+  // 2) loose refs: .git/refs/heads/<name>.
+  for (const name of ["main", "master"]) {
+    try {
+      if (fs.existsSync(path.join(gitDir, "refs", "heads", name))) {
+        return { mainline: name, source: "detected" };
+      }
+    } catch { /* ignore */ }
+  }
+  // 2b) packed-refs fallback (refs get packed away from loose files).
+  try {
+    const packed = fs.readFileSync(path.join(gitDir, "packed-refs"), "utf8");
+    for (const name of ["main", "master"]) {
+      if (new RegExp(`\\srefs/heads/${name}$`, "m").test(packed)) {
+        return { mainline: name, source: "detected" };
+      }
+    }
+  } catch { /* no packed-refs */ }
+  // 3) modern default.
+  return { mainline: "main", source: "default" };
+}
+
+// The git branch a drained bucket lives on: feat/<project> for a project bucket,
+// the recorded shared cgr-queue-<date> for the ungrouped queue (falling back to
+// today's derived name if the queue-state file is already gone). Read this BEFORE
+// completeGoal clears the queue state, or the queue branch resolves to today's
+// derived name instead of the recorded batch branch.
+export function bucketBranch(archDir, { bucket, project } = {}) {
+  if (bucket === "project" && project) return `feat/${project}`;
+  return readQueueBranch(archDir) || queueBranchName();
+}
+
+// Git guidance to LAND a drained bucket's branch into mainline. archkit only
+// EMITS this string — it never runs git (instruct-not-act, ADR 0010). Withheld
+// entirely on the archive-only path.
+export function bucketMergeGuidance({ branch, mainline }) {
+  return `git switch ${mainline} && git merge ${branch}`;
+}
+
+// Compose the end-of-bucket merge-or-archive choice for a completing goal, or
+// null when the completion does NOT drain the bucket (an ordinary mid-bucket
+// completion). `goals` is the full live set (pre-completion). Resolves the bucket
+// branch + mainline target + the merge-guidance string up front so the relay/CLI
+// can surface the choice. Pure read of .arch/; never throws.
+export function bucketCompletion(archDir, goals, slug) {
+  let drain;
+  try { drain = detectBucketDrain(goals, slug); } catch { return null; }
+  if (!drain || !drain.drained) return null;
+  const branch = bucketBranch(archDir, drain);
+  const { mainline, source: mainlineSource } = detectMainline(archDir);
+  return {
+    bucket: drain.bucket,          // 'project' | 'queue'
+    project: drain.project,        // <slug> | null
+    branch,
+    mainline,
+    mainlineSource,                // 'config' | 'detected' | 'default'
+    mergeGuidance: bucketMergeGuidance({ branch, mainline }),
+  };
+}
+
 // Drop a goal without marking it done — archived to done/ with status
 // "abandoned" (kept for history, distinguishable from completed). Releases the
 // relay guard by clearing the active goal + its turn-cap counter.
 export function abandonGoal(archDir, slug, { reason = "" } = {}) {
+  // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
+  // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
+  // the root path, migration would move it, and the relocate-write below would
+  // leave a duplicate. With layout ensured first, loadGoal resolves the final
+  // location and the filepath!=target rmSync cleans the source.
+  ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
-  ensureGoalsLayout(archDir);
   goal.meta.status = "abandoned";
   goal.meta["abandoned"] = new Date().toISOString().slice(0, 10);
   if (reason) goal.meta["abandon-reason"] = reason;

@@ -307,8 +307,9 @@ console.log("\n  cgr-states-wiring — status vocabulary reconciliation (ADR 000
 await test("intake/complete write the canonical pending/completed vocabulary", () => {
   withArchDir(({ archDir }) => {
     writeGoal(archDir, { slug: "g", title: "G", exitCriteria: ["x"] });
-    // raw frontmatter, not normalized — proves we WRITE the new words
-    const pendingRaw = parseGoal(fs.readFileSync(path.join(goalsDir(archDir), "g.md"), "utf8")).meta.status;
+    // raw frontmatter, not normalized — proves we WRITE the new words. New goals
+    // are queued under goals/queue/ now (cgr-queue-folder-layout).
+    const pendingRaw = parseGoal(fs.readFileSync(path.join(goalsDir(archDir), "queue", "g.md"), "utf8")).meta.status;
     assert.equal(pendingRaw, STATUS_PENDING, "new goals are written as pending, not planned");
     startGoal(archDir, "g");
     completeGoal(archDir, "g");

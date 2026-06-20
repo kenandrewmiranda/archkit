@@ -29,6 +29,8 @@ import {
   exitCriteriaOf,
   verifyCommandOf,
   renderPayload,
+  RELAY_PAYLOAD_BUDGET,
+  startGoal,
   ensureGoalsLayout,
   goalsDir,
   doneDir,
@@ -43,6 +45,7 @@ import {
   detectGraphGaps,
   writeGraphProposal,
   acceptGraphProposal,
+  bucketCompletion,
 } from "../lib/goals.mjs";
 import crypto from "node:crypto";
 import { detectTestCommand, runTests } from "../lib/test-runner.mjs";
@@ -154,6 +157,10 @@ export function runGoalList({ archDir }) {
     // queue order — activeList[0] is the goal /goal_next will pick next.
     epic: g.meta.epic || undefined,
     order: Number.isFinite(Number(g.meta.order)) ? Number(g.meta.order) : undefined,
+    // Branch-isolated feature set (cgr-project-branch-grouping, ADR 0007): the
+    // git-branch grouping. Distinct from `epic` (sequencing). Surfaced in the
+    // `projects` view below so parallel feature sets are visible at a glance.
+    project: g.meta.project || undefined,
   }));
   // Epic-grouped view of live goals — the "project space" segmentation: each
   // epic maps to its goal slugs in queue order. Goals with no epic collect under
@@ -164,6 +171,16 @@ export function runGoalList({ archDir }) {
     (epics[key] ||= []).push(g.slug);
   }
   const hasEpics = activeList.some((g) => g.epic);
+  // Project-grouped view (ADR 0007): each project label -> its goal slugs in
+  // queue order. A project is a branch-isolated feature set (feat/<project>), so
+  // this view tells you which goals an agent should work on one branch. Mirrors
+  // the epics view; omitted entirely when no goal carries a project.
+  const projects = {};
+  for (const g of activeList) {
+    if (!g.project) continue;
+    (projects[g.project] ||= []).push(g.slug);
+  }
+  const hasProjects = activeList.some((g) => g.project);
   const goalsNote = activeList.length === 0 && done.length === 0
     ? `No goals exist in .arch/goals/ yet. CGR hasn't been used in this project.`
     : activeList.length === 0
@@ -174,7 +191,7 @@ export function runGoalList({ archDir }) {
     : activeList.length === 0
       ? `Queue is empty. Call archkit_goal_intake with the next ask, or proceed without CGR.`
       : `Continue ${activeList[0].slug}. Call archkit_goal_payload ${activeList[0].slug} to re-render the /goal payload if needed.`;
-  return { active: activeList, ...(hasEpics ? { epics } : {}), done, archived, digests, goalsNote, nextStep };
+  return { active: activeList, ...(hasEpics ? { epics } : {}), ...(hasProjects ? { projects } : {}), done, archived, digests, goalsNote, nextStep };
 }
 
 export function runGoalPayload({ archDir, slug }) {
@@ -232,6 +249,34 @@ export function runGoalHold({ archDir, slug }) {
   };
 }
 
+// Start a SPECIFIC goal by slug — the actionable companion to the goal_next
+// relay's queue-vs-project routing choice (cgr-relay-queue-vs-project-routing).
+// goal_next auto-picks, but when both the queue and a project track have ready
+// work it surfaces a choice; once the user picks a track the agent calls this
+// with that track's next slug to begin it. Marks the goal in-progress and returns
+// its relay payload. Renders BEFORE starting so the first ungrouped queue goal
+// gets "create -c cgr-queue-<date>" guidance (startGoal records the shared branch
+// afterward, so later picks render "switch").
+export function runGoalStart({ archDir, slug }) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) {
+    const active = listGoals(archDir).map((g) => g.slug);
+    throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+      suggestion: active.length ? `Active goals: ${active.join(", ")}` : "No active goals — call archkit_goal_intake first.",
+    });
+  }
+  const { payload } = renderPayload(archDir, slug, { budget: RELAY_PAYLOAD_BUDGET });
+  startGoal(archDir, slug);
+  const project = String(goal.meta.project || "").trim();
+  const branch = project ? `feat/${project}` : "the shared cgr-queue-<date> branch";
+  return {
+    slug,
+    status: "in-progress",
+    payload,
+    nextStep: `Goal "${slug}" is in-progress (work it on ${branch}; see the payload). Restate it in one sentence, work ONLY it to its exit-criteria, then archkit_goal_complete ${slug}.`,
+  };
+}
+
 export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, timeSpent }) {
   // HARD test gate: if the goal declares a verify-command, run it and refuse to
   // complete on red (or if it can't run). This is what makes "done" provably
@@ -280,16 +325,26 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
     }
   } catch { /* non-fatal */ }
 
+  // End-of-bucket teardown (cgr-project-completion-merge-or-archive): does
+  // completing this goal drain the LAST live goal of its bucket (a project
+  // feature set or the ungrouped queue)? Computed BEFORE completeGoal so the
+  // in-progress goal is still in listGoals AND the queue-branch state is intact
+  // (completeGoal clears it on drain). Pure detect — archkit emits merge guidance
+  // but never runs git. Null on an ordinary mid-bucket completion (no prompt).
+  let bucketDone = null;
+  try { bucketDone = bucketCompletion(archDir, listGoals(archDir), slug); } catch { /* non-fatal */ }
+
   const result = completeGoal(archDir, slug, { notes, extraMeta, timeSpent });
   // Suggest the next goal's payload if any
   const remaining = listGoals(archDir);
   const next = remaining.find((g) => statusOf(g) !== STATUS_COMPLETED);
-  // Queue-drain trigger: when nothing is left to work, fold the freshly-
-  // completed goal (and any earlier un-consolidated terminal goals) into a
-  // dated digest and archive the raw CGRs verbatim. Best-effort — a
+  // Consolidation trigger: fold the freshly-completed goal (and any earlier
+  // un-consolidated terminal goals) into a dated digest + archive the raw CGRs
+  // verbatim. Fires when the whole queue drains OR a bucket drains — the
+  // archive-only path's "consolidate into done/ as today". Best-effort — a
   // consolidation failure must never block marking the goal done.
   let consolidation = null;
-  if (!next) {
+  if (!next || bucketDone) {
     try { consolidation = consolidateGoals(archDir); } catch { /* non-fatal */ }
   }
   const drainNote = consolidation && consolidation.consolidated > 0
@@ -305,11 +360,26 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
   const timeNote = result.effort && result.effort.display
     ? ` Time ${result.effort.source === "explicit" ? "logged" : "elapsed"}: ${result.effort.display}.`
     : "";
+  // End-of-bucket merge-or-archive choice (cgr-project-completion-merge-or-archive).
+  // Only when this completion drained the bucket: lead the nextStep with the
+  // choice so the agent surfaces it to the user (AskUserQuestion) before
+  // advancing. archkit only EMITS the merge guidance — the user runs git.
+  let bucketNote = "";
+  if (bucketDone) {
+    const label = bucketDone.bucket === "project"
+      ? `project "${bucketDone.project}" (branch ${bucketDone.branch})`
+      : `the ungrouped queue (branch ${bucketDone.branch})`;
+    bucketNote = ` End of bucket: ${label} has no live goals left. Ask the user (AskUserQuestion) — MERGE into ${bucketDone.mainline} (${bucketDone.mainlineSource}) or ARCHIVE only. On merge, relay this — archkit does NOT run git: \`${bucketDone.mergeGuidance}\`. On archive-only, nothing further: the CGRs are consolidated into done/ and ${bucketDone.branch} is left unmerged.`;
+  }
   return {
     ...result,
     testGate: verifyCommand ? { command: verifyCommand, passed: true } : null,
     consolidation,
     graphReconciliation,
+    // The drained-bucket teardown choice, or null on an ordinary completion. The
+    // agent presents merge-vs-archive; merge emits `mergeGuidance` for the user
+    // to run (instruct-not-act), archive-only leaves the branch unmerged.
+    bucketCompletion: bucketDone,
     nextGoal: next
       ? {
           slug: next.slug,
@@ -318,8 +388,8 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
         }
       : null,
     nextStep: next
-      ? `Run /clear, then /mcp__archkit__goal_next to begin ${next.slug}.${timeNote}${graphNote}`
-      : `CGR queue empty.${drainNote}${timeNote}${graphNote} Ask the user what to tackle next.`,
+      ? `${bucketNote ? bucketNote.trim() + " Then: " : ""}Run /clear, then /mcp__archkit__goal_next to begin ${next.slug}.${timeNote}${graphNote}`
+      : `CGR queue empty.${bucketNote}${drainNote}${timeNote}${graphNote}${bucketNote ? "" : " Ask the user what to tackle next."}`,
   };
 }
 
@@ -585,6 +655,7 @@ async function main() {
     console.log(`${C.gray}    list                         List active + done goals${C.reset}`);
     console.log(`${C.gray}    show <slug>                  Print the goal's markdown${C.reset}`);
     console.log(`${C.gray}    payload <slug>               Print the /goal copy-paste payload${C.reset}`);
+    console.log(`${C.gray}    start <slug>                 Mark a specific goal in-progress + print its payload${C.reset}`);
     console.log(`${C.gray}    testing <slug>               Park a goal in testing/ (edits applied, verify pending)${C.reset}`);
     console.log(`${C.gray}    hold <slug>                  Set a goal aside as on-hold (resumable, guard released)${C.reset}`);
     console.log(`${C.gray}    complete <slug> [--notes X] [--time-spent 2h]  Mark a goal done, archive to done/${C.reset}`);
@@ -645,6 +716,16 @@ async function main() {
         if (isJson) { console.log(JSON.stringify(out)); break; }
         commandBanner("archkit goal", `payload for ${slug}`);
         printPayload(out);
+        break;
+      }
+      case "start": {
+        const slug = args[1];
+        if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal start <slug>" });
+        const out = runGoalStart({ archDir, slug });
+        if (isJson) { console.log(JSON.stringify(out)); break; }
+        commandBanner("archkit goal", `start ${slug}`);
+        console.log(`\n  ${C.green}${I.dot}${C.reset} in-progress: ${slug}`);
+        printPayload({ payload: out.payload, length: out.payload.length, withinBudget: true });
         break;
       }
       case "testing": {

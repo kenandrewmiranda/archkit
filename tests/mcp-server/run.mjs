@@ -114,6 +114,7 @@ await log("tools/list returns all 37 tools", async () => {
         "archkit_goal_payload",
         "archkit_goal_promote",
         "archkit_goal_show",
+        "archkit_goal_start",
         "archkit_goal_testing",
         "archkit_goal_verify",
         "archkit_gotcha_list",

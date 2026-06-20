@@ -16,7 +16,7 @@ import fs from "node:fs";
 import { findArchDir } from "../lib/shared.mjs";
 import {
   getActiveGoal,
-  nextEligibleGoal,
+  routeNextGoal,
   startGoal,
   renderPayload,
   RELAY_PAYLOAD_BUDGET,
@@ -86,6 +86,33 @@ export function relayHeader(slug, status = "in-progress", { tallyLine = "" } = {
   return lines.join("\n");
 }
 
+// Queue-vs-project routing choice (cgr-relay-queue-vs-project-routing). When both
+// the ungrouped queue AND one or more project feature-sets have ready work, the
+// relay does NOT auto-pick — it hands the agent a choice to put to the user. Each
+// track names its recommended next slug; the agent presents the options with
+// AskUserQuestion and then starts the chosen one via archkit_goal_start <slug>
+// (the only relay action that can begin a SPECIFIC goal). Starting an ungrouped
+// goal records the shared cgr-queue-<date> branch; a project goal branches on
+// feat/<project>.
+export function relayRoutingChoice(route) {
+  const projectEntries = Object.entries(route.projects);
+  const lines = [
+    `[archkit CGR relay] Two tracks have ready work — the queue and ${projectEntries.length} project branch${projectEntries.length === 1 ? "" : "es"}. Ask which to advance instead of auto-picking.`,
+    ``,
+    `Present this choice to the user with the AskUserQuestion tool (single-select):`,
+    `  • Advance the queue (${route.queue.length} ungrouped goal${route.queue.length === 1 ? "" : "s"}, shared branch cgr-queue-<date>) → next: ${route.queueNext}`,
+  ];
+  for (const [proj, slugs] of projectEntries) {
+    lines.push(`  • Project ${proj} (${slugs.length} goal${slugs.length === 1 ? "" : "s"}, branch feat/${proj}) → next: ${route.projectNext[proj]}`);
+  }
+  lines.push(
+    ``,
+    `Once the user picks, call archkit_goal_start <slug> with that track's "next" slug — it marks the goal in-progress, injects its payload, and (for the queue) records the shared cgr-queue-<date> branch. Start exactly ONE.`,
+    `An in-progress goal would have been resumed automatically; this choice only appears because nothing is mid-flight and both tracks are unblocked.`,
+  );
+  return lines.join("\n");
+}
+
 const NO_ARCH = "No .arch/ project found here. Run /archkit-init to set one up, then decompose your ask with archkit_goal_intake.";
 
 export const prompts = {
@@ -98,14 +125,23 @@ export const prompts = {
     handler: async () => {
       const archDir = archDirOrNull();
       if (!archDir) return textMessage(NO_ARCH);
-      const goal = nextEligibleGoal(archDir);
-      if (!goal) {
+      const route = routeNextGoal(archDir);
+      if (route.kind === "none") {
         return textMessage(
           "No eligible CGR goal to start — the queue is empty or every remaining goal is blocked by an incomplete dependency. Call archkit_goal_list to inspect, or archkit_goal_intake to decompose a new ask."
         );
       }
-      startGoal(archDir, goal.slug);
+      // Both the queue and a project track have ready work → surface the choice
+      // rather than silently auto-picking (cgr-relay-queue-vs-project-routing).
+      if (route.kind === "choice") {
+        return textMessage(relayRoutingChoice(route));
+      }
+      // resume / single → auto-pick. Render BEFORE starting so the first ungrouped
+      // queue goal sees "create -c cgr-queue-<date>" (startGoal records the branch
+      // afterward, so subsequent picks render "switch").
+      const goal = route.goal;
       const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
+      startGoal(archDir, goal.slug);
       const today = new Date().toISOString().slice(0, 10);
       return textMessage(relayHeader(goal.slug, "in-progress", { tallyLine: doneTodayTally(archDir, today) }) + payload);
     },

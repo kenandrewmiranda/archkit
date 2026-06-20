@@ -104,8 +104,8 @@ test("consolidateGoals runs while other goals are still pending/in-progress", ()
     assert.equal(r.consolidated, 1);
     assert.deepEqual(r.slugs, ["done-work"]);
     assert.ok(fs.existsSync(path.join(archiveDir(archDir), "done-work.md")));
-    // The still-pending goal is untouched in goals/ root.
-    assert.ok(fs.existsSync(path.join(archDir, "goals", "pending-work.md")));
+    // The still-pending goal is untouched in the queue drawer (cgr-queue-folder-layout).
+    assert.ok(fs.existsSync(path.join(archDir, "goals", "queue", "pending-work.md")));
   });
 });
 

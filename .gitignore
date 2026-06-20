@@ -9,6 +9,14 @@ node_modules/
 .archkit-progress.json
 .archkit-config.json
 .arch/goals/.loop-state.json
+# Per-batch shared queue branch state (cgr-relay-queue-vs-project-routing):
+# records the current ungrouped queue's cgr-queue-<date> branch name. Transient,
+# local to the working batch — never committed.
+.arch/goals/.queue-state.json
+# Shared agent coordination board (cgr-agent-chat-coordination-board): a chat.md
+# committed per feature branch is invisible across branches, so it stays SHARED
+# and gitignored — never commits into a feature branch.
+.arch/goals/chat.md
 
 # .claude/settings.json is committed: archkit emits portable hook commands
 # (node $CLAUDE_PROJECT_DIR/bin/*.mjs) so the guardrail config is shareable.
