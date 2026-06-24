@@ -17,6 +17,11 @@ node_modules/
 # committed per feature branch is invisible across branches, so it stays SHARED
 # and gitignored — never commits into a feature branch.
 .arch/goals/chat.md
+# CGR 2.0 persistent board (board-state-manager, ADR 0014): the append-only event
+# log is SHARED, non-branch-isolated runtime state (like chat.md) — a board
+# committed per feature branch is invisible across branches, defeating the whole
+# point of a derived cross-lane view. Stays local; the board is purely derived.
+.arch/board/
 
 # .claude/settings.json is committed: archkit emits portable hook commands
 # (node $CLAUDE_PROJECT_DIR/bin/*.mjs) so the guardrail config is shareable.

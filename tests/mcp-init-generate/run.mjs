@@ -49,8 +49,8 @@ await test("generateScaffold writes the .arch/ scaffold from structured answers"
     assert.ok(fs.existsSync(path.join(arch, "clusters", "infra.graph")), "infra cluster written");
     assert.ok(fs.existsSync(path.join(arch, "clusters", "auth.graph")), "auth cluster written");
     assert.ok(fs.existsSync(path.join(arch, "clusters", "billing.graph")), "billing cluster written");
-    assert.ok(fs.existsSync(path.join(arch, "skills", "postgres.skill")), "postgres skill written");
-    assert.ok(fs.existsSync(path.join(arch, "skills", "stripe.skill")), "stripe skill written");
+    assert.ok(fs.existsSync(path.join(arch, "playbooks", "postgres.playbook")), "postgres playbook written");
+    assert.ok(fs.existsSync(path.join(arch, "playbooks", "stripe.playbook")), "stripe playbook written");
     // stripe ships an .api stub
     assert.ok(fs.existsSync(path.join(arch, "apis", "stripe.api")), "stripe api stub written");
     // lenses
@@ -299,8 +299,8 @@ await test("ios-swift + hosting:cloud emits Hetzner full IaC (vapor + minio)", (
     assert.match(compose, /S3_ENDPOINT/, "api wired to minio");
     assert.ok(fs.existsSync(path.join(dir, "infra", ".env.example")), ".env.example");
 
-    // .arch/skills/hetzner.skill deploy runbook with WRONG/RIGHT/WHY.
-    const skill = fs.readFileSync(path.join(dir, ".arch", "skills", "hetzner.skill"), "utf8");
+    // .arch/playbooks/hetzner.playbook deploy runbook with WRONG/RIGHT/WHY.
+    const skill = fs.readFileSync(path.join(dir, ".arch", "playbooks", "hetzner.playbook"), "utf8");
     assert.match(skill, /Deploy Runbook/, "runbook section");
     assert.match(skill, /docker build/, "build step");
     assert.match(skill, /docker compose .* up/, "compose up step");
@@ -363,7 +363,7 @@ await test("hosting:self-host does NOT emit Hetzner-specific IaC (Cloud-branch g
     // cloud artifacts: no Terraform, no cloud-init, no hetzner.skill/edge.
     assert.ok(!fs.existsSync(path.join(dir, "infra", "terraform")), "no terraform dir for self-host");
     assert.ok(!fs.existsSync(path.join(dir, "infra", "cloud-init.yaml")), "no cloud-init for self-host");
-    assert.ok(!fs.existsSync(path.join(dir, ".arch", "skills", "hetzner.skill")), "no hetzner skill");
+    assert.ok(!fs.existsSync(path.join(dir, ".arch", "playbooks", "hetzner.playbook")), "no hetzner playbook");
     const infra = fs.readFileSync(path.join(dir, ".arch", "clusters", "infra.graph"), "utf8");
     assert.ok(!/hetzner-edge/.test(infra), "no hetzner slice in infra graph");
   } finally { cleanup(); }
@@ -461,8 +461,8 @@ await test("hosting:self-host emits the vendored fleet plane (vapor + minio)", (
     assert.match(deploy, /rsync/, "rsync deploy");
     assert.match(deploy, /docker compose .* up -d/, "compose up -d");
 
-    // self-host.skill runbook with WRONG/RIGHT/WHY gotchas.
-    const skill = fs.readFileSync(path.join(dir, ".arch", "skills", "self-host.skill"), "utf8");
+    // self-host.playbook runbook with WRONG/RIGHT/WHY gotchas.
+    const skill = fs.readFileSync(path.join(dir, ".arch", "playbooks", "self-host.playbook"), "utf8");
     assert.match(skill, /## Runbook/, "runbook section");
     assert.match(skill, /Provision the rig/, "provision step");
     assert.match(skill, /Bootstrap infra/, "bootstrap step");

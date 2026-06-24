@@ -94,7 +94,7 @@ export function genSystemMd(cfg) {
   o += `depends_on: <list of files/features this change depends on>\n`;
   o += `checked:\n`;
   o += `  preflight: <yes — ran archkit resolve preflight | no — reason>\n`;
-  o += `  gotchas: <yes — checked .skill file | no — no skill for this package>\n`;
+  o += `  gotchas: <yes — checked .playbook file | no — no playbook for this package>\n`;
   o += `  boundaries: <yes — read BOUNDARIES.md | no — reason>\n`;
   if (at.reservedWords["$tenant"]) o += `  tenant_scoping: <yes — $tenant included | not applicable>\n`;
   o += `[/PRE]\n`;
@@ -175,7 +175,7 @@ export function genIndexMd(cfg) {
   cfg.features.forEach(f => o += `${f.keywords} → @${f.id}\n`);
   o += `\n`;
   if (cfg.skills.length > 0) {
-    o += `## Keywords → Skills\n`;
+    o += `## Keywords → Playbooks\n`;
     cfg.skills.forEach(sid => {
       const sk = SKILL_CATALOG.find(s => s.id === sid);
       if (sk) o += `${sk.keywords} → $${sk.id}\n`;
@@ -199,8 +199,8 @@ export function genIndexMd(cfg) {
   });
   o += `\n`;
   if (cfg.skills.length > 0) {
-    o += `## Skills → Files\n`;
-    cfg.skills.forEach(s => o += `$${s} → .arch/skills/${s}.skill\n`);
+    o += `## Playbooks → Files\n`;
+    cfg.skills.forEach(s => o += `$${s} → .arch/playbooks/${s}.playbook\n`);
     o += `\n`;
   }
   o += `## Cross-Refs\n`;
@@ -727,7 +727,7 @@ export function genHetznerSkill(cfg) {
   const slug = projectSlug(cfg);
   const storageLabel = { minio: "MinIO (self-hosted S3)", "local-disk-caddy": "local disk + Caddy file server", "postgres-only": "Postgres-only (bytea/large objects)" }[storage] || storage;
 
-  return `# hetzner.skill
+  return `# hetzner.playbook
 
 ## Meta
 infra: Hetzner Cloud VPS — Terraform/hcloud + cloud-init + Caddy + docker-compose
@@ -833,7 +833,7 @@ export function genHetznerArtifacts(cfg) {
       { path: "infra/.env.example", content: genHetznerEnvExample(cfg) },
     ],
     arch: [
-      { path: "skills/hetzner.skill", content: genHetznerSkill(cfg) },
+      { path: "playbooks/hetzner.playbook", content: genHetznerSkill(cfg) },
     ],
   };
 }
@@ -1993,7 +1993,7 @@ export function genSelfHostSkill(cfg) {
   const slug = projectSlug(cfg);
   const storageLabel = STORAGE_LABELS[storage] || storage;
 
-  return `# self-host.skill
+  return `# self-host.playbook
 
 ## Meta
 infra: Self-host (local server / rig) — vendored arch-server fleet plane
@@ -2159,7 +2159,7 @@ export function genSelfHostArtifacts(cfg) {
       { path: "infra/deploy.sh", content: genSelfHostDeploy(cfg) },
     ],
     arch: [
-      { path: "skills/self-host.skill", content: genSelfHostSkill(cfg) },
+      { path: "playbooks/self-host.playbook", content: genSelfHostSkill(cfg) },
     ],
   };
 }
@@ -2179,7 +2179,7 @@ export function genEventsGraph(cfg) {
 export function genSkillFile(skillId) {
   const sk = SKILL_CATALOG.find(s => s.id === skillId);
   if (!sk) return "";
-  let o = `# ${sk.name}.skill\n\n`;
+  let o = `# ${sk.name}.playbook\n\n`;
 
   // Auto-populate Meta from package-docs map and local package.json
   const pkgInfo = PACKAGE_DOCS[skillId] || {};
@@ -2252,7 +2252,7 @@ follows your patterns, avoids known gotchas, and calls APIs correctly.
 ### Claude Projects
 1. Copy \`SYSTEM.md\` into your Project instructions
 2. Upload \`INDEX.md\` and all \`.graph\` files as project knowledge
-3. Upload relevant \`.skill\` and \`.api\` files as project knowledge
+3. Upload relevant \`.playbook\` and \`.api\` files as project knowledge
 
 ### Cursor / Windsurf
 1. Copy \`SYSTEM.md\` into \`.cursorrules\`
@@ -2267,16 +2267,16 @@ follows your patterns, avoids known gotchas, and calls APIs correctly.
 | File | Purpose | Update When |
 |------|---------|-------------|
 | SYSTEM.md | Rules + $reserved words | New convention or rule |
-| INDEX.md | Keyword → node/skill routing | New feature or dependency |
+| INDEX.md | Keyword → node/playbook routing | New feature or dependency |
 | clusters/*.graph | Architecture structure (v2 notation) | Feature added/changed |
-| skills/*.skill | Package gotchas + patterns | Dependency upgrade or new gotcha |
+| playbooks/*.playbook | Package gotchas + patterns | Dependency upgrade or new gotcha |
 | apis/*.api | API contracts (endpoints + types) | Dependency version bump |
 
 ## Maintenance
 
-- **Monthly**: Check .skill freshness. Update for dependency upgrades.
+- **Monthly**: Check .playbook freshness. Update for dependency upgrades.
 - **Per feature**: Add .graph cluster. Update INDEX.md keywords.
-- **Per gotcha**: When AI-generated code needs a fix, add WRONG/RIGHT/WHY to the .skill.
+- **Per gotcha**: When AI-generated code needs a fix, add WRONG/RIGHT/WHY to the .playbook.
 - **Per deploy**: Regenerate .api files from your latest API specs.
 `;
 }

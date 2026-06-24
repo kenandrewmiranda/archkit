@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { readPlaybook } from "./playbooks.mjs";
 
 /**
  * Load a file from the .arch/ directory. Returns null if not found.
@@ -99,9 +100,11 @@ export function parseIndex(content) {
 
   for (const line of lines) {
     if (line.startsWith("## Keywords") && line.includes("Nodes")) { section = "kn"; continue; }
-    if (line.startsWith("## Keywords") && line.includes("Skills")) { section = "ks"; continue; }
+    // "Playbooks" is the current vocabulary (ADR 0016); "Skills" stays recognized
+    // for back-compat with INDEX.md files written before the rename.
+    if (line.startsWith("## Keywords") && (line.includes("Playbooks") || line.includes("Skills"))) { section = "ks"; continue; }
     if (line.startsWith("## Nodes")) { section = "nc"; continue; }
-    if (line.startsWith("## Skills") && line.includes("Files")) { section = "sf"; continue; }
+    if ((line.startsWith("## Playbooks") || line.startsWith("## Skills")) && line.includes("Files")) { section = "sf"; continue; }
     if (line.startsWith("## Cross")) { section = "cr"; continue; }
     if (line.startsWith("## ")) { section = ""; continue; }
     if (line.startsWith("#") || !line.trim()) continue;
@@ -207,11 +210,13 @@ export function loadGraphCluster(archDir, clusterId) {
 }
 
 /**
- * Load a skill file and extract its gotchas.
+ * Load a playbook file (formerly "skill") and extract its gotchas.
+ * Reads the canonical .arch/playbooks/<id>.playbook, falling back to the
+ * legacy .arch/skills/<id>.skill (back-compat alias, ADR 0016).
  * Returns { skillId, gotchas, raw } or null if not found.
  */
 export function loadSkillGotchas(archDir, skillId) {
-  const content = loadFile(archDir, "skills", `${skillId}.skill`);
+  const content = readPlaybook(archDir, skillId);
   if (!content) return null;
   const gotchas = parseGotchas(content);
   return { skillId, gotchas, raw: content };

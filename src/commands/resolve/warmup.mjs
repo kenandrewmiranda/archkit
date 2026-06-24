@@ -4,6 +4,7 @@ import { createArchReader } from "../../lib/parsers.mjs";
 import { listGraphProposals } from "../../lib/goals.mjs";
 import * as log from "../../lib/logger.mjs";
 import { archkitError } from "../../lib/errors.mjs";
+import { listPlaybooks } from "../../lib/playbooks.mjs";
 
 export function cmdWarmup(archDir, deep) {
   log.resolve("Running warmup checks...");
@@ -73,21 +74,19 @@ export function cmdWarmup(archDir, deep) {
 
   // ── QUALITY CHECKS (warn = proceed with caution) ──────────────────────
 
-  log.resolve("Checking skill freshness...");
-  // 4. Skill freshness
-  const skillsDir = path.join(archDir, "skills");
-  const skillFiles = fs.existsSync(skillsDir)
-    ? fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))
-    : [];
+  log.resolve("Checking playbook freshness...");
+  // 4. Playbook freshness (reads both .arch/playbooks/*.playbook and legacy
+  // .arch/skills/*.skill, ADR 0016).
+  const playbooks = listPlaybooks(archDir);
 
   let staleSkills = [];
   let emptySkills = [];
   let pendingGotchas = [];
   let totalGotchas = 0;
 
-  for (const file of skillFiles) {
-    const content = fs.readFileSync(path.join(skillsDir, file), "utf8");
-    const id = file.replace(".skill", "");
+  for (const unit of playbooks) {
+    const content = fs.readFileSync(unit.path, "utf8");
+    const id = unit.id;
 
     // Check staleness
     const updatedMatch = content.match(/^updated:\s*(\d{4}-\d{2}-\d{2})/m);
@@ -110,11 +109,11 @@ export function cmdWarmup(archDir, deep) {
     if (todoCount > 0) pendingGotchas.push({ id, count: todoCount });
   }
 
-  if (skillFiles.length > 0) {
-    checks.push({ id: "W006", check: "Skills present", status: "pass", detail: `${skillFiles.length} skills, ${totalGotchas} gotchas` });
+  if (playbooks.length > 0) {
+    checks.push({ id: "W006", check: "Playbooks present", status: "pass", detail: `${playbooks.length} playbooks, ${totalGotchas} gotchas` });
   } else {
-    checks.push({ id: "W006", check: "Skills present", status: "warn", detail: "No skill files — AI will use training data defaults" });
-    warnings.push("No skills loaded. AI will guess at package patterns. Run archkit to generate skill skeletons.");
+    checks.push({ id: "W006", check: "Playbooks present", status: "warn", detail: "No playbook files — AI will use training data defaults" });
+    warnings.push("No playbooks loaded. AI will guess at package patterns. Run archkit to generate playbook skeletons.");
   }
 
   if (emptySkills.length > 0) {
@@ -178,15 +177,15 @@ export function cmdWarmup(archDir, deep) {
 
   if (deep) {
     log.resolve("Running deep validation...");
-    // 6. Check package.json deps against skills
+    // 6. Check package.json deps against playbooks
     const pkgJsonPath = path.join(process.cwd(), "package.json");
     if (fs.existsSync(pkgJsonPath)) {
       try {
         const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf8"));
         const allDeps = Object.keys({ ...(pkgJson.dependencies || {}), ...(pkgJson.devDependencies || {}) });
-        const skillIds = skillFiles.map(f => f.replace(".skill", ""));
+        const skillIds = playbooks.map(u => u.id);
 
-        // Major packages that should have skills
+        // Major packages that should have playbooks
         const importantPkgs = allDeps.filter(d => {
           const name = d.toLowerCase();
           return ["prisma", "stripe", "keycloak", "redis", "ioredis", "bullmq", "meilisearch",
@@ -200,11 +199,11 @@ export function cmdWarmup(archDir, deep) {
         });
 
         if (uncoveredPkgs.length > 0) {
-          checks.push({ id: "W011", check: "Dependencies without skills", status: "warn", detail: uncoveredPkgs.join(", ") });
-          warnings.push(`${uncoveredPkgs.length} important package(s) have no .skill file: ${uncoveredPkgs.join(", ")}`);
-          actions.push(`Create skills for: ${uncoveredPkgs.join(", ")} using archkit extend run add-skill <name>`);
+          checks.push({ id: "W011", check: "Dependencies without playbooks", status: "warn", detail: uncoveredPkgs.join(", ") });
+          warnings.push(`${uncoveredPkgs.length} important package(s) have no playbook: ${uncoveredPkgs.join(", ")}`);
+          actions.push(`Create playbooks for: ${uncoveredPkgs.join(", ")} using archkit extend run add-skill <name>`);
         } else {
-          checks.push({ id: "W011", check: "Dependencies covered by skills", status: "pass", detail: `${importantPkgs.length} major deps all have skills` });
+          checks.push({ id: "W011", check: "Dependencies covered by playbooks", status: "pass", detail: `${importantPkgs.length} major deps all have playbooks` });
         }
       } catch {
         checks.push({ id: "W011", check: "package.json readable", status: "warn", detail: "Could not parse package.json" });
@@ -280,7 +279,8 @@ export function cmdWarmup(archDir, deep) {
     summary: {
       graphs: graphCount,
       nodes: nodeCount,
-      skills: skillFiles.length,
+      playbooks: playbooks.length,
+      skills: playbooks.length, // back-compat alias (ADR 0016) — prefer `playbooks`
       gotchas: totalGotchas,
       emptySkills: emptySkills.length,
       staleSkills: staleSkills.length,

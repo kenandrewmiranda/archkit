@@ -20,6 +20,7 @@ import { archkitError } from "../lib/errors.mjs";
 import { parseBoundaries } from "../lib/boundary-parser.mjs";
 import { listGoals } from "../lib/goals.mjs";
 import { gatherHooksStatus } from "../lib/hooks-status.mjs";
+import { listPlaybooks } from "../lib/playbooks.mjs";
 import { cmdWarmup } from "./resolve/warmup.mjs";
 
 // drift.mjs auto-fires main() when process.env.ARCHKIT_RUN is set (CLI
@@ -90,19 +91,16 @@ function walkRepo(cwd, maxFiles = 5000) {
 // ─── Intent checks ──────────────────────────────────────────────────────
 
 function checkEmptySkills(archDir) {
-  const dir = path.join(archDir, "skills");
-  if (!fs.existsSync(dir)) return { skills: [], total: 0 };
+  // Reads both .arch/playbooks/*.playbook and legacy .arch/skills/*.skill (ADR 0016).
   const empty = [];
   let total = 0;
-  for (const file of fs.readdirSync(dir)) {
-    if (!file.endsWith(".skill")) continue;
+  for (const unit of listPlaybooks(archDir)) {
     total++;
-    const id = file.replace(/\.skill$/, "");
-    const content = fs.readFileSync(path.join(dir, file), "utf8");
+    const content = fs.readFileSync(unit.path, "utf8");
     const wrong = (content.match(/^WRONG:/gm) || []).length;
     const placeholder = (content.match(/^WRONG: \[/gm) || []).length;
     const real = wrong - placeholder;
-    if (real <= 0) empty.push(id);
+    if (real <= 0) empty.push(unit.id);
   }
   return { skills: empty, total };
 }
@@ -212,39 +210,39 @@ export async function runDoctorJson({ archDir, cwd }) {
       id: "D-DRIFT",
       name: "Drift between .arch/ and source tree",
       status: "pass",
-      detail: drift.staleNote || `Checked ${drift.scanned.indexNodes} index node(s), ${drift.scanned.graphFiles} graph(s), ${drift.scanned.skillFiles} skill(s).`,
+      detail: drift.staleNote || `Checked ${drift.scanned.indexNodes} index node(s), ${drift.scanned.graphFiles} graph(s), ${drift.scanned.skillFiles} playbook(s).`,
     });
   }
 
-  // Intent C1: empty skills.
+  // Intent C1: empty playbooks.
   if (emptySkills.total === 0) {
     checks.push({
       id: "D-INTENT-1",
-      name: "Skill gotcha coverage",
+      name: "Playbook gotcha coverage",
       status: "warn",
-      detail: "No .skill files present — review has no project-specific patterns to enforce.",
+      detail: "No playbook files present — review has no project-specific patterns to enforce.",
     });
     warnings.push(
-      "[intent] No .skill files in .arch/skills/. Without gotchas, archkit review can't catch project-specific footguns. Run `archkit extend run add-skill <name>`."
+      "[intent] No playbook files in .arch/playbooks/ (or legacy .arch/skills/). Without gotchas, archkit review can't catch project-specific footguns. Run `archkit extend run add-skill <name>`."
     );
   } else if (emptySkills.skills.length === 0) {
     checks.push({
       id: "D-INTENT-1",
-      name: "Skill gotcha coverage",
+      name: "Playbook gotcha coverage",
       status: "pass",
-      detail: `${emptySkills.total} skill(s), all carry at least one real WRONG/RIGHT/WHY.`,
+      detail: `${emptySkills.total} playbook(s), all carry at least one real WRONG/RIGHT/WHY.`,
     });
   } else {
     const sample = emptySkills.skills.slice(0, 5).join(", ");
     const more = emptySkills.skills.length > 5 ? `, +${emptySkills.skills.length - 5} more` : "";
     checks.push({
       id: "D-INTENT-1",
-      name: "Skill gotcha coverage",
+      name: "Playbook gotcha coverage",
       status: "warn",
-      detail: `${emptySkills.skills.length}/${emptySkills.total} skill(s) have zero real gotchas: ${sample}${more}`,
+      detail: `${emptySkills.skills.length}/${emptySkills.total} playbook(s) have zero real gotchas: ${sample}${more}`,
     });
     warnings.push(
-      `[intent] ${emptySkills.skills.length} skill(s) with no real WRONG/RIGHT/WHY — they exist on disk but contribute nothing to review. Fill via \`archkit gotcha -i\`: ${sample}${more}`
+      `[intent] ${emptySkills.skills.length} playbook(s) with no real WRONG/RIGHT/WHY — they exist on disk but contribute nothing to review. Fill via \`archkit gotcha -i\`: ${sample}${more}`
     );
   }
 
@@ -341,7 +339,7 @@ export async function runDoctorJson({ archDir, cwd }) {
     name: "Structural warmup (.arch/ core files)",
     status: warmup.pass ? "pass" : "fail",
     detail: warmup.pass
-      ? `SYSTEM.md + INDEX.md + ${warmup.summary.graphs} cluster(s), ${warmup.summary.skills} skill(s).`
+      ? `SYSTEM.md + INDEX.md + ${warmup.summary.graphs} cluster(s), ${warmup.summary.playbooks} playbook(s).`
       : `${warmup.blockers.length} blocker(s). Run \`archkit resolve warmup\` for details.`,
   });
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.15.0 — 2026-06-23
+
+Three bodies of work land together: **CGR 2.0** parallel-lane orchestration (**ADRs 0013–0015**), the **skills → playbooks** rename (**ADR 0016**), and a **CLI dispatch fix**. Everything is additive and back-compat — existing `.arch/` projects and CLI usage keep working unchanged.
+
+### Added — CGR 2.0 orchestration
+
+- **Conductor/worker parallel lanes** with a persistent **append-only board** (`.arch/board/events.ndjson` folded to a derived `session_state`), **fission-based resume** (partial-complete split behind a hard verify gate), and **attention-gradient wind-down** (lease/completion policy knobs). New tools: `archkit_conductor`, `archkit_goal_fission`, `archkit_goal_handoff`, plus a `PreCompact` hook and `SessionStart(clear|compact)` rehydration that reclaims orphaned leases.
+- **Intake emits a dependency DAG + predicted ownership**, partitioned into parallel lanes (cohesion by feature, disjoint `owns` globs, `exclusive` barriers).
+- **AGENTS.md as the canonical orientation core** — `archkit export agents` compiles it (with a token ceiling) and the cursor/windsurf/copilot/aider targets derive from it.
+
+### Changed — playbooks rename (skills → playbooks)
+
+Resolves the namespace collision with Claude Code's first-class Agent Skills (`.claude/skills/`, `SKILL.md`). The operator confirmed the name before the rename; the change is **back-compat by design**.
+
+### Changed
+
+- **Canonical layout is now `.arch/playbooks/<id>.playbook`.** New scaffolds (`archkit init`, `archkit_init_generate`, the wizard) emit `.playbook` files into `.arch/playbooks/`. A new central resolver (`src/lib/playbooks.mjs`) is the single place that locates units; every reader (warmup, stats, drift, sync, gotcha, preflight, MCP resources) goes through it.
+- **MCP, CLI, wizard, and docs vocabulary** now say "playbook". `INDEX.md` uses `## Playbooks → Files` / `## Keywords → Playbooks` headers (the parser still accepts the old `Skills` headers).
+- **New MCP resource `archkit://playbook/{id}`** (the old `archkit://skill/{id}` stays as a deprecated alias). `resolve_warmup` summary gains a `playbooks` count (the `skills` key is kept as a back-compat alias).
+
+### Back-compat (no migration required)
+
+- **Legacy `.arch/skills/<id>.skill` files still load** everywhere — the resolver reads both layouts, with `.playbook` shadowing a same-id `.skill`. MCP tool param names (`skill`, `skills`), JSON output keys (`skills`, `orphaned-skill`, `invalid_skills`), and the `--skills` CLI flag are unchanged so existing callers and tests keep working.
+- **`archkit migrate`** now consolidates a project: renames `.arch/skills/*.skill` → `.arch/playbooks/*.playbook`, moves the README, and removes the drained legacy dir (skips any unit that already exists as a `.playbook`).
+
+### Fixed — CLI dispatch no longer falls through to the wizard
+
+- **Unrecognized input stopped silently launching the interactive scaffold wizard.** `archkit upgrade` (and the dash-typed `-upgrade` / `--upgrade`) now route to the real **`update`** command; `--version` / `-v` and `--help` / `-h` are handled; and an unknown command word prints a **did-you-mean** suggestion and exits non-zero instead of opening the wizard. A bare `archkit` and recognized wizard flags (`--claude`) still launch the wizard. New `tests/cli-dispatch` suite locks this in.
+
 ## v1.10.1 — 2026-06-09
 
 Closes the **CGR graph flywheel** (**ADR 0004**): completed goals now feed the node graph instead of accumulating as a write-only `goals/done/` archive. The graph (INDEX.md + `clusters/*.graph`) — the surface `resolve_warmup`/`resolve_preflight` actually read — gets richer as a side effect of doing the work, in both directions. Three follow-on CGRs shipped as one unit (the flywheel itself, the accept tool, and warmup surfacing — decomposed and run through archkit's own relay). Purely additive; degrades to a no-op on a missing/empty graph (safe on greenfield).

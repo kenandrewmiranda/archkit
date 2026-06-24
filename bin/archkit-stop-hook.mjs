@@ -51,6 +51,7 @@ const {
   getActiveGoal, exitCriteriaOf, verifyCommandOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
   writeGoalProposal, countGoalProposals, consolidateGoals,
 } = await importPath(path.join(LIB, "goals.mjs"));
+const { stopGuardDecision } = await importPath(path.join(LIB, "board.mjs"));
 
 const UTILIZATION_TARGET = 75;
 const BOUNDARIES_RULE_CAP = 12;
@@ -219,10 +220,26 @@ async function main() {
     // and completed (ADR 0003: no premature release).
     const inTesting = (activeGoal.meta.status || "") === "testing";
     const phrase = inTesting ? "in testing (edits applied, verification pending)" : "still in progress";
+    // Per-lane Stop-guard release (conductor-loop-hooks, ADR 0013): CGR 2.0 runs
+    // lanes, so the guard releases per LANE — the lane is DRAINED (no live
+    // unfinished CGR on it) OR this goal produced its wind-down HANDOFF (the
+    // carry-forward is banked for a fresh head). Either way the session can stop
+    // without losing the lane, so don't trap it. Falls through to the per-goal
+    // block below when neither holds (a fresh, handoff-less, populated lane).
+    let guard = { release: false, reason: null };
+    try { guard = stopGuardDecision(archDir, activeGoal); } catch { /* default: block */ }
     if (looksLikeQuestionToUser(assistantResponse)) {
       // Genuine question to the user — surface it, don't trap the agent.
       sections.push(
         `CGR relay: goal "${slug}" is ${phrase}, but your last response reads as a question to the user — not blocking. When unblocked, ${inTesting ? "verify the exit-criteria green" : "finish the exit-criteria"} and call archkit_goal_complete ${slug}.`
+      );
+    } else if (guard.release) {
+      // Lane drained or wind-down handoff produced → release the guard.
+      resetLoopState(archDir);
+      sections.push(
+        guard.reason === "wind-down-handoff"
+          ? `CGR relay: goal "${slug}" produced its wind-down handoff (lane "${guard.lane}") — guard RELEASED. The remainder is banked for a fresh head; archkit_goal_complete ${slug} if it's verified green, or park it with archkit_goal_testing ${slug}.`
+          : `CGR relay: lane "${guard.lane}" is drained — no live CGR left on it — so the per-lane guard is RELEASED. Close out goal "${slug}" with archkit_goal_complete ${slug} (or archkit_goal_testing ${slug} if verification is still pending).`
       );
     } else {
       const blocks = bumpLoopBlock(archDir, slug);

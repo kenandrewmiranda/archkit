@@ -13,9 +13,12 @@
 import fs from "fs";
 import path from "path";
 import { isMainModule, C, ICONS as I, findArchDir as _findArchDir, divider } from "../lib/shared.mjs";
+import { listPlaybooks } from "../lib/playbooks.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { archkitError } from "../lib/errors.mjs";
+import { compileAgentsMd, agentsTokenReport, AGENTS_MD_FILE, AGENTS_MD_TOKEN_CEILING } from "../lib/compile.mjs";
+import { parseSystem } from "../lib/parsers.mjs";
 
 function banner() {
   commandBanner("arch-stats", "Context engineering health dashboard");
@@ -59,11 +62,10 @@ function analyzeIndex(archDir) {
 }
 
 function analyzeSkills(archDir) {
-  const dir = path.join(archDir, "skills");
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter(f => f.endsWith(".skill")).map(f => {
-    const id = f.replace(".skill", "");
-    const content = fs.readFileSync(path.join(dir, f), "utf8");
+  // Reads both .arch/playbooks/*.playbook and legacy .arch/skills/*.skill (ADR 0016).
+  return listPlaybooks(archDir).map(u => {
+    const id = u.id;
+    const content = fs.readFileSync(u.path, "utf8");
     const gotchas = (content.match(/^WRONG:/gm) || []).length;
     const realGotchas = gotchas - (content.match(/^WRONG: \[/gm) || []).length; // Subtract placeholder gotchas
     const hasUse = content.includes("## Use") && !content.includes("[How YOUR");
@@ -101,6 +103,24 @@ function analyzeApis(archDir) {
     const isStub = content.includes("[VERSION]") || content.includes("[BASE_URL]");
     return { id, endpoints, types, isStub, size: content.length };
   });
+}
+
+// Analyze the canonical AGENTS.md orientation core: compile it from .arch/ and
+// measure it against the orientation-core token ceiling. Enforced here (not just
+// at export time) so the ceiling is a first-class health signal — AGENTS.md is
+// always-resident context and bloat is a regression.
+function analyzeAgents(archDir) {
+  const sys = parseSystem(fs.existsSync(path.join(archDir, "SYSTEM.md")) ? fs.readFileSync(path.join(archDir, "SYSTEM.md"), "utf8") : "");
+  const content = compileAgentsMd({ archDir, system: sys });
+  const report = agentsTokenReport(content);
+  return {
+    file: AGENTS_MD_FILE,
+    size: content.length,
+    tokens: report.tokens,
+    ceiling: report.ceiling,
+    withinCeiling: report.withinCeiling,
+    overBy: report.overBy,
+  };
 }
 
 // ── Display functions ───────────────────────────────────────────────────
@@ -211,6 +231,17 @@ function displayApisHealth(apis) {
   }
 }
 
+function displayAgentsHealth(agents) {
+  console.log(`${C.cyan}${C.bold}  AGENTS.md (orientation core)${C.reset}`);
+  const tokenStr = `~${agents.tokens} tokens / ${agents.ceiling} ceiling`;
+  if (agents.withinCeiling) {
+    console.log(`  ${C.green}${I.check}${C.reset} ${tokenStr} | ${agents.size} bytes`);
+  } else {
+    console.log(`  ${C.red}${I.cross} OVER CEILING by ${agents.overBy} tokens${C.reset} (${tokenStr})`);
+    console.log(`  ${C.dim}  Trim .arch/ SYSTEM Summary, rules, or routing and re-run \`archkit export agents\`.${C.reset}`);
+  }
+}
+
 function calculateHealthScore(sys, idx, skills, graphs, apis) {
   let score = 0;
   const checks = [];
@@ -266,8 +297,9 @@ function calculateHealthScore(sys, idx, skills, graphs, apis) {
   return { score, pct, checks };
 }
 
-function buildRecommendations(sys, idx, skills, graphs, apis) {
+function buildRecommendations(sys, idx, skills, graphs, apis, agents) {
   const recs = [];
+  if (agents && !agents.withinCeiling) recs.push(`AGENTS.md is ${agents.overBy} tokens over the ${agents.ceiling}-token orientation-core ceiling — trim SYSTEM Summary / rules / routing`);
   if (!sys.exists) recs.push("Run archkit to generate SYSTEM.md");
   if (!idx.exists) recs.push("Run archkit to generate INDEX.md");
   if (idx.exists && idx.crossRefs === 0) recs.push("Add cross-references to INDEX.md (which features depend on which)");
@@ -284,7 +316,7 @@ function buildRecommendations(sys, idx, skills, graphs, apis) {
   return recs;
 }
 
-function displayOverallScore(sys, idx, skills, graphs, apis) {
+function displayOverallScore(sys, idx, skills, graphs, apis, agents) {
   console.log(`${C.cyan}${C.bold}  Overall Health Score${C.reset}`);
   console.log("");
 
@@ -306,7 +338,7 @@ function displayOverallScore(sys, idx, skills, graphs, apis) {
 
   console.log("");
 
-  const recs = buildRecommendations(sys, idx, skills, graphs, apis);
+  const recs = buildRecommendations(sys, idx, skills, graphs, apis, agents);
 
   if (recs.length > 0) {
     console.log(`  ${C.yellow}${C.bold}Recommendations:${C.reset}`);
@@ -325,15 +357,16 @@ export async function runStatsJson({ archDir }) {
   const skills = analyzeSkills(archDir);
   const graphs = analyzeGraphs(archDir);
   const apis = analyzeApis(archDir);
+  const agents = analyzeAgents(archDir);
   const health = calculateHealthScore(sys, idx, skills, graphs, apis);
-  const recommendations = buildRecommendations(sys, idx, skills, graphs, apis);
+  const recommendations = buildRecommendations(sys, idx, skills, graphs, apis, agents);
   const recommendationsNote = recommendations.length === 0
     ? `No improvements suggested — .arch/ is well-maintained at this snapshot.`
     : undefined;
   const nextStep = recommendations.length > 0
     ? `Act on the top recommendation: "${recommendations[0]}"`
     : `Health is good (${health.pct}%). Re-run after adding skills/clusters or whenever review noise feels off.`;
-  return { health, system: sys, index: idx, skills, graphs, apis, recommendations, recommendationsNote, nextStep };
+  return { health, system: sys, index: idx, skills, graphs, apis, agents, recommendations, recommendationsNote, nextStep };
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
@@ -360,6 +393,7 @@ async function main() {
   const skills = analyzeSkills(archDir);
   const graphs = analyzeGraphs(archDir);
   const apis = analyzeApis(archDir);
+  const agents = analyzeAgents(archDir);
 
   log.stats(`Found ${skills.length} skills, ${graphs.length} graphs`);
 
@@ -413,12 +447,14 @@ async function main() {
       displayApisHealth(apis);
       console.log("");
     }
+    displayAgentsHealth(agents);
+    console.log("");
     divider();
     console.log("");
   }
 
   if (showAll || args.includes("--stale")) {
-    displayOverallScore(sys, idx, skills, graphs, apis);
+    displayOverallScore(sys, idx, skills, graphs, apis, agents);
     console.log("");
   }
 }

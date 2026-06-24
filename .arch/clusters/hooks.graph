@@ -6,3 +6,4 @@ UserPrompt   [M]  : bin/archkit-userpromptsubmit-hook.mjs — intent nudges inje
 McpEntry     [C]  : bin/archkit-mcp.mjs — stdio MCP server entrypoint | ClaudeCode → THIS → McpServer
 ClaudeHook   [M]  : bin/archkit-claude-hook.mjs — legacy/aggregate hook shim | ClaudeCode → THIS
 ---
+PreCompact   [M]  : bin/archkit-precompact-hook.mjs — CGR PreCompact flush: snapshots board + nudges handoff authoring before compaction | ClaudeCode → THIS → Board

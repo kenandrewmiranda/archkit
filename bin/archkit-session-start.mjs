@@ -24,10 +24,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const importPath = (p) => import(pathToFileURL(p).href);
 
 function findArchDir(start) {
   let dir = start;
@@ -92,9 +93,52 @@ function buildSetupContext() {
   ].join("\n");
 }
 
+// CGR 2.0 conductor rehydration (conductor-loop-hooks, ADR 0013/0014): when a
+// session opens after a /clear or compaction, reconstitute the conductor from the
+// folded board — reclaim orphan leases (TTL elapsed → reclaimable), consume the
+// PreCompact flush marker, and surface what is still in flight + the merge order +
+// the deep-review exceptions. Best-effort: a rehydration failure degrades to the
+// static digest, never blocks the session. Returns "" when there's nothing live.
+async function buildRehydrationContext(archDir, source) {
+  // Only the reset sources need rehydration — a fresh startup has no prior
+  // conductor state to fold back, and resume keeps its context.
+  if (source !== "clear" && source !== "compact") return "";
+  let rehydrate;
+  try {
+    ({ rehydrateConductor: rehydrate } = await importPath(path.resolve(__dirname, "..", "src", "lib", "board.mjs")));
+  } catch { return ""; }
+
+  let result;
+  try { result = rehydrate(archDir); } catch { return ""; }
+  const { reclaimed, flush, plan } = result;
+  const c = plan.counts;
+  const hasState = c.frontier || c.in_flight || c.merge_queue || c.leases_expired || (reclaimed && reclaimed.length);
+  if (!hasState) return "";
+
+  const lines = [
+    `[archkit CGR conductor — rehydrated after ${source}] The board is folded back from .arch/board/events.ndjson + the CGR files (it survived the ${source}).`,
+  ];
+  if (reclaimed && reclaimed.length) {
+    lines.push(`Reclaimed ${reclaimed.length} orphan lease${reclaimed.length === 1 ? "" : "s"} (TTL elapsed): ${reclaimed.map((r) => r.slug).join(", ")} — back on the frontier.`);
+  }
+  if (flush) {
+    const fp = Array.isArray(flush.handoffsPending) ? flush.handoffsPending : [];
+    lines.push(`A PreCompact flush marker was present (trigger: ${flush.trigger || "n/a"})${fp.length ? `; in-flight CGRs that still need a handoff: ${fp.join(", ")}` : ""}.`);
+  }
+  lines.push(
+    `In flight: ${plan.inFlight.map((f) => f.slug).join(", ") || "(none)"}.`,
+    `Merge queue (dependency order): ${plan.mergeOrder.map((m) => m.slug).join(" → ") || "(empty)"}.`,
+  );
+  if (plan.exceptions.length) {
+    lines.push(`Deep-review exceptions: ${plan.exceptions.map((e) => `${e.slug} (${e.reasons.join(", ")})`).join("; ")}.`);
+  }
+  lines.push(`You are the CONDUCTOR — run archkit_conductor (or /mcp__archkit__conductor) to plan the next dispatch pass: claim frontier lanes, spawn worktree-isolated workers, deep-review only the exceptions, merge sequentially with verify-after-each.`);
+  return lines.join("\n");
+}
+
 let raw = "";
 process.stdin.on("data", (c) => (raw += c));
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
   let event = {};
   try { event = JSON.parse(raw); } catch { /* ignore — fall through to cwd */ }
 
@@ -104,6 +148,11 @@ process.stdin.on("end", () => {
   let additionalContext;
   if (archDir) {
     additionalContext = IN_PROJECT_CONTEXT;
+    // Append a conductor-rehydration digest after a /clear or compaction.
+    try {
+      const rehydration = await buildRehydrationContext(archDir, event.source);
+      if (rehydration) additionalContext = `${additionalContext}\n\n${rehydration}`;
+    } catch { /* best-effort — keep the static digest */ }
   } else {
     additionalContext = buildSetupContext();
   }

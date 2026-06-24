@@ -474,10 +474,10 @@ async function stepSkills(state) {
   }]);
 
   console.log("");
-  success(`${skills.length} skill skeletons will be generated.`);
+  success(`${skills.length} playbook skeletons will be generated.`);
   skills.forEach(s => {
     const sk = SKILL_CATALOG.find(c => c.id === s);
-    info(`  ${ICONS.dot} ${sk.name} → .arch/skills/${s}.skill`);
+    info(`  ${ICONS.dot} ${sk.name} → .arch/playbooks/${s}.playbook`);
   });
 
   return { skills };
@@ -570,11 +570,11 @@ async function stepPreview(state) {
   if (at.reservedWords["$bus"]) {
     console.log(`${C.gray}    ${ICONS.corner}── events.graph ${C.dim}— domain event definitions${C.reset}`);
   }
-  tree(`${C.bold}skills/${C.reset}`);
+  tree(`${C.bold}playbooks/${C.reset}`);
   skills.forEach((s, i) => {
     const sk = SKILL_CATALOG.find(c => c.id === s);
     const isLast = i === skills.length - 1;
-    console.log(`${C.gray}    ${isLast ? ICONS.corner : ICONS.tee}── ${s}.skill ${C.dim}— ${sk.name} gotchas${C.reset}`);
+    console.log(`${C.gray}    ${isLast ? ICONS.corner : ICONS.tee}── ${s}.playbook ${C.dim}— ${sk.name} gotchas${C.reset}`);
   });
 
   const apiSkills = skills.filter(s => ["stripe","killbill","meilisearch","opensearch","saleor","langfuse","llm_sdk"].includes(s));

@@ -13,7 +13,7 @@
 
 ### Context Engineering for AI Coding Agents
 
-archkit compiles your architecture into a machine-readable blueprint — graphs, skills, API contracts, and guardrails — so AI agents produce code that fits your system instead of fighting it.
+archkit compiles your architecture into a machine-readable blueprint — graphs, playbooks, API contracts, and guardrails — so AI agents produce code that fits your system instead of fighting it.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)]()
@@ -38,7 +38,7 @@ archkit solves this by compiling your architecture into structured files the age
   |  Your        | -----> |  SYSTEM.md    rules       | -----> |  AI Agent     |
   |  Codebase    |        |  INDEX.md     routing     |        |  writes code  |
   |              |        |  clusters/    graphs      |        |  that fits    |
-  |              |        |  skills/      gotchas     |        |               |
+  |              |        |  playbooks/   gotchas     |        |               |
   +--------------+        |  apis/        contracts   |        +---------------+
                           |  lenses/      overlays    |
                           +---------------------------+
@@ -183,9 +183,9 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 **Resolve & scaffold**
 - `archkit_init` — greenfield setup; returns the wizard inline
 - `archkit_resolve_warmup` — pre-session health check
-- `archkit_resolve_preflight` — verify a feature/layer before coding (recent commits, scoped gotchas, drift, **related ADRs**, required-reading skills)
+- `archkit_resolve_preflight` — verify a feature/layer before coding (recent commits, scoped gotchas, drift, **related ADRs**, required-reading playbooks)
 - `archkit_resolve_scaffold` — new-feature checklist
-- `archkit_resolve_lookup` — look up a node, skill, or cluster by id
+- `archkit_resolve_lookup` — look up a node, playbook, or cluster by id
 
 **Review & boundaries**
 - `archkit_review` / `archkit_review_staged` — review files / git-staged files against rules + gotchas
@@ -231,7 +231,7 @@ The CGR relay surfaces as **user-typed** slash commands (prompts are user-initia
 `.arch/` artifacts as `@archkit:` handles — referenced by URI, no tool round-trip:
 
 - `archkit://system`, `archkit://index`, `archkit://boundaries`
-- `archkit://skill/{id}`, `archkit://decision/{number}`
+- `archkit://playbook/{id}` (alias `archkit://skill/{id}`), `archkit://decision/{number}`
 
 All tools return structured JSON in MCP `text` content with a `nextStep` field naming the next action. Empty results carry a `<field>Note` explaining what was checked. Errors flow through `isError: true` with the standard archkit envelope (`code`, `message`, `suggestion`, `docsUrl`).
 
@@ -349,9 +349,9 @@ Within a single goal, archkit's agent workflow is a six-step loop, each step exp
 |-- SYSTEM.md              # Rules, reserved words, session management       ~800-1200 tokens
 |-- BOUNDARIES.md          # Hard NEVER rules (universal + app-type)         ~300-500 tokens
 |-- CONTEXT.compact.md     # 500-token injectable for cheap models           ~500 tokens
-|-- INDEX.md               # Keyword -> node/skill routing + cross-refs      ~400-800 tokens
+|-- INDEX.md               # Keyword -> node/playbook routing + cross-refs   ~400-800 tokens
 |-- clusters/*.graph       # Architecture graphs (Key-Rel-Dep v2)            ~100 each
-|-- skills/*.skill         # Package gotchas — WRONG / RIGHT / WHY           ~200 each
+|-- playbooks/*.playbook   # Package gotchas — WRONG / RIGHT / WHY           ~200 each
 |-- apis/*.api             # API contract digest stubs                       ~100 each
 \-- lenses/*.md            # Research / Implement / Review overlays          ~150 each
 ```
@@ -395,13 +395,13 @@ archkit detects or asks for your application type and tailors rules, review logi
 
 **Static review engine.** Nine check modules apply rules to staged or arbitrary files and return findings with stable IDs (`floating-promise`, `boundary-violation`, `mock-data-leftover`, …). Architecture-critical rules are un-suppressible; others require a substantive reason — `// archkit: ignore <id> — <why>` — and vague reasons (`"fixed"`, `"n/a"`) are themselves flagged as `weak-suppression`.
 
-**Live runtime lens.** `preflight` merges three perspectives at query time: recent git activity on the feature path, gotchas scoped to the affected skill, and active drift. The agent sees a 1-second view of current repository state rather than the stale snapshot a compiled file would provide.
+**Live runtime lens.** `preflight` merges three perspectives at query time: recent git activity on the feature path, gotchas scoped to the affected playbook, and active drift. The agent sees a 1-second view of current repository state rather than the stale snapshot a compiled file would provide.
 
 **Token budgeting.** Every generated file declares its cost; the `stats` command enforces ceilings on always-loaded context. `CONTEXT.compact.md` (500-token) is a cost-downgrade for cheap models.
 
 **Extension safety.** Third-party extensions pass a 22-rule security gate (`archkit guard validate`) that enforces sandbox invariants — no `process.exit`, no network writes, no path traversal, no shell eval. `archkit guard audit` runs the full `.arch/` audit.
 
-**Knowledge feedback loop.** Agents propose gotchas via `gotcha --propose`, which queue for human review (`gotcha --review`) before entering the canonical skill. This prevents noise without blocking capture.
+**Knowledge feedback loop.** Agents propose gotchas via `gotcha --propose`, which queue for human review (`gotcha --review`) before entering the canonical playbook. This prevents noise without blocking capture.
 
 ---
 
@@ -421,7 +421,7 @@ archkit detects or asks for your application type and tailors rules, review logi
 | `archkit init --install-hooks --claude` | Install git + Claude Code PreToolUse hooks |
 | `archkit init --install-hooks --claude-only` | Install only Claude Code hook |
 | `archkit init --app-type <type>` | Override auto-detected app type |
-| `archkit init --skills <a,b,c>` | Override auto-detected skills |
+| `archkit init --skills <a,b,c>` | Override auto-detected playbooks (flag name kept for back-compat) |
 | `archkit migrate` | Upgrade 1.0 → 1.1 in place |
 | `archkit update` | Self-update from GitHub |
 
@@ -435,7 +435,7 @@ archkit detects or asks for your application type and tailors rules, review logi
 | `archkit resolve warmup [--deep]` | Pre-session health check (blockers = stop) |
 | `archkit resolve preflight <feature> <layer>` | Live runtime view: recent commits, scoped gotchas, drift |
 | `archkit resolve scaffold <feature> [--apply]` | Generate source skeleton with AGENT-VALIDATION blocks (dry-run by default) |
-| `archkit resolve lookup <id>` | Look up any node, skill, or cluster |
+| `archkit resolve lookup <id>` | Look up any node, playbook, or cluster |
 | `archkit resolve verify-wiring [src-dir]` | Detect dead code / unwired components |
 | `archkit resolve audit-spec <spec.md> [src-dir]` | Check spec requirement coverage |
 
@@ -476,7 +476,7 @@ archkit detects or asks for your application type and tailors rules, review logi
 | `archkit gotcha <skill> "wrong" "right" "why"` | Direct capture |
 | `archkit gotcha --interactive` | Guided wizard |
 | `archkit gotcha --debrief` | 4-question session debrief |
-| `archkit gotcha --list [--json]` | All skills + counts |
+| `archkit gotcha --list [--json]` | All playbooks + counts |
 | `archkit gotcha --propose --skill <pkg> ...` | Agent-queued proposal |
 | `archkit gotcha --list-proposals [--json]` | List pending proposals |
 | `archkit gotcha --review` | Interactive accept/edit/reject |

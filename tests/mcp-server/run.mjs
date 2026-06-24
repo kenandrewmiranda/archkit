@@ -90,7 +90,7 @@ await log("initialize handshake succeeds", async () => {
   }
 });
 
-await log("tools/list returns all 37 tools", async () => {
+await log("tools/list returns all 41 tools", async () => {
   const tmp = makeFixture();
   try {
     await withClient(tmp, async (client) => {
@@ -100,6 +100,7 @@ await log("tools/list returns all 37 tools", async () => {
         "archkit_audit_spec",
         "archkit_boundary_check",
         "archkit_boundary_propose",
+        "archkit_conductor",
         "archkit_decisions_search",
         "archkit_doctor",
         "archkit_drift",
@@ -108,6 +109,8 @@ await log("tools/list returns all 37 tools", async () => {
         "archkit_goal_consolidate",
         "archkit_goal_defer",
         "archkit_goal_dismiss",
+        "archkit_goal_fission",
+        "archkit_goal_handoff",
         "archkit_goal_hold",
         "archkit_goal_intake",
         "archkit_goal_list",
@@ -131,6 +134,7 @@ await log("tools/list returns all 37 tools", async () => {
         "archkit_resolve_warmup",
         "archkit_review",
         "archkit_review_staged",
+        "archkit_session_state",
         "archkit_stats",
         "archkit_sync",
         "archkit_verify_wiring",
@@ -221,7 +225,7 @@ await log("prompts/list registers the CGR relay prompts", async () => {
     await withClient(tmp, async (client) => {
       const { prompts } = await client.listPrompts();
       const names = prompts.map(p => p.name).sort();
-      assert.deepEqual(names, ["goal_next", "goal_resume", "goal_review", "goal_status"]);
+      assert.deepEqual(names, ["conductor", "goal_next", "goal_resume", "goal_review", "goal_status"]);
       const next = prompts.find(p => p.name === "goal_next");
       assert.ok(next, "goal_next prompt should be registered");
       assert.equal(typeof next.description, "string");

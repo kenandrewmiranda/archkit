@@ -22,6 +22,7 @@ import path from "path";
 import { execFileSync } from "node:child_process";
 import { isMainModule, C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
 import { loadFile, parseSystem, parseGotchas } from "../lib/parsers.mjs";
+import { listPlaybooks } from "../lib/playbooks.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { checkImportHierarchy } from "./review/import-checks.mjs";
 import { checkRealtimeRules, checkAIRules, checkDataRules, checkMobileRules, checkInternalRules, checkContentRules, getAppType } from "./review/app-checks.mjs";
@@ -54,14 +55,11 @@ function findArchDir() {
 // ── Load .arch/ context ─────────────────────────────────────────────────
 
 function loadSkills(archDir) {
-  const skillsDir = path.join(archDir, "skills");
-  if (!fs.existsSync(skillsDir)) return {};
+  // Reads both .arch/playbooks/*.playbook and legacy .arch/skills/*.skill (ADR 0016).
   const skills = {};
-  for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
-    const id = file.replace(".skill", "");
-    const content = fs.readFileSync(path.join(skillsDir, file), "utf8");
-    const gotchas = parseGotchas(content);
-    skills[id] = { content, gotchas };
+  for (const unit of listPlaybooks(archDir)) {
+    const content = fs.readFileSync(unit.path, "utf8");
+    skills[unit.id] = { content, gotchas: parseGotchas(content) };
   }
   return skills;
 }
@@ -540,7 +538,7 @@ export async function runReviewJson({ files: fileArgs, archDir, cwd, staged, dif
     const code = fs.readFileSync(filepath, "utf8");
     for (const [skillId, skill] of Object.entries(skills)) {
       if (skill.gotchas.length === 0 && code.toLowerCase().includes(skillId)) {
-        gotchaSuggestions.push({ skill: skillId, file: filepath, hint: `${skillId}.skill has 0 gotchas but ${skillId} is used in this file` });
+        gotchaSuggestions.push({ skill: skillId, file: filepath, hint: `${skillId} playbook has 0 gotchas but ${skillId} is used in this file` });
       }
     }
   }
@@ -594,7 +592,7 @@ async function main() {
     console.log(`${C.gray}    archkit review --verify                 Re-check only previously flagged files${C.reset}`);
     console.log("");
     console.log(`${C.yellow}  What it checks:${C.reset}`);
-    console.log(`${C.gray}    ${I.dot} .skill gotchas — known bad patterns from your team's experience${C.reset}`);
+    console.log(`${C.gray}    ${I.dot} .playbook gotchas — known bad patterns from your team's experience${C.reset}`);
     console.log(`${C.gray}    ${I.dot} Architecture rules — controller/service/repo layer violations${C.reset}`);
     console.log(`${C.gray}    ${I.dot} Boundary violations — cross-feature imports${C.reset}`);
     console.log(`${C.gray}    ${I.dot} Convention checks — money as float, generic errors, missing tenant${C.reset}`);

@@ -79,6 +79,9 @@ export function writeClaudeSettings(filepath, settings) {
 export const ARCHKIT_GUARDRAIL_HOOKS = [
   { event: "SessionStart", bin: "archkit-session-start", timeout: 10 },
   { event: "Stop", bin: "archkit-stop-hook", timeout: 8 },
+  // CGR 2.0 conductor: flush in-context state to disk before compaction
+  // (conductor-loop-hooks, ADR 0013/0014). No matcher — fires on every compact.
+  { event: "PreCompact", bin: "archkit-precompact-hook", timeout: 8 },
   { event: "PreToolUse", bin: "archkit-pretooluse-hook", timeout: 5,
     matcher: "Edit|Write|MultiEdit" },
   { event: "PostToolUse", bin: "archkit-posttooluse-hook", timeout: 8,

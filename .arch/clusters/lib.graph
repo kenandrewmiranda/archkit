@@ -10,3 +10,7 @@ Errors      [U]   : src/lib/errors.mjs — archkitError typed-error factory | Al
 Shared      [U]   : src/lib/shared.mjs — findArchDir, color + icon constants | AllCmds → THIS
 ---
 StackDetect [U] : src/lib/stack-detect.mjs — detects whether a cfg's stack is JS/TS (and short-circuits false for non-JS archetypes) to gate verify-wiring guidance | Generators,ScaffoldCore → THIS
+Board [S] : src/lib/board.mjs — append-only CGR event log + derived session_state board, pure fold | McpTools → THIS → Goals
+ClaudeSettings [U] : src/lib/claude-settings.mjs — safe read/merge/write of .claude/settings.json guardrail hooks (the install set) | InitCmd,HooksCmd → THIS
+Compile [U] : src/lib/compile.mjs — compileAgentsMd builds the canonical AGENTS.md orientation core (intent+boundaries+routing) from .arch/; deriveDownstream derives editor exports FROM it; agentsTokenReport enforces the token ceiling, pure | ExportCmd,StatsCmd → THIS → Parsers
+Playbooks [U] : src/lib/playbooks.mjs — central resolver for package-knowledge units, reads BOTH .arch/playbooks/*.playbook and legacy .arch/skills/*.skill (back-compat, ADR 0016) | Warmup,Stats,Drift,Sync,Gotcha,Preflight,Review,Doctor,Parsers → THIS

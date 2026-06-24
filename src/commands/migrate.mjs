@@ -93,11 +93,49 @@ function main() {
     }
   }
 
-  // 3. Merge built-in gotchas into existing .skill files (without overwriting user content)
-  const skillsDir = path.join(archDir, "skills");
+  // 2b. Consolidate the legacy skills/ layout onto the canonical playbooks/
+  // layout (ADR 0016). Renames .arch/skills/<id>.skill → .arch/playbooks/<id>.playbook.
+  // Readers understand both, so this is a tidy-up — safe to run repeatedly.
+  const legacySkillsDir = path.join(archDir, "skills");
+  const playbooksDir = path.join(archDir, "playbooks");
+  if (fs.existsSync(legacySkillsDir)) {
+    const legacyFiles = fs.readdirSync(legacySkillsDir).filter(f => f.endsWith(".skill"));
+    for (const file of legacyFiles) {
+      const id = file.replace(/\.skill$/, "");
+      const from = path.join(legacySkillsDir, file);
+      const to = path.join(playbooksDir, `${id}.playbook`);
+      // Don't clobber a playbook that already exists (partial migration).
+      if (fs.existsSync(to)) continue;
+      changes.push({ file: `playbooks/${id}.playbook`, action: "rename", reason: `Renamed skills/${file} → playbooks/${id}.playbook (skills→playbooks, ADR 0016)` });
+      if (!dryRun) {
+        fs.mkdirSync(playbooksDir, { recursive: true });
+        fs.renameSync(from, to);
+        log.generate(`Renamed skills/${file} → playbooks/${id}.playbook`);
+      }
+    }
+    // Drop the now-empty legacy dir (and migrate its README) when fully drained.
+    if (!dryRun) {
+      const remaining = fs.existsSync(legacySkillsDir) ? fs.readdirSync(legacySkillsDir) : [];
+      const onlyReadme = remaining.length === 1 && remaining[0] === "README.md";
+      if (onlyReadme) {
+        const readmeTo = path.join(playbooksDir, "README.md");
+        fs.mkdirSync(playbooksDir, { recursive: true });
+        if (!fs.existsSync(readmeTo)) fs.renameSync(path.join(legacySkillsDir, "README.md"), readmeTo);
+        else fs.rmSync(path.join(legacySkillsDir, "README.md"));
+      }
+      if (fs.existsSync(legacySkillsDir) && fs.readdirSync(legacySkillsDir).length === 0) {
+        fs.rmdirSync(legacySkillsDir);
+      }
+    }
+  }
+
+  // 3. Merge built-in gotchas into existing playbook files (without overwriting
+  // user content). Operates on the canonical playbooks/ dir after consolidation.
+  const skillsDir = fs.existsSync(playbooksDir) ? playbooksDir : legacySkillsDir;
+  const unitExt = skillsDir === playbooksDir ? ".playbook" : ".skill";
   if (fs.existsSync(skillsDir)) {
-    for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
-      const skillId = file.replace(".skill", "");
+    for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(unitExt))) {
+      const skillId = file.replace(new RegExp(`\\${unitExt}$`), "");
       const builtins = GOTCHA_DB[skillId];
       if (!builtins || builtins.length === 0) continue;
 
@@ -127,10 +165,10 @@ function main() {
       }
 
       if (added > 0) {
-        changes.push({ file: `skills/${skillId}.skill`, action: "merge", reason: `${added} built-in gotcha${added > 1 ? "s" : ""} added (user gotchas preserved)` });
+        changes.push({ file: `${path.basename(skillsDir)}/${skillId}${unitExt}`, action: "merge", reason: `${added} built-in gotcha${added > 1 ? "s" : ""} added (user gotchas preserved)` });
         if (!dryRun) {
           fs.writeFileSync(skillPath, updatedContent);
-          log.generate(`Merged ${added} gotchas into ${skillId}.skill`);
+          log.generate(`Merged ${added} gotchas into ${skillId}${unitExt}`);
         }
       }
 
@@ -151,8 +189,8 @@ function main() {
           metaContent = metaContent.replace(/updated:\s*\[YYYY-MM-DD\]/, `updated: ${new Date().toISOString().split("T")[0]}`);
           if (metaContent !== updatedContent) {
             fs.writeFileSync(skillPath, metaContent);
-            changes.push({ file: `skills/${skillId}.skill`, action: "update-meta", reason: "Auto-populated package name, version, docs URL" });
-            log.generate(`Updated Meta in ${skillId}.skill`);
+            changes.push({ file: `${path.basename(skillsDir)}/${skillId}${unitExt}`, action: "update-meta", reason: "Auto-populated package name, version, docs URL" });
+            log.generate(`Updated Meta in ${skillId}${unitExt}`);
           }
         }
       }

@@ -248,6 +248,15 @@ export function writeGoal(archDir, goal) {
     "files-to-touch": goal.filesToTouch || [],
     "required-reading": goal.requiredReading || [],
     "depends-on": goal.dependsOn || [],
+    // CGR 2.0 parallel-lane prediction (intake-dag-ownership): `owns` are the file
+    // globs this goal claims (the unit of conflict/lane partitioning), `feature` is
+    // the cohesion tag lanes group by, and `exclusive` flags a cross-cutting goal
+    // that must run solo as a barrier. All optional and only stamped when provided,
+    // so goals predating these fields are untouched. dependsOn above already carries
+    // the DAG edges (dependsOnOf unions depends-on + depends_on).
+    ...(goal.owns && goal.owns.length ? { owns: goal.owns } : {}),
+    ...(goal.feature ? { feature: goal.feature } : {}),
+    ...(goal.exclusive ? { exclusive: true } : {}),
     "verify-command": goal.verifyCommand || "",
     "source-ask": goal.sourceAsk || "",
   };
@@ -952,6 +961,264 @@ export function verifyCommandOf(goal) {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// CGR 2.0 extended frontmatter (board-state-manager / ADR 0014)
+//
+// The persistent board needs richer per-CGR structure than the base lifecycle
+// fields: `lane` (which parallel track the CGR runs on), `owns` (file globs this
+// CGR claims — the unit of conflict detection), `depends_on` (cross-CGR ordering),
+// `exclusive` (must run alone in its lane), `completion` (full|partial — fission
+// marks a split CGR partial), `lease` ({worker, expires} — the claim TTL so an
+// orphaned in-flight CGR can be reclaimed), `lineage` ({forked_from, supersedes,
+// superseded_by} — fission ancestry, linked both ways), per-criterion `met` flags,
+// and a `handoff` pointer (the carry-forward artifact authored at wind-down).
+//
+// Object fields (lease/lineage) are stored as INLINE JSON in the simple
+// key:value frontmatter — this keeps the no-YAML-dependency format (parseGoal
+// stores a `{...}` value verbatim as a string, emitFrontmatter writes it back
+// unchanged) while still round-tripping. The accessors below parse them back.
+// Every accessor is tolerant (missing / scalar / malformed → null or []) and
+// never throws, mirroring the rest of this module.
+// ───────────────────────────────────────────────────────────────────────────
+
+function parseJsonField(v) {
+  if (v == null) return null;
+  if (typeof v === "object") return v;
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s) return null;
+  try { const o = JSON.parse(s); return o && typeof o === "object" ? o : null; }
+  catch { return null; }
+}
+
+export function laneOf(goal) {
+  const v = goal?.meta?.lane;
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+// File globs a CGR claims ownership of — the basis for conflict/exclusivity.
+export function ownsOf(goal) {
+  return ensureArray(goal?.meta?.owns).map((s) => String(s).trim()).filter(Boolean);
+}
+
+// Cross-CGR ordering. The new underscore form (`depends_on`) is canonical and is
+// unioned with the base `depends-on` field so the two vocabularies stay one set.
+export function dependsOnOf(goal) {
+  const out = [];
+  const seen = new Set();
+  for (const d of [...ensureArray(goal?.meta?.depends_on), ...ensureArray(goal?.meta?.["depends-on"])]) {
+    const s = String(d).trim();
+    if (s && !seen.has(s)) { seen.add(s); out.push(s); }
+  }
+  return out;
+}
+
+// Must this CGR run alone in its lane? Tolerates the frontmatter scalar being the
+// string "true" (parseGoal reads everything as strings) or a real boolean.
+export function exclusiveOf(goal) {
+  const v = goal?.meta?.exclusive;
+  return v === true || v === "true";
+}
+
+// The feature-cohesion tag — the PRIMARY lane-grouping signal (intake-dag-ownership).
+// CGRs sharing a feature touch the same surface, so they're kept in one lane (serial,
+// context-warm). Slugified-ish: trimmed, lowercased so "Auth UI" and "auth ui" group.
+// Empty/missing → null (an untagged goal groups only by owns-overlap).
+export function featureOf(goal) {
+  const v = goal?.meta?.feature;
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return s || null;
+}
+
+export function completionOf(goal) {
+  const v = goal?.meta?.completion;
+  return v === "full" || v === "partial" ? v : null;
+}
+
+// The claim lease: { worker, expires }. Parsed from inline JSON; missing keys
+// degrade to null rather than throwing.
+export function leaseOf(goal) {
+  const o = parseJsonField(goal?.meta?.lease);
+  if (!o) return null;
+  return { worker: o.worker ?? null, expires: o.expires ?? null };
+}
+
+// Fission ancestry: { forked_from, supersedes, superseded_by }. Parsed from
+// inline JSON; a CGR with no lineage returns null.
+export function lineageOf(goal) {
+  const o = parseJsonField(goal?.meta?.lineage);
+  if (!o) return null;
+  return {
+    forked_from: o.forked_from ?? null,
+    supersedes: o.supersedes ?? null,
+    superseded_by: o.superseded_by ?? null,
+  };
+}
+
+// Per-criterion met flags, aligned by index with exit-criteria. Coerces the
+// string "true"/booleans the block-array parser yields into real booleans.
+export function criteriaMetOf(goal) {
+  return ensureArray(goal?.meta?.["criteria-met"]).map((v) => v === true || v === "true");
+}
+
+// Pointer to the carry-forward handoff artifact (e.g. .arch/board/handoff/<slug>.md).
+export function handoffOf(goal) {
+  const v = goal?.meta?.handoff;
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+// The board-extended frontmatter keys, mapping a friendly input name to its
+// frontmatter key. lease/lineage are object fields serialized to inline JSON;
+// everything else is a scalar or block-array emitFrontmatter already handles.
+const EXTENDED_FIELD_MAP = Object.freeze({
+  lane: "lane",
+  owns: "owns",
+  dependsOn: "depends_on",
+  exclusive: "exclusive",
+  completion: "completion",
+  lease: "lease",
+  lineage: "lineage",
+  criteriaMet: "criteria-met",
+  handoff: "handoff",
+});
+const EXTENDED_JSON_FIELDS = new Set(["lease", "lineage"]);
+
+// Stamp CGR 2.0 extended frontmatter onto an existing live goal IN PLACE (the
+// file stays in its current location). Only the keys present in `fields` are
+// touched; passing a key as null/undefined deletes it. Object fields (lease,
+// lineage) are serialized to inline JSON so the no-YAML frontmatter round-trips.
+// This is how the conductor records lane/owns/depends_on/lease/lineage onto a CGR
+// — the board itself stays derived (it only READS these via the accessors above).
+export function stampGoalFields(archDir, slug, fields = {}) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) throw new Error(`unknown goal: ${slug}`);
+  for (const [inputKey, metaKey] of Object.entries(EXTENDED_FIELD_MAP)) {
+    if (!(inputKey in fields)) continue;
+    const val = fields[inputKey];
+    if (val == null) { delete goal.meta[metaKey]; continue; }
+    goal.meta[metaKey] = EXTENDED_JSON_FIELDS.has(metaKey) ? JSON.stringify(val) : val;
+  }
+  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+  fs.writeFileSync(goal.filepath, out);
+  return { slug, filepath: goal.filepath };
+}
+
+// ── Fission: partial-complete split (fission-transition, ADR 0014/0015) ──
+//
+// At wind-down a fully-met CGR closes normally; a partially-met CGR SPLITS: the
+// finished portion closes as a terminal `partial` record and a LEAN successor CGR
+// is forked carrying ONLY the unmet exit-criteria + a carry-forward handoff +
+// lineage linked both ways (forked_from / superseded_by). These PURE helpers do
+// the criteria partition + successor authoring; the verify GATE that guards the
+// split (block on unverifiable/red — no silent debt fork) lives in the command
+// layer (runGoalFission) where the test-runner runs, mirroring runGoalComplete.
+
+// True when a goal is a fission CONTINUATION — it carries a lineage.forked_from
+// pointer. The scheduler prefers continuations (warm carry-forward) over cold
+// pending work (ADR 0014). Tolerant: a goal with no lineage → false.
+export function isContinuation(goal) {
+  const l = lineageOf(goal);
+  return Boolean(l && l.forked_from);
+}
+
+// Stable partition that floats fission continuations to the front while
+// preserving listGoals order within each group — the scheduler's "prefer the
+// continuation over cold pending work" rule, expressed as a reordering.
+function preferContinuations(goals) {
+  return [...goals.filter(isContinuation), ...goals.filter((g) => !isContinuation(g))];
+}
+
+// Split a goal's exit-criteria into MET / UNMET by a per-criterion boolean flag
+// vector (the worker's report), falling back to the goal's stamped criteria-met.
+// PURE; tolerant of a missing/short flag vector (an absent flag reads as unmet).
+// Returns { criteria:[{index,text,met}], met:[…], unmet:[…], metFlags:[bool],
+// total, fullyMet, noneMet, partiallyMet }.
+export function partitionCriteria(goal, metOverride) {
+  const criteria = exitCriteriaOf(goal);
+  const flags = Array.isArray(metOverride)
+    ? metOverride.map((v) => v === true || v === "true")
+    : criteriaMetOf(goal);
+  const items = criteria.map((text, i) => ({ index: i, text, met: Boolean(flags[i]) }));
+  const met = items.filter((x) => x.met).map((x) => x.text);
+  const unmet = items.filter((x) => !x.met).map((x) => x.text);
+  const total = criteria.length;
+  return {
+    criteria: items,
+    met,
+    unmet,
+    metFlags: items.map((x) => x.met),
+    total,
+    fullyMet: total > 0 && unmet.length === 0,
+    noneMet: met.length === 0,
+    partiallyMet: met.length > 0 && unmet.length > 0,
+  };
+}
+
+// The wind-down close decision (exit-criterion 1): a fully-met CGR completes
+// normally, a partially-met CGR fissions, anything else (none met / no criteria
+// at all) is a no-op the caller surfaces. PURE.
+export function fissionDecision(goal, metOverride) {
+  const p = partitionCriteria(goal, metOverride);
+  const action = p.fullyMet ? "complete" : p.partiallyMet ? "fission" : "none";
+  return { action, ...p };
+}
+
+// A collision-free successor slug for a fission split: `<slug>-cont`, then
+// `<slug>-cont-2`, … skipping any slug already taken by a live OR archived goal.
+export function successorSlugFor(archDir, slug) {
+  const taken = (s) => Boolean(loadGoal(archDir, s)) || isGoalDone(archDir, s);
+  const base = `${slug}-cont`;
+  if (!taken(base)) return base;
+  let n = 2;
+  while (taken(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+// Fork a LEAN successor CGR from a partially-met parent: a new pending goal
+// carrying ONLY the unmet criteria, inheriting the parent's verify-command,
+// files-to-touch/owns/lane/feature/depends-on/epic/project so it can be worked as
+// its own goal, with lineage (forked_from + supersedes → parent) and the
+// carry-forward handoff pointer. Links the parent forward (lineage.superseded_by
+// → successor) while preserving the parent's own prior forked_from (lineage
+// chains across repeated fissions). The successor inherits the parent's `order`
+// so it slots where the parent ran; the scheduler's continuation-preference
+// floats it ahead of cold pending work regardless. Returns { successor, filepath }.
+export function forkSuccessor(archDir, slug, { successorSlug, unmet, handoff } = {}) {
+  const parent = loadGoal(archDir, slug);
+  if (!parent) throw new Error(`unknown goal: ${slug}`);
+  const succ = String(successorSlug || "").trim() || successorSlugFor(archDir, slug);
+  const m = parent.meta;
+  const orderNum = Number(m.order);
+  const { filepath } = writeGoal(archDir, {
+    slug: succ,
+    title: `${m.title || slug} (cont.)`,
+    exitCriteria: ensureArray(unmet),
+    filesToTouch: filesToTouchOf(parent),
+    requiredReading: ensureArray(m["required-reading"]),
+    dependsOn: dependsOnOf(parent),
+    owns: ownsOf(parent),
+    ...(featureOf(parent) ? { feature: featureOf(parent) } : {}),
+    ...(exclusiveOf(parent) ? { exclusive: true } : {}),
+    ...(m.epic ? { epic: m.epic } : {}),
+    ...(Number.isFinite(orderNum) ? { order: orderNum } : {}),
+    ...(m.project ? { project: m.project } : {}),
+    verifyCommand: verifyCommandOf(parent) || "",
+    sourceAsk: m["source-ask"] || "",
+  });
+  // Successor lineage + carry-forward handoff + inherited lane.
+  stampGoalFields(archDir, succ, {
+    lineage: { forked_from: slug, supersedes: slug, superseded_by: null },
+    ...(handoff ? { handoff } : {}),
+    ...(laneOf(parent) ? { lane: laneOf(parent) } : {}),
+  });
+  // Link the parent forward — preserve its existing lineage (repeated fissions).
+  const prior = lineageOf(parent) || {};
+  stampGoalFields(archDir, slug, {
+    lineage: { forked_from: prior.forked_from ?? null, supersedes: prior.supersedes ?? null, superseded_by: succ },
+  });
+  return { successor: succ, filepath };
+}
+
 // The single guarded goal, or null. A goal is guarded while in-progress OR in
 // `testing` (verification pending) — both keep the Stop-hook relay engaged. In
 // fresh-context relay there should be at most one; prefer an in-progress goal,
@@ -1039,6 +1306,200 @@ export function detectFileConflicts(archDir, slug) {
   } catch { return []; }
   if (!target) return [];
   return computeFileConflicts(target, all);
+}
+
+// ── Glob-aware ownership overlap (intake-dag-ownership) ──
+//
+// The single source of truth for "do these two file claims collide?", shared by
+// the board's conflict slice (board.mjs imports these) and the intake lane
+// partitioner below. Deliberately NOT a full glob engine: a claim's literal
+// PREFIX (everything before the first `*`) is what matters for ownership, so two
+// patterns intersect when one prefix prefixes the other. This catches `src/lib/*`
+// vs `src/lib/board.mjs` and `src/auth/` vs `src/auth/login.mjs` without depending
+// on a matcher. Pure; tolerant of blanks (a blank claim owns nothing → no overlap).
+
+// Everything before the first glob `*` in a pattern, with a leading ./ stripped.
+export function claimPrefix(pattern) {
+  const p = String(pattern || "").replace(/^\.\//, "").trim();
+  const star = p.indexOf("*");
+  return star === -1 ? p : p.slice(0, star);
+}
+
+// Do two individual claim patterns intersect? Identical non-empty patterns do;
+// otherwise their literal prefixes must be prefix-comparable.
+export function globsIntersect(a, b) {
+  if (a === b) return Boolean(String(a || "").trim());
+  const pa = claimPrefix(a), pb = claimPrefix(b);
+  if (!pa || !pb) return false;
+  return pa.startsWith(pb) || pb.startsWith(pa);
+}
+
+// Do two SETS of claim globs overlap on any pair? The set-level test used to
+// decide whether two goals contend for the same files.
+export function ownsOverlap(globsA, globsB) {
+  const A = ensureArray(globsA), B = ensureArray(globsB);
+  for (const x of A) for (const y of B) if (globsIntersect(x, y)) return true;
+  return false;
+}
+
+// ── Lane partitioning (intake-dag-ownership / ADR 0013) ──
+//
+// Group a batch of CGRs into parallel LANES for conductor/worker execution. A lane
+// is a set of CGRs run SEQUENTIALLY in one worker context; lanes run in PARALLEL
+// only when their predicted file-ownership is disjoint. The partition enforces two
+// rules from ADR 0013 simultaneously, via one union-find:
+//
+//   (1) Feature cohesion — CGRs sharing a `feature` tag land in the same lane
+//       (same feature ≈ same files; keeps a worker's context warm).
+//   (2) Disjoint ownership — any two CGRs whose `owns` globs overlap are FORCED
+//       into the same lane (serialized), so across the resulting parallel lanes
+//       ownership is provably disjoint. This is the parallel-safety keystone.
+//
+// Both are expressed as union edges: union when (same feature) OR (owns overlap).
+// The connected components are the lanes — which means a chain of owns-overlaps
+// transitively serializes (A∩B, B∩C ⇒ A,B,C one lane) even when A and C don't
+// directly touch, exactly as merge-safety requires.
+//
+// EXCLUSIVE goals are cross-cutting (repo-wide rename, "add logging everywhere"):
+// they're pulled OUT of the parallel partition and emitted as solo BARRIERS. The
+// staged plan interleaves fan-out stages with barrier stages by relay `order`, so
+// a barrier means "everything before it merges, then it runs alone, then fan-out
+// resumes" — the exact semantics ADR 0013 specifies.
+//
+// PURE: no clock/IO. `owns` for a goal is the union of its declared owns globs and
+// its files-to-touch (the same union the board's conflict slice uses), so a goal
+// that only declared files-to-touch still partitions safely.
+
+function partitionOwnsOf(goal) {
+  return [...new Set([...ownsOf(goal), ...filesToTouchOf(goal)])];
+}
+
+// Order key for sequencing within/among lanes: the relay `order` (lower first),
+// Infinity when unset so ordered goals lead and unordered ones tie-break by slug.
+function laneOrderKey(goal) {
+  const n = Number(goal?.meta?.order);
+  return Number.isFinite(n) ? n : Infinity;
+}
+
+// A stable lane label: the shared feature when every goal in the lane agrees on
+// one, else `lane-<lowest-order slug>` so the name is deterministic and readable.
+function laneLabel(goalsInLane) {
+  const features = new Set(goalsInLane.map((g) => featureOf(g)).filter(Boolean));
+  if (features.size === 1) return [...features][0];
+  const lead = goalsInLane[0];
+  return `lane-${lead?.slug || lead?.meta?.slug || "0"}`;
+}
+
+// Partition `goals` into parallel lanes + exclusive barriers and a staged plan.
+// Returns:
+//   { lanes, barriers, stages, parallelWidth }
+//   lanes        — parallel (non-exclusive) lanes, each
+//                  { lane, feature, exclusive:false, goals:[slug…], owns:[glob…] };
+//                  across any two lanes the owns sets are disjoint (the invariant).
+//   barriers     — exclusive goals, each a solo lane
+//                  { lane, feature, exclusive:true, goals:[slug], owns:[glob…] }.
+//   stages       — execution order: { kind:'fan-out', lanes:[lane…] } and
+//                  { kind:'barrier', lane } interleaved by `order`. Consecutive
+//                  parallelizable lanes coalesce into one fan-out stage; each
+//                  exclusive goal forces its own barrier stage between them.
+//   parallelWidth— the widest fan-out stage's lane count (1 ⇒ effectively serial).
+// Pure; tolerant of an empty batch (everything empty) and never throws.
+export function partitionLanes(goals) {
+  const list = ensureArray(goals).filter((g) => g && (g.slug || g?.meta?.slug));
+  const slugOf = (g) => g.slug || g.meta.slug;
+
+  const exclusive = list.filter((g) => exclusiveOf(g));
+  const regular = list.filter((g) => !exclusiveOf(g));
+
+  // Union-find over the regular goals (feature cohesion + owns overlap).
+  const parent = new Map(regular.map((g) => [slugOf(g), slugOf(g)]));
+  const find = (x) => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r);
+    while (parent.get(x) !== r) { const n = parent.get(x); parent.set(x, r); x = n; }
+    return r;
+  };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+
+  const owns = new Map(regular.map((g) => [slugOf(g), partitionOwnsOf(g)]));
+  for (let i = 0; i < regular.length; i++) {
+    for (let j = i + 1; j < regular.length; j++) {
+      const a = regular[i], b = regular[j];
+      const fa = featureOf(a), fb = featureOf(b);
+      const sameFeature = fa && fb && fa === fb;
+      if (sameFeature || ownsOverlap(owns.get(slugOf(a)), owns.get(slugOf(b)))) {
+        union(slugOf(a), slugOf(b));
+      }
+    }
+  }
+
+  // Collect components → lanes, ordering goals within a lane by (order, slug).
+  const components = new Map(); // root → [goal…]
+  for (const g of regular) {
+    const root = find(slugOf(g));
+    (components.get(root) || components.set(root, []).get(root)).push(g);
+  }
+  const sortGoalsForLane = (gs) => [...gs].sort((a, b) => {
+    const oa = laneOrderKey(a), ob = laneOrderKey(b);
+    if (oa !== ob) return oa - ob;
+    const sa = slugOf(a), sb = slugOf(b);
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
+
+  const lanes = [];
+  for (const gs of components.values()) {
+    const ordered = sortGoalsForLane(gs);
+    const mergedOwns = [...new Set(ordered.flatMap((g) => owns.get(slugOf(g))))].sort();
+    lanes.push({
+      lane: laneLabel(ordered),
+      feature: (() => { const f = new Set(ordered.map((g) => featureOf(g)).filter(Boolean)); return f.size === 1 ? [...f][0] : null; })(),
+      exclusive: false,
+      goals: ordered.map(slugOf),
+      owns: mergedOwns,
+      order: laneOrderKey(ordered[0]),
+    });
+  }
+
+  const barriers = exclusive.map((g) => ({
+    lane: `barrier-${slugOf(g)}`,
+    feature: featureOf(g),
+    exclusive: true,
+    goals: [slugOf(g)],
+    owns: partitionOwnsOf(g).slice().sort(),
+    order: laneOrderKey(g),
+  }));
+
+  // Build the staged plan: merge lanes + barriers by `order`, coalescing runs of
+  // parallel lanes into one fan-out stage and breaking on every barrier.
+  const units = [
+    ...lanes.map((l) => ({ ...l, isBarrier: false })),
+    ...barriers.map((b) => ({ ...b, isBarrier: true })),
+  ].sort((a, b) => (a.order - b.order) || (a.lane < b.lane ? -1 : a.lane > b.lane ? 1 : 0));
+
+  const stages = [];
+  let current = null; // accumulating fan-out stage
+  for (const u of units) {
+    if (u.isBarrier) {
+      if (current) { stages.push(current); current = null; }
+      stages.push({ kind: "barrier", lane: u.lane, goal: u.goals[0] });
+    } else {
+      if (!current) current = { kind: "fan-out", lanes: [] };
+      current.lanes.push(u.lane);
+    }
+  }
+  if (current) stages.push(current);
+
+  const parallelWidth = stages.reduce(
+    (max, s) => s.kind === "fan-out" ? Math.max(max, s.lanes.length) : max, 0);
+
+  // Drop the internal `order` helper from the public lane/barrier records.
+  const strip = ({ order, ...rest }) => rest;
+  return {
+    lanes: lanes.map(strip),
+    barriers: barriers.map(strip),
+    stages,
+    parallelWidth,
+  };
 }
 
 // ── Shared agent coordination board (cgr-agent-chat-coordination-board) ──
@@ -1263,6 +1724,80 @@ export function backlogThreshold(archDir) {
   return { ...DEFAULT_BACKLOG_THRESHOLD, ...fromFile };
 }
 
+// ── Attention-gradient wind-down + lease policy knobs (ADR 0015) ─────────────
+//
+// The context window is a quality gradient: the PEAK zone (first ~65%) is for
+// high-attention work (novel code, conflict resolution); the TAIL zone is for
+// degradation-TOLERANT work (documenting, authoring the handoff). A worker stops
+// ACCEPTING new goals once its context fill reaches `cgr.windDownAt` and switches
+// to wind-down authoring only — so a goal never balloons into the degraded tail.
+// archkit is stateless and cannot measure context fill itself; the worker reports
+// its fill and these PURE helpers decide the mode (the same instruct-not-act
+// split as the rest of the relay — archkit decides policy, the worker acts).
+//
+// Config surface (.arch/config.json → cgr.*, all optional):
+//   windDownAt        — entry threshold (0..1), default 0.65
+//   windDownAtByModel — { "<model-id>": 0.xx } per-model override of windDownAt
+//   leaseTtlHours     — in-flight claim TTL (hours), default 24
+export const DEFAULT_WIND_DOWN_AT = 0.65;
+export const DEFAULT_LEASE_TTL_HOURS = 24;
+
+// The cgr.* config block, or {} on a missing/invalid config. Never throws —
+// policy resolution must never be blocked by a bad config file.
+function readCgrConfig(archDir) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(archDir, "config.json"), "utf8"));
+    if (cfg && typeof cfg === "object" && cfg.cgr && typeof cfg.cgr === "object") return cfg.cgr;
+  } catch { /* no/invalid config → {} */ }
+  return {};
+}
+
+// A fraction in (0,1], or null when the value isn't a usable threshold.
+function asFraction(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : null;
+}
+
+// Resolve the effective wind-down threshold: base cgr.windDownAt (default 0.65),
+// overridden by cgr.windDownAtByModel[model] when a model is given and carries a
+// usable override. Out-of-range / malformed values fall back rather than throw.
+export function windDownAt(archDir, { model } = {}) {
+  const cgr = readCgrConfig(archDir);
+  let threshold = asFraction(cgr.windDownAt) ?? DEFAULT_WIND_DOWN_AT;
+  const m = String(model || "").trim();
+  if (m && cgr.windDownAtByModel && typeof cgr.windDownAtByModel === "object") {
+    const override = asFraction(cgr.windDownAtByModel[m]);
+    if (override != null) threshold = override;
+  }
+  return threshold;
+}
+
+// PURE wind-down decision: given the worker's reported context fill (0..1) and a
+// resolved threshold, decide whether to keep ACCEPTING goals or switch to
+// wind-down (handoff authoring only). A missing/invalid fill reading NEVER blocks
+// work — only a real reading at/above the threshold flips the mode. Returns
+// { fill, threshold, windDown, mode } where mode is "accept" | "wind-down".
+export function windDownMode(fill, threshold) {
+  const f = Number(fill);
+  const t = Number.isFinite(threshold) ? threshold : DEFAULT_WIND_DOWN_AT;
+  const hasFill = Number.isFinite(f);
+  const windDown = hasFill && f >= t;
+  return { fill: hasFill ? f : null, threshold: t, windDown, mode: windDown ? "wind-down" : "accept" };
+}
+
+// Convenience: resolve the threshold from config (model-aware) AND decide the
+// mode from a reported fill, in one call. The relay/tool entry point.
+export function windDownDecision(archDir, { fill, model } = {}) {
+  return windDownMode(fill, windDownAt(archDir, { model }));
+}
+
+// In-flight claim lease TTL in hours (cgr.leaseTtlHours, default 24). A claim past
+// this is a reclaimable orphan (ADR 0015). Invalid → default.
+export function leaseTtlHours(archDir) {
+  const v = Number(readCgrConfig(archDir).leaseTtlHours);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_LEASE_TTL_HOURS;
+}
+
 function daysBetween(fromISODate, now) {
   // Tolerate both date-only (legacy) and full-datetime stamps by comparing on
   // the calendar day — a datetime `testing-since` must still age correctly.
@@ -1319,7 +1854,9 @@ export function nextEligibleGoal(archDir) {
     return depsSatisfied(g);
   });
   const testing = eligible.filter((g) => statusOf(g) === STATUS_TESTING);
-  const pending = eligible.filter((g) => statusOf(g) !== STATUS_TESTING);
+  // Pending, with fission continuations floated to the front (scheduler prefers
+  // a warm carry-forward successor over cold pending work — fission-transition).
+  const pending = preferContinuations(eligible.filter((g) => statusOf(g) !== STATUS_TESTING));
 
   // (2) Threshold ordering. Below threshold → pending-first (the simple default
   // batch); at/above → testing-first to drain the backlog. Either way, fall
@@ -1370,11 +1907,11 @@ export function routeNextGoal(archDir) {
   };
   // Eligible = not done, not parked, deps satisfied — the same gate
   // nextEligibleGoal applies before its threshold ordering.
-  const eligible = goals.filter((g) => {
+  const eligible = preferContinuations(goals.filter((g) => {
     const s = statusOf(g);
     if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD) return false;
     return depsSatisfied(g);
-  });
+  }));
   const projectOf = (g) => String(g?.meta?.project || "").trim();
   const grouped = eligible.filter((g) => projectOf(g));
   const ungrouped = eligible.filter((g) => !projectOf(g));

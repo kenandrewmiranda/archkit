@@ -5,7 +5,7 @@
 // raw source files, which is cheaper for repeated reads in long sessions.
 //
 // Static:    archkit://system, archkit://index, archkit://boundaries
-// Templated: archkit://skill/{id}, archkit://decision/{number}
+// Templated: archkit://playbook/{id} (alias archkit://skill/{id}), archkit://decision/{number}
 //
 // archDir is resolved at read time from the server's cwd (the project Claude
 // Code launched it in); resources degrade gracefully when there's no .arch/.
@@ -15,6 +15,7 @@ import path from "node:path";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { findArchDir } from "../lib/shared.mjs";
 import { listDecisions } from "../lib/decisions.mjs";
+import { listPlaybooks, resolvePlaybookPath } from "../lib/playbooks.mjs";
 
 function archDir() {
   return findArchDir({ requireFile: "SYSTEM.md" });
@@ -46,29 +47,46 @@ export function registerResources(server) {
     );
   }
 
-  // Skills: archkit://skill/{id}
+  // Playbooks (formerly "skills", ADR 0016): archkit://playbook/{id}
+  // The reader resolves the canonical .arch/playbooks/<id>.playbook AND the
+  // legacy .arch/skills/<id>.skill, so both layouts surface here.
+  server.registerResource(
+    "archkit-playbook",
+    new ResourceTemplate("archkit://playbook/{id}", {
+      list: async () => ({
+        resources: listPlaybooks(archDir()).map((u) => ({
+          name: `archkit-playbook-${u.id}`,
+          uri: `archkit://playbook/${u.id}`,
+          title: `playbook: ${u.id}`,
+          mimeType: "text/markdown",
+        })),
+      }),
+    }),
+    { title: "archkit playbook", description: "A .arch/playbooks/<id>.playbook file (legacy .arch/skills/<id>.skill) — WRONG/RIGHT/WHY gotchas and patterns for a package or area." },
+    async (uri, vars) => {
+      const id = Array.isArray(vars.id) ? vars.id[0] : vars.id;
+      return fileContent(uri.href, resolvePlaybookPath(archDir(), id));
+    }
+  );
+
+  // Back-compat alias: archkit://skill/{id} → resolves the same units, so
+  // existing references keep working after the playbook rename.
   server.registerResource(
     "archkit-skill",
     new ResourceTemplate("archkit://skill/{id}", {
-      list: async () => {
-        const dir = archDir();
-        const skillsDir = dir && path.join(dir, "skills");
-        if (!skillsDir || !fs.existsSync(skillsDir)) return { resources: [] };
-        return {
-          resources: fs.readdirSync(skillsDir)
-            .filter((f) => f.endsWith(".skill"))
-            .map((f) => {
-              const id = f.replace(/\.skill$/, "");
-              return { name: `archkit-skill-${id}`, uri: `archkit://skill/${id}`, title: `skill: ${id}`, mimeType: "text/markdown" };
-            }),
-        };
-      },
+      list: async () => ({
+        resources: listPlaybooks(archDir()).map((u) => ({
+          name: `archkit-skill-${u.id}`,
+          uri: `archkit://skill/${u.id}`,
+          title: `skill: ${u.id}`,
+          mimeType: "text/markdown",
+        })),
+      }),
     }),
-    { title: "archkit skill", description: "A .arch/skills/<id>.skill file — WRONG/RIGHT/WHY gotchas and patterns for a package or area." },
+    { title: "archkit skill (alias)", description: "Deprecated alias for archkit://playbook/<id> — kept for back-compat. Prefer archkit://playbook/<id>." },
     async (uri, vars) => {
-      const dir = archDir();
       const id = Array.isArray(vars.id) ? vars.id[0] : vars.id;
-      return fileContent(uri.href, dir ? path.join(dir, "skills", `${id}.skill`) : null);
+      return fileContent(uri.href, resolvePlaybookPath(archDir(), id));
     }
   );
 

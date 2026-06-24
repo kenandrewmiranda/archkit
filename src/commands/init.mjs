@@ -255,7 +255,7 @@ async function main() {
     const files = [
       { rel: path.join(".arch", "BOUNDARIES.md"), abs: path.join(base, "BOUNDARIES.md"), content: TEMPLATES.BOUNDARIES },
       { rel: path.join(".arch", "SYSTEM.md"), abs: path.join(base, "SYSTEM.md"), content: TEMPLATES.SYSTEM },
-      { rel: path.join(".arch", "skills", "README.md"), abs: path.join(base, "skills", "README.md"), content: TEMPLATES.SKILLS_README },
+      { rel: path.join(".arch", "playbooks", "README.md"), abs: path.join(base, "playbooks", "README.md"), content: TEMPLATES.SKILLS_README },
       { rel: "CLAUDE.md", abs: path.resolve("CLAUDE.md"), content: TEMPLATES.CLAUDE_MD },
     ];
 
@@ -474,7 +474,7 @@ async function main() {
   log.generate("Creating .arch/ directory...");
   const base = path.resolve(".arch");
   fs.mkdirSync(path.join(base, "clusters"), { recursive: true });
-  fs.mkdirSync(path.join(base, "skills"), { recursive: true });
+  fs.mkdirSync(path.join(base, "playbooks"), { recursive: true });
   fs.mkdirSync(path.join(base, "apis"), { recursive: true });
   fs.mkdirSync(path.join(base, "lenses"), { recursive: true });
 
@@ -501,13 +501,13 @@ async function main() {
   if (events) writeFile("clusters/events.graph", events);
 
   for (const s of skills) {
-    writeFile(`skills/${s}.skill`, genSkillFile(s));
+    writeFile(`playbooks/${s}.playbook`, genSkillFile(s));
   }
 
   log.ok(`Generated ${written.length} files in .arch/`);
-  log.ok(`App: ${appName} | Type: ${APP_TYPES[appType]?.name} | ${features.length} features | ${skills.length} skills`);
+  log.ok(`App: ${appName} | Type: ${APP_TYPES[appType]?.name} | ${features.length} features | ${skills.length} playbooks`);
   console.error("");
-  console.error(`  Next: Review .arch/SYSTEM.md and fill in .arch/skills/*.skill with your team's gotchas.`);
+  console.error(`  Next: Review .arch/SYSTEM.md and fill in .arch/playbooks/*.playbook with your team's gotchas.`);
   console.error(`  Run: archkit resolve warmup to verify the generated context.`);
   console.error("");
 }

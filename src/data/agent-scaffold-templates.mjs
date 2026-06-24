@@ -100,12 +100,14 @@ AGENT-INSTRUCTIONS: END
 `,
 
   // ── SKILLS_README ────────────────────────────────────────────────────────
-  // Written to: .arch/skills/README.md
+  // Written to: .arch/playbooks/README.md
 
-  SKILLS_README: `# Skills
+  SKILLS_README: `# Playbooks
 
-Skill files (\`.arch/skills/<package>.skill\`) capture package-specific gotchas:
-things that look right but break at runtime, and the correct pattern to use instead.
+Playbook files (\`.arch/playbooks/<package>.playbook\`) capture package-specific
+gotchas: things that look right but break at runtime, and the correct pattern to
+use instead. (Formerly called "skills" — renamed to avoid colliding with Claude
+Code's Agent Skills. Legacy \`.arch/skills/<package>.skill\` files still load.)
 
 ## Format
 
@@ -171,9 +173,9 @@ Key documents:
 
 - \`.arch/BOUNDARIES.md\` — NEVER rules for layer and module boundaries
 - \`.arch/SYSTEM.md\` — system overview, clusters, reserved words, top-level rules
-- \`.arch/skills/*.skill\` — package-specific gotchas (WRONG / RIGHT / WHY)
+- \`.arch/playbooks/*.playbook\` — package-specific gotchas (WRONG / RIGHT / WHY)
 
-**Before writing code touching a package, check \`.arch/skills/<package>.skill\`**
+**Before writing code touching a package, check \`.arch/playbooks/<package>.playbook\`**
 for known gotchas specific to that dependency.
 
 ## Reserved Words

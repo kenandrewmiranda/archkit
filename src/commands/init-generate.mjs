@@ -98,12 +98,12 @@ export async function runInitGenerateJson({ cwd, archDir, answers, overwrite } =
     if (at.hostingOptions && hostingChoice === "cloud") {
       stackDecisionEnvelope.hetznerIaC = {
         emitted: true,
-        note: `Hosting = cloud → generated Hetzner full IaC: infra/terraform/ (server + SSH key + firewall + primary IP), infra/cloud-init.yaml (Docker, Caddy, ufw, fail2ban, deploy user), infra/Caddyfile + infra/docker-compose.yml (parameterized by the chosen server stack + storage), and .arch/skills/hetzner.skill (deploy runbook). Fill infra/terraform/terraform.tfvars.example and infra/.env.example before applying.`,
+        note: `Hosting = cloud → generated Hetzner full IaC: infra/terraform/ (server + SSH key + firewall + primary IP), infra/cloud-init.yaml (Docker, Caddy, ufw, fail2ban, deploy user), infra/Caddyfile + infra/docker-compose.yml (parameterized by the chosen server stack + storage), and .arch/playbooks/hetzner.playbook (deploy runbook). Fill infra/terraform/terraform.tfvars.example and infra/.env.example before applying.`,
       };
     } else if (at.hostingOptions && hostingChoice === "self-host") {
       stackDecisionEnvelope.selfHostStack = {
         emitted: true,
-        note: `Hosting = self-host → vendored arch-server's full fleet plane (no runtime dep): infra/registry/apps/<app>.yaml (fleet descriptor, validated against the vendored schema), infra/<app>/compose.yaml + .env.example (the iOS backend: api + db${"" /* storage-dependent */} + storage), infra/caddy/ (automatic-TLS reverse proxy via \`tls internal\`), infra/monitoring/ (Prometheus/Loki/Grafana + Alertmanager→ntfy), infra/ntfy/ (push notifications), infra/backups/ (per-app backup engine + systemd timer), infra/deploy.sh (rsync → docker compose up -d), and .arch/skills/self-host.skill (provision→bootstrap→register→deploy→health/backup runbook). Fill the descriptor's source/serverPath and infra/<app>/.env.example before deploying.`,
+        note: `Hosting = self-host → vendored arch-server's full fleet plane (no runtime dep): infra/registry/apps/<app>.yaml (fleet descriptor, validated against the vendored schema), infra/<app>/compose.yaml + .env.example (the iOS backend: api + db${"" /* storage-dependent */} + storage), infra/caddy/ (automatic-TLS reverse proxy via \`tls internal\`), infra/monitoring/ (Prometheus/Loki/Grafana + Alertmanager→ntfy), infra/ntfy/ (push notifications), infra/backups/ (per-app backup engine + systemd timer), infra/deploy.sh (rsync → docker compose up -d), and .arch/playbooks/self-host.playbook (provision→bootstrap→register→deploy→health/backup runbook). Fill the descriptor's source/serverPath and infra/<app>/.env.example before deploying.`,
       };
     }
   }
@@ -117,13 +117,13 @@ export async function runInitGenerateJson({ cwd, archDir, answers, overwrite } =
     features: cfg.features.map(f => f.id),
     skills: cfg.skills,
     ...(cfg.skills.length === 0
-      ? { skillsNote: "No package skills scaffolded — pass skills:[...] (e.g. \"postgres\", \"stripe\") to generate .skill stubs, or add them later as you adopt packages." }
+      ? { skillsNote: "No package playbooks scaffolded — pass skills:[...] (e.g. \"postgres\", \"stripe\") to generate .playbook stubs, or add them later as you adopt packages." }
       : {}),
     claudeMode,
     claudeMdRenamed,
     ...stackDecisionEnvelope,
     filesWritten: written.length,
     written: written.map(w => w.path),
-    nextStep: `Scaffold generated (${written.length} files) under ${relArch}/. ${claudeMdRenamed ? "CLAUDE.md already existed — wrote CLAUDE.archkit.md to merge by hand. " : ""}Run archkit_resolve_warmup to verify the new context, then archkit_log_decision to record the foundation ADR (archetype, stack, why). Fill in .arch/skills/*.skill with real WRONG/RIGHT/WHY gotchas as you discover them.`,
+    nextStep: `Scaffold generated (${written.length} files) under ${relArch}/. ${claudeMdRenamed ? "CLAUDE.md already existed — wrote CLAUDE.archkit.md to merge by hand. " : ""}Run archkit_resolve_warmup to verify the new context, then archkit_log_decision to record the foundation ADR (archetype, stack, why). Fill in .arch/playbooks/*.playbook with real WRONG/RIGHT/WHY gotchas as you discover them.`,
   };
 }

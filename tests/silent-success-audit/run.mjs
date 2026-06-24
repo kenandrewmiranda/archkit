@@ -185,12 +185,19 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_boundary_propose", { source: "src/audit-web/*", target: "src/audit-db/*", why: "audit-test" }],
         ["archkit_goal_intake", { goals: [{ title: "audit goal", exitCriteria: ["done"], filesToTouch: ["src/features/auth/login.js"] }, { title: "audit goal two", exitCriteria: ["done"] }] }],
         ["archkit_goal_list", {}],
+        ["archkit_session_state", {}],
+        ["archkit_conductor", {}],
         ["archkit_goal_start", { slug: "audit-goal" }],
+        // Wind-down handoff authored while the goal is in-progress (ADR 0015).
+        ["archkit_goal_handoff", { slug: "audit-goal", done: [{ criterion: "done", evidence: "audit" }], verificationStatus: "partial", actualFiles: ["src/features/auth/login.js"] }],
         ["archkit_goal_show", { slug: "audit-goal" }],
         ["archkit_goal_payload", { slug: "audit-goal" }],
         ["archkit_goal_testing", { slug: "audit-goal" }],
         ["archkit_goal_verify", { slug: "audit-goal" }],
         ["archkit_goal_complete", { slug: "audit-goal" }],
+        // Fission on the now-completed goal exercises the error envelope (it's no
+        // longer live) — the happy split path is covered in tests/cgr-fission/.
+        ["archkit_goal_fission", { slug: "audit-goal", criteriaMet: [true] }],
         // goal_complete proposed a graph gap for the auth-cluster file above;
         // accept it with a parse-valid node line (exercises the success path).
         ["archkit_graph_accept", { slug: "audit-goal", file: "src/features/auth/login.js", line: "Login [S] : src/features/auth/login.js — auth login handler | Caller → THIS → Db" }],

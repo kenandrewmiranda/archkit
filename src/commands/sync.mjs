@@ -9,6 +9,7 @@ import { loadFile, parseIndex, parseSystem } from "../lib/parsers.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { PACKAGE_DOCS } from "../data/package-docs.mjs";
 import { SKILL_CATALOG } from "../data/app-types.mjs";
+import { listPlaybookIds, readPlaybook } from "../lib/playbooks.mjs";
 
 function banner() {
   commandBanner("arch-sync", "Detect .arch/ files that need updating");
@@ -89,11 +90,9 @@ export function runSyncJson({ archDir, srcDir = "src" }) {
     }
   }
 
-  // 2. Detect new packages in package.json without .skill files
-  const skillsDir = path.join(archDir, "skills");
-  const existingSkills = fs.existsSync(skillsDir)
-    ? new Set(fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill")).map(f => f.replace(".skill", "")))
-    : new Set();
+  // 2. Detect new packages in package.json without a playbook
+  // (reads both .arch/playbooks/*.playbook and legacy .arch/skills/*.skill).
+  const existingSkills = new Set(listPlaybookIds(archDir));
 
   try {
     const pkgJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -109,7 +108,7 @@ export function runSyncJson({ archDir, srcDir = "src" }) {
           type: "new-skill",
           id: skill.id,
           package: skill.name,
-          action: `Create skills/${skill.id}.skill for ${skill.name}`,
+          action: `Create playbooks/${skill.id}.playbook for ${skill.name}`,
           command: `archkit extend create --from-preset add-skill`,
         });
       }
@@ -137,7 +136,7 @@ export function runSyncJson({ archDir, srcDir = "src" }) {
     const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
 
     for (const skillId of existingSkills) {
-      const skillContent = loadFile(archDir, "skills", `${skillId}.skill`);
+      const skillContent = readPlaybook(archDir, skillId);
       if (!skillContent) continue;
       const pkgMatch = skillContent.match(/^pkg:\s*(.+)@(.+)$/m);
       if (!pkgMatch || pkgMatch[2].includes("[")) continue;
@@ -152,7 +151,7 @@ export function runSyncJson({ archDir, srcDir = "src" }) {
           id: skillId,
           skillVersion,
           installedVersion,
-          action: `Update skills/${skillId}.skill Meta section — version changed from ${skillVersion} to ${installedVersion}`,
+          action: `Update playbooks/${skillId}.playbook (or legacy skills/${skillId}.skill) Meta section — version changed from ${skillVersion} to ${installedVersion}`,
         });
       }
     }

@@ -164,7 +164,7 @@ export function generateScaffold(answers, opts = {}) {
 
   const base = path.isAbsolute(outDir) ? outDir : path.resolve(projectRoot, outDir);
   fs.mkdirSync(path.join(base, "clusters"), { recursive: true });
-  fs.mkdirSync(path.join(base, "skills"), { recursive: true });
+  fs.mkdirSync(path.join(base, "playbooks"), { recursive: true });
   fs.mkdirSync(path.join(base, "apis"), { recursive: true });
   fs.mkdirSync(path.join(base, "lenses"), { recursive: true });
 
@@ -201,7 +201,7 @@ export function generateScaffold(answers, opts = {}) {
   if (evtContent) writeArch("clusters/events.graph", evtContent);
 
   for (const s of skills) {
-    writeArch(`skills/${s}.skill`, genSkillFile(s));
+    writeArch(`playbooks/${s}.playbook`, genSkillFile(s));
   }
   const apiSkills = skills.filter(s => API_STUB_SKILLS.includes(s));
   for (const s of apiSkills) {
@@ -255,7 +255,7 @@ export function generateScaffold(answers, opts = {}) {
     claudeMd += `Main agent finalizes with TDD: write failing test → verify generated code passes → archkit review --agent as gate.\n`;
     claudeMd += `\n## Context Files\n`;
     claudeMd += `- Architecture graphs: @.arch/clusters/ (Key-Rel-Dep v2 notation)\n`;
-    claudeMd += `- Package skills: @.arch/skills/ (WRONG/RIGHT/WHY gotchas)\n`;
+    claudeMd += `- Package playbooks: @.arch/playbooks/ (WRONG/RIGHT/WHY gotchas)\n`;
     claudeMd += `- API contracts: @.arch/apis/ (type-signature digests)\n`;
     claudeMd += `- Full context routing: @.arch/INDEX.md\n`;
 
@@ -301,9 +301,9 @@ export function generateScaffold(answers, opts = {}) {
       const sk = SKILL_CATALOG.find(c => c.id === s);
       if (!sk) continue;
       let skillMd = `---\nname: ${s}\ndescription: "${sk.name} patterns and gotchas for this project"\ntrigger: "When working with ${sk.name} (keywords: ${sk.keywords})"\n---\n\n`;
-      skillMd += `# ${sk.name} Skill\n\n`;
-      skillMd += `Full skill file: @.arch/skills/${s}.skill\n\n`;
-      skillMd += `Load the skill file above for:\n`;
+      skillMd += `# ${sk.name} Playbook\n\n`;
+      skillMd += `Full playbook file: @.arch/playbooks/${s}.playbook\n\n`;
+      skillMd += `Load the playbook file above for:\n`;
       skillMd += `- Package version and docs URL\n`;
       skillMd += `- Project-specific usage patterns\n`;
       skillMd += `- WRONG → RIGHT → WHY gotchas\n`;

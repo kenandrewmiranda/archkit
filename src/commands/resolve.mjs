@@ -21,6 +21,7 @@ import path from "path";
 import { isMainModule, findArchDir as _findArchDir } from "../lib/shared.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { loadFile, parseSystem, parseIndex, loadGraphCluster, loadSkillGotchas, loadApiDigest } from "../lib/parsers.mjs";
+import { listPlaybookIds, playbookSpecPath } from "../lib/playbooks.mjs";
 import { cmdWarmup } from "./resolve/warmup.mjs";
 import { cmdPlan } from "./resolve/plan.mjs";
 import { runVerifyWiringJson } from "./resolve/verify-wiring.mjs";
@@ -247,23 +248,20 @@ export async function runLookupJson({ archDir, id }) {
   }
 
   // Search skills
-  const skillsDir = path.join(archDir, "skills");
-  if (fs.existsSync(skillsDir)) {
-    for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
-      const skillId = file.replace(".skill", "");
-      if (skillId === id) {
-        const skill = loadSkillGotchas(archDir, skillId);
-        const gotchas = skill ? skill.gotchas : [];
-        return {
-          type: "skill",
-          id: skillId,
-          gotchas,
-          nextStep: gotchas.length === 0
-            ? `Skill ${skillId}.skill has 0 gotchas. Call archkit_gotcha_propose to add WRONG/RIGHT/WHY entries so review can enforce them.`
-            : `Read .arch/skills/${skillId}.skill before writing ${skillId}-related code; follow its ${gotchas.length} WRONG/RIGHT pattern(s).`,
-        };
-      }
-    }
+  // Reads both .arch/playbooks/*.playbook and legacy .arch/skills/*.skill (ADR 0016).
+  if (listPlaybookIds(archDir).includes(id)) {
+    const skillId = id;
+    const skill = loadSkillGotchas(archDir, skillId);
+    const gotchas = skill ? skill.gotchas : [];
+    const specPath = playbookSpecPath(archDir, skillId);
+    return {
+      type: "skill",
+      id: skillId,
+      gotchas,
+      nextStep: gotchas.length === 0
+        ? `Playbook ${skillId} has 0 gotchas. Call archkit_gotcha_propose to add WRONG/RIGHT/WHY entries so review can enforce them.`
+        : `Read ${specPath} before writing ${skillId}-related code; follow its ${gotchas.length} WRONG/RIGHT pattern(s).`,
+    };
   }
 
   throw archkitError("node_not_found", `No node, skill, or cluster found with id: ${id}`, {

@@ -5,8 +5,10 @@ import { loadFile, parseIndex } from "../../lib/parsers.mjs";
 import * as log from "../../lib/logger.mjs";
 import { archkitError } from "../../lib/errors.mjs";
 import { searchDecisions } from "../../lib/decisions.mjs";
+import { playbookSpecPath } from "../../lib/playbooks.mjs";
 
-// arch-poly dogfood: .arch/skills/<x>.skill files capture API quirks
+// arch-poly dogfood: .arch/playbooks/<x>.playbook (legacy .arch/skills/<x>.skill)
+// files capture API quirks
 // (e.g. Kalshi switching `yes_bid` to `yes_bid_dollars`) but never reach
 // the agent's context unless something surfaces them. Preflight is the
 // natural surface — it runs before any code change on a known feature.
@@ -40,12 +42,13 @@ function findRequiredSkills({ archDir, featureId, clusterId, index }) {
     }
   }
 
-  // Resolve to paths relative to project root.
-  // index.skillFiles values are typically already `.arch/skills/x.skill`.
+  // Resolve to paths relative to project root. Honor the path INDEX.md declares
+  // (back-compat: existing projects declare `.arch/skills/x.skill`); otherwise
+  // resolve against disk, preferring the canonical `.arch/playbooks/x.playbook`.
   return [...matches].map((sid) => {
     const declared = index.skillFiles[sid];
-    if (declared && declared.includes(".skill")) return declared;
-    return `.arch/skills/${sid}.skill`;
+    if (declared && (declared.includes(".skill") || declared.includes(".playbook"))) return declared;
+    return playbookSpecPath(archDir, sid);
   });
 }
 
@@ -170,9 +173,9 @@ export function cmdPreflight(archDir, featureId, layer, opts = {}) {
     }
   }
 
-  // 5. Required reading — surface relevant skill files (arch-poly fix).
-  // Differentiate "no skills exist in the project" from "skills exist but none
-  // matched this feature" — silent-success was a v1.7 dead-end pattern.
+  // 5. Required reading — surface relevant playbook files (arch-poly fix).
+  // Differentiate "no playbooks exist in the project" from "playbooks exist but
+  // none matched this feature" — silent-success was a v1.7 dead-end pattern.
   const skillCatalogSize = Object.keys(index.skillFiles || {}).length;
   const requiredReading = findRequiredSkills({
     archDir,
@@ -182,10 +185,10 @@ export function cmdPreflight(archDir, featureId, layer, opts = {}) {
   });
   const requiredReadingNote =
     requiredReading.length > 0
-      ? `Read the listed skill file(s) before generating code.`
+      ? `Read the listed playbook file(s) before generating code.`
       : skillCatalogSize === 0
-        ? `No skill files in .arch/skills/ yet — consider adding ${featureId}.skill to capture API quirks and WRONG/RIGHT patterns for this feature.`
-        : `Checked ${skillCatalogSize} skill file(s); none matched this feature by id, cluster-graph reference, or keyword. If a skill is relevant, link it by adding $${featureId} to .arch/clusters/${nodeInfo.cluster}.graph or a keyword entry to INDEX.md.`;
+        ? `No playbook files in .arch/playbooks/ yet — consider adding ${featureId}.playbook to capture API quirks and WRONG/RIGHT patterns for this feature.`
+        : `Checked ${skillCatalogSize} playbook file(s); none matched this feature by id, cluster-graph reference, or keyword. If a playbook is relevant, link it by adding $${featureId} to .arch/clusters/${nodeInfo.cluster}.graph or a keyword entry to INDEX.md.`;
 
   // 5c. Related ADRs — recall past decisions touching this feature so they're
   // not re-litigated. Especially load-bearing for the fresh-context relay,
@@ -209,7 +212,7 @@ export function cmdPreflight(archDir, featureId, layer, opts = {}) {
   const baseNextStep = !passWithoutAction
     ? `Resolve pending gotchas and drift findings before generating code. Drift first (structural), then triage gotcha proposals.`
     : requiredReading.length > 0
-      ? `Read required-reading skill(s), then write code following their WRONG/RIGHT patterns.`
+      ? `Read required-reading playbook(s), then write code following their WRONG/RIGHT patterns.`
       : `Proceed with the change. Run \`archkit review --staged\` before committing.`;
   const nextStep = relatedDecisions.length > 0
     ? `${baseNextStep} First check ${relatedDecisions.length} related ADR(s) (e.g. ${relatedDecisions[0].relativePath}).`

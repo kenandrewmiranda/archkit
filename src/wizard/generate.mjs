@@ -184,7 +184,7 @@ async function generateFiles(state) {
 
   subheading("Next steps:");
   console.log("");
-  console.log(`  ${C.yellow}1.${C.reset} ${C.bold}Fill in .arch/skills/*.skill files with your team's gotchas${C.reset}`);
+  console.log(`  ${C.yellow}1.${C.reset} ${C.bold}Fill in .arch/playbooks/*.playbook files with your team's gotchas${C.reset}`);
   info("     WRONG → RIGHT → WHY. Add them as you discover them.");
   console.log("");
   console.log(`  ${C.yellow}2.${C.reset} ${C.bold}Generate .arch/apis/*.api from your API specs${C.reset}`);
@@ -203,7 +203,7 @@ async function generateFiles(state) {
 
   console.log("");
   divider();
-  tip("Every time the AI generates wrong code, add a gotcha to the relevant .skill file.");
+  tip("Every time the AI generates wrong code, add a gotcha to the relevant .playbook file.");
   tip("The system gets smarter as your team accumulates knowledge.");
   console.log("");
   console.log(`  ${C.cyan}${ICONS.arch}${C.reset} ${C.dim}Enhance your setup with community skill packs:${C.reset} ${C.cyan}archkit search "${cfg.appType}"${C.reset}`);

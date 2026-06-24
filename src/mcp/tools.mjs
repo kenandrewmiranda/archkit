@@ -27,9 +27,10 @@ import { runDoctorJson } from "../commands/doctor.mjs";
 import { runSyncJson } from "../commands/sync.mjs";
 import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
-import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalStart, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGraphAccept } from "../commands/goal.mjs";
+import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalStart, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGraphAccept, runGoalHandoff, runGoalFission } from "../commands/goal.mjs";
 import { runWorklog } from "../commands/worklog.mjs";
 import { loadGoal } from "../lib/goals.mjs";
+import { sessionState, conductorPlan } from "../lib/board.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
 function findArchDir(cwd) {
@@ -78,9 +79,9 @@ export const tools = {
   },
 
   archkit_resolve_warmup: {
-    description: "Run health checks on the .arch/ context system. Default (deep:false): structural checks only — SYSTEM.md present, INDEX.md parseable, clusters/ and skills/ readable, no obvious file-vs-index mismatches. Fast (<200ms typical) and safe to call repeatedly. it also surfaces pending review debt: (W014) ADR proposals auto-drafted to .arch/decisions/proposed/, and (W015) graph-proposals persisted to .arch/graph-proposals/ at goal_complete (ADR 0004) whose count+slugs appear in checks/warnings and summary.pendingGraphProposals — accept them with archkit_graph_accept so the node graph stays current. deep:true adds: (W011) cross-references package.json deps against skill coverage to flag major packages with no .skill file; (W012) scans .arch/apis/*.api for unpopulated [VERSION]/[BASE_URL] stubs that would force the LLM to fall back on training data; (W013) validates .arch/extensions/registry.json for orphaned entries. Deep mode reads more files and is appropriate at session start or after dependency churn. Returns { pass, mode, checks[], blockers[], warnings[], actions[], summary }. When to use: at the START of a coding session (default); after `npm install` or major refactors (deep:true); whenever context drift is suspected.",
+    description: "Run health checks on the .arch/ context system. Default (deep:false): structural checks only — SYSTEM.md present, INDEX.md parseable, clusters/ and playbooks/ (legacy skills/) readable, no obvious file-vs-index mismatches. Fast (<200ms typical) and safe to call repeatedly. it also surfaces pending review debt: (W014) ADR proposals auto-drafted to .arch/decisions/proposed/, and (W015) graph-proposals persisted to .arch/graph-proposals/ at goal_complete (ADR 0004) whose count+slugs appear in checks/warnings and summary.pendingGraphProposals — accept them with archkit_graph_accept so the node graph stays current. deep:true adds: (W011) cross-references package.json deps against playbook coverage to flag major packages with no playbook; (W012) scans .arch/apis/*.api for unpopulated [VERSION]/[BASE_URL] stubs that would force the LLM to fall back on training data; (W013) validates .arch/extensions/registry.json for orphaned entries. Deep mode reads more files and is appropriate at session start or after dependency churn. Returns { pass, mode, checks[], blockers[], warnings[], actions[], summary }. When to use: at the START of a coding session (default); after `npm install` or major refactors (deep:true); whenever context drift is suspected.",
     inputSchema: z.object({
-      deep: z.boolean().optional().describe("If true, also run W011 (package.json↔skills coverage), W012 (.api stub detection), W013 (extension registry integrity). Default false."),
+      deep: z.boolean().optional().describe("If true, also run W011 (package.json↔playbooks coverage), W012 (.api stub detection), W013 (extension registry integrity). Default false."),
     }),
     handler: async ({ deep }) => {
       const cwd = process.cwd();
@@ -89,7 +90,7 @@ export const tools = {
   },
 
   archkit_resolve_preflight: {
-    description: "Verify a feature/layer combination exists and is correctly wired in .arch/ before generating code. The set of valid `feature` values is derived from .arch/INDEX.md — specifically the node→cluster mapping under '## Nodes' (each entry like `[feature.layer] : cluster-name` registers the feature). When an unknown `feature` is passed, the response contains `error: \"unknown_feature\"` and a `valid: [...]` array listing every feature id INDEX.md currently knows about — read that array to pick the right name. `layer` is a free-form architecture layer (controller / service / repository / types / validation / test / ui / etc.) matched against the same INDEX.md entries; mismatches are reported but do not error. The handler also returns recent git history for the feature's basePath and pending gotcha proposals. **Important**: the response includes a `requiredReading: [\".arch/skills/<x>.skill\", ...]` array listing skill files relevant to this feature (matched by id, cluster-graph reference, or keyword). When non-empty, READ those skill files before writing code — they capture API quirks and known wrong-patterns that won't show up in the source tree. When to use: BEFORE writing or modifying code in a feature path, to confirm the feature exists, learn its conventions, and pull in any relevant skill context.",
+    description: "Verify a feature/layer combination exists and is correctly wired in .arch/ before generating code. The set of valid `feature` values is derived from .arch/INDEX.md — specifically the node→cluster mapping under '## Nodes' (each entry like `[feature.layer] : cluster-name` registers the feature). When an unknown `feature` is passed, the response contains `error: \"unknown_feature\"` and a `valid: [...]` array listing every feature id INDEX.md currently knows about — read that array to pick the right name. `layer` is a free-form architecture layer (controller / service / repository / types / validation / test / ui / etc.) matched against the same INDEX.md entries; mismatches are reported but do not error. The handler also returns recent git history for the feature's basePath and pending gotcha proposals. **Important**: the response includes a `requiredReading: [\".arch/playbooks/<x>.playbook\", ...]` array listing playbook files relevant to this feature (matched by id, cluster-graph reference, or keyword). When non-empty, READ those playbook files before writing code — they capture API quirks and known wrong-patterns that won't show up in the source tree. When to use: BEFORE writing or modifying code in a feature path, to confirm the feature exists, learn its conventions, and pull in any relevant playbook context.",
     inputSchema: z.object({
       feature: z.string().min(1).describe("Feature id as it appears in .arch/INDEX.md (e.g. \"auth\", \"billing\"). Unknown ids return the full valid list."),
       layer: z.string().min(1).describe("Architecture layer for the file you're about to touch (e.g. \"controller\", \"service\", \"repository\", \"types\")."),
@@ -112,9 +113,9 @@ export const tools = {
   },
 
   archkit_resolve_lookup: {
-    description: "Look up a single id in .arch/ — matches against node ids in INDEX.md, skill ids (filename without .skill), and cluster ids (filename without .graph). Returns the matching record with its source file, basePath, and any related metadata. When to use: when a referenced symbol, package, or cluster name shows up in code or conversation and you need to know what archkit considers it.",
+    description: "Look up a single id in .arch/ — matches against node ids in INDEX.md, playbook ids (filename without .playbook / legacy .skill), and cluster ids (filename without .graph). Returns the matching record with its source file, basePath, and any related metadata. When to use: when a referenced symbol, package, or cluster name shows up in code or conversation and you need to know what archkit considers it.",
     inputSchema: z.object({
-      id: z.string().min(1).describe("Node / skill / cluster id (e.g. \"auth.service\", \"stripe\", \"billing\")."),
+      id: z.string().min(1).describe("Node / playbook / cluster id (e.g. \"auth.service\", \"stripe\", \"billing\")."),
     }),
     handler: async ({ id }) => {
       const cwd = process.cwd();
@@ -123,9 +124,9 @@ export const tools = {
   },
 
   archkit_gotcha_propose: {
-    description: "Queue a new gotcha — a wrong/right code pattern with a why explanation — onto the named skill's pending proposals. Does NOT write to the .skill file directly; proposals land in .arch/proposals/ and are merged later via `archkit gotcha accept`. The `wrong` and `right` fields are matched as literal substrings by archkit review, so include enough surrounding context to be unique but not so much that minor formatting differences break the match. When to use: when you discover a pattern that should be enforced or warned about in future sessions (a bug you just fixed, a footgun the user pointed out, a convention the codebase enforces but isn't documented).",
+    description: "Queue a new gotcha — a wrong/right code pattern with a why explanation — onto the named playbook's pending proposals. Does NOT write to the playbook file directly; proposals land in .arch/proposals/ and are merged later via `archkit gotcha accept`. The `wrong` and `right` fields are matched as literal substrings by archkit review, so include enough surrounding context to be unique but not so much that minor formatting differences break the match. When to use: when you discover a pattern that should be enforced or warned about in future sessions (a bug you just fixed, a footgun the user pointed out, a convention the codebase enforces but isn't documented).",
     inputSchema: z.object({
-      skill: z.string().min(1).describe("Skill id (filename without .skill) this gotcha belongs to. Must exist in .arch/skills/."),
+      skill: z.string().min(1).describe("Playbook id (filename without .playbook) this gotcha belongs to. Must exist in .arch/playbooks/ (or legacy .arch/skills/). The param is named `skill` for back-compat."),
       wrong: z.string().min(1).describe("The bad pattern, as a literal substring review will grep for."),
       right: z.string().min(1).describe("The correct replacement."),
       why: z.string().min(1).describe("One- or two-sentence explanation of the failure mode — why `wrong` is wrong."),
@@ -138,7 +139,7 @@ export const tools = {
   },
 
   archkit_gotcha_list: {
-    description: "List every .skill file with its gotcha count and a sample of the wrong patterns. Use this to (a) avoid duplicating a gotcha that already exists before calling archkit_gotcha_propose, and (b) spot skills with zero gotchas — those skills are present but contribute nothing to review's pattern matching.",
+    description: "List every playbook file (.arch/playbooks/*.playbook, legacy .arch/skills/*.skill) with its gotcha count and a sample of the wrong patterns. Use this to (a) avoid duplicating a gotcha that already exists before calling archkit_gotcha_propose, and (b) spot playbooks with zero gotchas — those playbooks are present but contribute nothing to review's pattern matching. (Returns a `skills` array key for back-compat.)",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -147,7 +148,7 @@ export const tools = {
   },
 
   archkit_stats: {
-    description: "Return a health dashboard for .arch/: counts of skills/clusters/nodes/APIs/decisions, SYSTEM.md and INDEX.md completeness, gotcha density per skill, and a prioritized `recommendations` list for what to improve next. Read-only. When to use: to assess archkit setup completeness, decide which skill to flesh out, or report progress to the user.",
+    description: "Return a health dashboard for .arch/: counts of playbooks/clusters/nodes/APIs/decisions, SYSTEM.md and INDEX.md completeness, gotcha density per playbook, and a prioritized `recommendations` list for what to improve next. Read-only. When to use: to assess archkit setup completeness, decide which playbook to flesh out, or report progress to the user.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -156,7 +157,7 @@ export const tools = {
   },
 
   archkit_drift: {
-    description: "Detect mismatches between .arch/ and the live codebase: skills referencing packages that no longer exist in package.json, INDEX.md entries pointing at deleted basePaths, cluster .graph nodes whose source files are gone, name/scope mismatches. Returns findings with severity and suggested actions; does NOT modify files. When to use: as a periodic maintenance check, after a refactor, after dependency removal, or whenever review starts surfacing rules that feel outdated.",
+    description: "Detect mismatches between .arch/ and the live codebase: playbooks referencing packages that no longer exist in package.json, INDEX.md entries pointing at deleted basePaths, cluster .graph nodes whose source files are gone, name/scope mismatches. Returns findings with severity and suggested actions; does NOT modify files. When to use: as a periodic maintenance check, after a refactor, after dependency removal, or whenever review starts surfacing rules that feel outdated.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -207,7 +208,7 @@ export const tools = {
   },
 
   archkit_sync: {
-    description: "Detect .arch/ spec files that have gone stale against the live src/ tree — the context-freshness scan. Compares the codebase to .arch/ and reports what an agent must author/update to keep its context current: new feature directories (src/features|modules|domains/* plus *.handler / *.chain files) missing from INDEX.md, installed package.json deps that match a known skill but have no .skill file, INDEX.md nodes whose basePath directory was deleted, and .skill version drift vs the installed package version. Returns { archDir, srcDir, suggestions:[{type,id,action,command?}], syncNeeded:boolean, nextStep }. DISTINCT from archkit_drift (which reconciles the cluster .graph node-graph against source files — drift is graph-internal consistency; sync is which .arch/ DOCS need writing after you add features or deps) and from archkit_doctor (which gauges whether the .arch/ surface is load-bearing at all). When to use: after adding a feature directory, installing/removing a dependency, or deleting code — to find which .arch/ files need updating so future-session context isn't stale.",
+    description: "Detect .arch/ spec files that have gone stale against the live src/ tree — the context-freshness scan. Compares the codebase to .arch/ and reports what an agent must author/update to keep its context current: new feature directories (src/features|modules|domains/* plus *.handler / *.chain files) missing from INDEX.md, installed package.json deps that match a known playbook but have no playbook file, INDEX.md nodes whose basePath directory was deleted, and playbook version drift vs the installed package version. Returns { archDir, srcDir, suggestions:[{type,id,action,command?}], syncNeeded:boolean, nextStep }. DISTINCT from archkit_drift (which reconciles the cluster .graph node-graph against source files — drift is graph-internal consistency; sync is which .arch/ DOCS need writing after you add features or deps) and from archkit_doctor (which gauges whether the .arch/ surface is load-bearing at all). When to use: after adding a feature directory, installing/removing a dependency, or deleting code — to find which .arch/ files need updating so future-session context isn't stale.",
     inputSchema: z.object({
       srcDir: z.string().optional().describe("Source directory to compare against .arch/. Default 'src'."),
     }),
@@ -259,7 +260,7 @@ export const tools = {
   },
 
   archkit_goal_intake: {
-    description: "CGR (Clear Goal Run): accept a structured decomposition of a sprawling user ask into one or more discrete goals, persist them to .arch/goals/<slug>.md, and return a payload per goal (<=3800 chars). Call this AS SOON AS the user types a multi-goal or unclear ask in a fresh session — BEFORE writing code. You (the agent) do the decomposition: split the ask into 1..N discrete goals, give each a kebab-case slug, a one-line title, 2-5 exitCriteria, and optionally filesToTouch + requiredReading (paths like .arch/skills/<x>.skill that capture API quirks). If the ask is one goal, pass a single-element goals array. If the ask is ambiguous, ASK the user to clarify before calling this. To START the first goal, tell the user to run /clear then the slash command /mcp__archkit__goal_next (the relay — it marks the next goal in-progress and injects it automatically; the returned payloads are a fallback they can paste after /goal). You CANNOT run /clear or /mcp__archkit__goal_next yourself — they are the user's keystrokes; your job is to instruct them. Workflow: intake -> user: /clear + /mcp__archkit__goal_next -> work goal 0 (the Stop hook blocks stopping until it's done) -> archkit_goal_complete -> user: /clear + /mcp__archkit__goal_next -> ... TEST GATE: the project's test command is auto-detected from package.json scripts.test and baked onto each goal as verify-command; archkit_goal_complete re-runs it and refuses to complete on red. Pass verifyCommand per goal to scope it to that goal's slice (e.g. \"vitest run src/auth/\") or to set one when auto-detect can't.",
+    description: "CGR (Clear Goal Run): accept a structured decomposition of a sprawling user ask into one or more discrete goals, persist them to .arch/goals/<slug>.md, and return a payload per goal (<=3800 chars). Call this AS SOON AS the user types a multi-goal or unclear ask in a fresh session — BEFORE writing code. You (the agent) do the decomposition: split the ask into 1..N discrete goals, give each a kebab-case slug, a one-line title, 2-5 exitCriteria, and optionally filesToTouch + requiredReading (paths like .arch/playbooks/<x>.playbook that capture API quirks). If the ask is one goal, pass a single-element goals array. If the ask is ambiguous, ASK the user to clarify before calling this. To START the first goal, tell the user to run /clear then the slash command /mcp__archkit__goal_next (the relay — it marks the next goal in-progress and injects it automatically; the returned payloads are a fallback they can paste after /goal). You CANNOT run /clear or /mcp__archkit__goal_next yourself — they are the user's keystrokes; your job is to instruct them. Workflow: intake -> user: /clear + /mcp__archkit__goal_next -> work goal 0 (the Stop hook blocks stopping until it's done) -> archkit_goal_complete -> user: /clear + /mcp__archkit__goal_next -> ... TEST GATE: the project's test command is auto-detected from package.json scripts.test and baked onto each goal as verify-command; archkit_goal_complete re-runs it and refuses to complete on red. Pass verifyCommand per goal to scope it to that goal's slice (e.g. \"vitest run src/auth/\") or to set one when auto-detect can't. PARALLEL-LANE PLANNING (CGR 2.0, ADR 0013): each goal may also carry `dependsOn` (DAG edges), `owns` (predicted file-ownership globs — the conflict unit), `feature` (cohesion tag), and `exclusive` (run-solo barrier). Intake partitions the batch into parallel lanes (grouped by feature cohesion, REQUIRING disjoint owns across lanes — overlapping ownership is serialized into one lane; exclusive goals become solo barriers), stamps each goal's computed `lane`, and returns the plan as `lanes:{ lanes, barriers, stages, parallelWidth }`. Predicting owns/feature well is what lets workers run concurrently without colliding.",
     inputSchema: z.object({
       sourceAsk: z.string().optional().describe("The user's original ask (first ~500 chars). Stored with each goal for backtrace."),
       goals: z.array(z.object({
@@ -268,8 +269,11 @@ export const tools = {
         why: z.string().optional().describe("Optional 1-3 sentence motivation."),
         exitCriteria: z.array(z.string()).min(1).describe("Concrete completion conditions. Goal is done when ALL are met."),
         filesToTouch: z.array(z.string()).optional().describe("Best-guess files this goal will modify."),
-        requiredReading: z.array(z.string()).optional().describe("Paths the agent must read first, e.g. .arch/skills/kalshi.skill."),
-        dependsOn: z.array(z.string()).optional().describe("Other goal slugs that must complete first."),
+        requiredReading: z.array(z.string()).optional().describe("Paths the agent must read first, e.g. .arch/playbooks/kalshi.playbook."),
+        dependsOn: z.array(z.string()).optional().describe("Other goal slugs that must complete first — the dependency DAG edge. Folded by archkit_session_state into blocked/frontier and used by lane partitioning to sequence within a lane."),
+        owns: z.array(z.string()).optional().describe("Predicted file-ownership globs this goal claims (e.g. [\"src/auth/*\", \"src/lib/jwt.mjs\"]) — the parallel-safety keystone (ADR 0013). Lane partitioning REQUIRES disjoint owns across parallel lanes: any two goals whose owns overlap are serialized into ONE lane. Best-effort prediction; worktree isolation is the safety net for imperfections. Falls back to filesToTouch when omitted."),
+        feature: z.string().optional().describe("Feature-cohesion tag (e.g. \"auth\", \"checkout\"). The PRIMARY lane-grouping signal: goals sharing a feature land in one lane (same feature ≈ same files, kept serial + context-warm). Distinct from `epic` (sequencing) and `project` (branch isolation) — `feature` drives the conductor/worker lane partition."),
+        exclusive: z.boolean().optional().describe("Mark a cross-cutting goal (repo-wide rename, \"add logging everywhere\") that must run SOLO as a barrier: everything before it merges, it runs alone, then fan-out resumes. Pulled out of the parallel lane partition and emitted as its own barrier stage."),
         epic: z.string().optional().describe("Optional group label tying this goal to a larger objective (e.g. \"oauth-migration\"). Goals sharing an epic are clustered in archkit_goal_list's `epics` view — the project-space segmentation. Slugified on write. NOTE: `epic` is a SEQUENCING group (drains one objective before the next); use `project` instead when goals should be branch-isolated for parallel work."),
         project: z.string().optional().describe("Optional branch-isolated feature set (e.g. \"oauth-ui\"). Goals sharing a project are meant to live on ONE git branch (feat/<project>) so multiple agents can work feature sets in parallel without colliding. When set, the goal's payload gains a branch-prework block telling the agent to `git switch -c feat/<project>` before editing and commit each completed CGR to that branch (archkit emits the guidance; the agent runs git). Surfaced in archkit_goal_list's `projects` view. Distinct from `epic`: epic = sequencing group (run order); project = branch-isolated feature set (parallel work). Slugified on write."),
         order: z.number().optional().describe("Explicit relay sort key — lower runs first. Omit to auto-assign from this goal's position in the goals array (offset past existing live goals), so /mcp__archkit__goal_next honors the decomposition order instead of alphabetical slug order. Set explicitly to pin a sequence."),
@@ -316,6 +320,58 @@ export const tools = {
     },
   },
 
+  archkit_session_state: {
+    description: "CGR 2.0 conductor view — return the FOLDED board for parallel-lane orchestration (board-state-manager, ADR 0014). The board is purely DERIVED: it is reconstituted on every call by folding the append-only event log at .arch/board/events.ndjson (events: claimed, completed, fissioned, merged, conflict, lease-expired) and scanning the CGR record files — there is NO mutable board file, so it survives /clear and auto-compaction and can never drift from its inputs. Returns the seven-slice projection { lanes, frontier, blocked, in_flight, merge_queue, conflicts, leases_expired }: `lanes` groups every live CGR by its parallel track; `frontier` is the pending CGRs whose depends_on are all met and that aren't already claimed (the workable set a fresh worker should pull from); `blocked` is live CGRs with an unmet dependency (each with its blockedOn list); `in_flight` is CGRs claimed but not yet completed (lane/worker/lease); `merge_queue` is CGRs completed but not yet merged (full|partial); `conflicts` is file-overlap among live CGRs plus conflict events; `leases_expired` is in-flight claims whose lease TTL elapsed (reclaim as orphans). When to use: at conductor session start (after /clear or compaction) to rehydrate what remains in flight, and before dispatching a worker to pick the next frontier CGR or reclaim an expired lease. Read-only — folds, never writes.",
+    inputSchema: z.object({}),
+    handler: async () => {
+      const cwd = process.cwd();
+      const archDir = requireArchDir(cwd);
+      const board = sessionState(archDir);
+      const counts = {
+        lanes: Object.keys(board.lanes).length,
+        frontier: board.frontier.length,
+        blocked: board.blocked.length,
+        in_flight: board.in_flight.length,
+        merge_queue: board.merge_queue.length,
+        conflicts: board.conflicts.length,
+        leases_expired: board.leases_expired.length,
+      };
+      const empty = Object.values(counts).every((n) => n === 0);
+      const out = { ...board, counts };
+      if (empty) {
+        // Silent-success: an empty board is a valid derived state, not a failure —
+        // say so rather than returning seven bare empty slices.
+        out.boardNote = "Board empty — no folded events in .arch/board/events.ndjson and no live CGRs. The board is purely derived from those inputs.";
+        out.nextStep = "No CGRs in flight. Run archkit_goal_next (or intake) to queue work; workers append claimed/completed events that this board folds.";
+      } else {
+        out.nextStep = `Board: ${counts.frontier} frontier, ${counts.in_flight} in-flight, ${counts.merge_queue} to merge, ${counts.blocked} blocked, ${counts.leases_expired} expired leases.`;
+      }
+      return out;
+    },
+  },
+
+  archkit_conductor: {
+    description: "CGR 2.0 CONDUCTOR LOOP — the orchestration plan for one foreground (conductor) session pass (conductor-loop-hooks, ADR 0013). After /clear or compaction the foreground session ORCHESTRATES rather than codes: it reads this plan and runs the loop — (1) claim the next frontier CGR(s) under a lease (archkit advances the board; the lease TTL is cgr.leaseTtlHours, default 24h), (2) spawn ONE worker subagent per claimable LANE in an isolated git worktree (lanes have disjoint file-ownership, so they run in parallel; `barriers` are exclusive cross-cutting CGRs that run SOLO), (3) collect each worker's HANDOFF return, (4) DEEP-REVIEW ONLY the `exceptions` (partial completions, non-green verification, low ownership-accuracy, cross-lane conflicts) — rubber-stamp the `clean` set, (5) drain `mergeOrder` as a SEQUENTIAL merge queue, dependency-ordered, verifying after EACH merge. Read-only — folds the board, never writes (claim/reclaim/merge are the agent's explicit follow-up actions; archkit emits the plan, the agent acts). Returns { claimableLanes, barriers, inFlight, mergeOrder, exceptions, clean, conflicts, leasesExpired, blocked, counts, nextStep }. DISTINCT from archkit_session_state (the raw seven-slice board): conductor LAYERS the loop view on top — lane-grouped claimable work, the dependency-ordered merge queue, and the exceptions-to-review filter. When to use: at conductor session start to plan a dispatch pass, and after collecting worker handoffs to decide merges.",
+    inputSchema: z.object({}),
+    handler: async () => {
+      const cwd = process.cwd();
+      const archDir = requireArchDir(cwd);
+      const plan = conductorPlan(archDir);
+      const c = plan.counts;
+      const idle = c.frontier === 0 && c.in_flight === 0 && c.merge_queue === 0 && c.leases_expired === 0;
+      const out = { ...plan };
+      if (idle) {
+        out.conductorNote = "Conductor idle — no frontier to claim, nothing in flight, empty merge queue. The plan is purely derived from the board (.arch/board/events.ndjson + CGR files).";
+        out.nextStep = "Nothing to orchestrate. Run archkit_goal_intake to queue work, or /mcp__archkit__goal_next to start a goal — workers append claimed/completed events this plan folds.";
+      } else {
+        const review = c.exceptions > 0 ? `, deep-review ${c.exceptions} exception${c.exceptions === 1 ? "" : "s"}` : "";
+        const reclaim = c.leases_expired > 0 ? `, reclaim ${c.leases_expired} orphan lease${c.leases_expired === 1 ? "" : "s"}` : "";
+        out.nextStep = `Loop: claim ${c.claimableLanes} lane${c.claimableLanes === 1 ? "" : "s"}${c.barriers ? ` + ${c.barriers} barrier${c.barriers === 1 ? "" : "s"}` : ""}, ${c.in_flight} in flight, merge ${c.merge_queue} in dep order${review}${reclaim}. Spawn one worktree-isolated worker per claimable lane; merge sequentially with verify-after-each.`;
+      }
+      return out;
+    },
+  },
+
   archkit_goal_payload: {
     description: "Re-render the copy-paste payload (<=3800 chars) for an existing CGR goal — use when the user lost the payload, wants to re-paste it, or you need to inspect it before instructing /clear + /goal. archkit_goal_intake returns payloads at creation time and archkit_goal_complete returns the NEXT goal's payload; this tool covers the in-between case of fetching a specific goal's payload on demand. Returns { payload:string, length:number, withinBudget:boolean }.",
     inputSchema: z.object({
@@ -348,6 +404,29 @@ export const tools = {
     },
   },
 
+  archkit_goal_handoff: {
+    description: "CGR 2.0 wind-down — author the carry-forward HANDOFF artifact for a goal (handoff-and-winddown, ADR 0015). The attention-gradient policy reserves the context window's PEAK zone (first ~65%) for high-attention work and the degradation-TOLERANT tail for authoring this handoff: once your context fill reaches cgr.windDownAt (default 0.65, per-model override via cgr.windDownAtByModel in .arch/config.json), STOP accepting new goals and call this instead — it is the worker return, the PreCompact flush, the rehydration input, and the fission successor-input, all one object. Writes .arch/board/handoff/<slug>.md with done(+evidence), decisions, files-actual-vs-predicted, remaining, continuation-notes, open-questions, and verification-status; survives /clear and auto-compaction like the event log. Computes an OWNERSHIP-ACCURACY signal: the goal's predicted file-ownership (its `owns` globs ∪ declared files-to-touch) vs the files ACTUALLY touched (your `actualFiles` ∪ the git working tree) — surfaced as accuracy + matched/unexpected/missed. Stamps the `handoff` pointer onto the goal and (when `successor` is given) onto the fission successor CGR's frontmatter, so the handoff is referenced by successor frontmatter and readable via archkit_session_state's `handoffs` slice. Does NOT complete or move the goal (wind-down is authoring, not closing): after authoring, archkit_goal_complete it if verification is green, or park it with archkit_goal_testing. When to use: at the wind-down threshold, OR before a deliberate /clear/compaction, OR when fissioning a partial goal into a lean successor. Returns { path, pointer, ownershipAccuracy, ownership, verificationStatus, windDownAt, successor, nextStep }.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to author the handoff for."),
+      done: z.array(z.union([
+        z.string(),
+        z.object({ criterion: z.string(), evidence: z.string().optional() }),
+      ])).optional().describe("Completed exit-criteria, each ideally as { criterion, evidence } where evidence is concrete proof (test name, command output, file:line). Plain strings are accepted and stored with empty evidence."),
+      decisions: z.array(z.string()).optional().describe("Non-trivial decisions made while working the goal — the institutional memory a fresh head needs. For ARCHITECTURAL decisions, also archkit_log_decision an ADR; this list is the lighter per-goal record."),
+      remaining: z.array(z.string()).optional().describe("Work NOT yet done — the lean successor's starting backlog. Empty when the goal is fully complete."),
+      continuationNotes: z.string().optional().describe("Free-form notes for the next session's fresh head: where you left off, gotchas, what to re-plan. The tail writes it down; the fresh head re-plans (reasoning-heavy re-planning is NOT done in the degraded tail)."),
+      openQuestions: z.array(z.string()).optional().describe("Unresolved questions that need a human or a fresh-context decision."),
+      verificationStatus: z.enum(["green", "red", "partial", "unverified"]).optional().describe("State of the verify-command/exit-criteria: green (all pass), red (failing), partial (some verified), or unverified (not run). Default unverified. Drives the nextStep guidance and surfaces in session_state."),
+      actualFiles: z.array(z.string()).optional().describe("Files this goal actually touched. Unioned with the git working-tree changes to compute ownership accuracy vs the goal's predicted owns/files-to-touch. Omit to use the git working tree alone."),
+      successor: z.string().optional().describe("Slug of the fission successor CGR to ALSO stamp with this handoff pointer (the carry-forward reference). Must already exist. Omit when not fissioning."),
+      model: z.string().optional().describe("The authoring model id (e.g. claude-opus-4-8). Recorded on the handoff and used to resolve the per-model wind-down threshold (cgr.windDownAtByModel)."),
+    }),
+    handler: async ({ slug, done, decisions, remaining, continuationNotes, openQuestions, verificationStatus, actualFiles, successor, model }) => {
+      const cwd = process.cwd();
+      return runGoalHandoff({ archDir: requireArchDir(cwd), cwd, slug, done, decisions, remaining, continuationNotes, openQuestions, verificationStatus, actualFiles, successor, model });
+    },
+  },
+
   archkit_goal_complete: {
     description: "Mark a CGR goal done. Moves the file from .arch/goals/<slug>.md to .arch/goals/done/<slug>.md, records the completion DATETIME (full ISO-8601), and returns the NEXT pending goal's payload (or nextGoal:null when the queue is empty). Call this AS SOON AS the active goal's exit-criteria are all met — it is the signal that RELEASES the Stop-hook relay guard so the session can end. HARD TEST GATE: if the goal has a verify-command (auto-detected at intake or set explicitly), this re-runs it and REFUSES to complete on red — erroring with test_gate_failed and the failing output tail. Fix the tests and retry, or archkit_goal_abandon if the goal is obsolete. On success it stamps tests-passed/tests-command/tests-at on the archived goal. TIME CAPTURE: started/completed are full datetimes, so the result carries derived wall-clock elapsed (`elapsedMs` / `effort`); pass the optional `timeSpent` (e.g. '2h', '90m') to record honest hands-on effort, which is persisted as the time-spent frontmatter key and TAKES PRECEDENCE over derived elapsed (wall-clock includes idle gaps). When this completion DRAINS the queue (no goal left), it also fires the incremental consolidation/digest: terminal goals are summarized into a dated digest at goals/done/digest/<date>.md and their raw CGR files are preserved verbatim under goals/done/archive/ (returned as `consolidation`). END-OF-BUCKET: when this completion drains the LAST live goal of its bucket — a project feature set (feat/<project>) or the ungrouped queue (cgr-queue-<date>) — the result carries `bucketCompletion` ({ bucket, project, branch, mainline, mainlineSource, mergeGuidance }) and the nextStep leads with a merge-or-archive CHOICE. Present it to the user with AskUserQuestion: MERGE lands the branch (relay the emitted `mergeGuidance`, e.g. `git switch <mainline> && git merge <branch>` — archkit NEVER runs git; the user does) or ARCHIVE only (the CGRs consolidate into done/ as usual and the branch is left unmerged, no git guidance). The mainline target is configurable via .arch/config.json → cgr.mainline and otherwise detected (main/master, default main). `bucketCompletion` is null on an ordinary mid-bucket completion (no prompt). Then tell the user to run /clear then /mcp__archkit__goal_next to start the next goal in a fresh context (the returned payload is a fallback they can paste after /goal). Optional `notes` is appended as completion-notes frontmatter.",
     inputSchema: z.object({
@@ -358,6 +437,29 @@ export const tools = {
     handler: async ({ slug, notes, timeSpent }) => {
       const cwd = process.cwd();
       return runGoalComplete({ archDir: requireArchDir(cwd), cwd, slug, notes, timeSpent });
+    },
+  },
+
+  archkit_goal_fission: {
+    description: "CGR 2.0 FISSION — split a PARTIALLY-met goal at wind-down with a HARD verify gate (fission-transition, ADR 0014/0015). Resume is by fission, not replay: a fully-met CGR closes normally (archkit_goal_complete), but a goal that's only PARTLY done splits here. The MET criteria are verified IN ISOLATION, and ONLY on green does the finished portion close as a terminal `partial` record while a LEAN SUCCESSOR carrying just the UNMET criteria + a carry-forward handoff + lineage (forked_from / superseded_by, linked both ways) is forked — so the next fresh session loads the remainder, not the history. The gate is HARD and inherits the same no-silent-debt rule as full completion: if verification CANNOT be ISOLATED to the met criteria (you didn't supply a `verifyCommand` scoped to them, and the goal's whole-goal verify-command would also exercise the unmet work) OR the isolated run is RED, fission BLOCKS and surfaces to attention — it NEVER forks unverified debt into the successor. Tell the agent which criteria are done via `criteriaMet` (a boolean vector aligned by index with the goal's exit-criteria); a fully-true vector is refused (complete normally), an all-false vector is refused (nothing finished to close). On success it authors the handoff (.arch/board/handoff/<slug>.md, remaining = the unmet criteria), appends cgr.closed(partial) + cgr.forked to the board event log, and the scheduler then PREFERS the forked continuation over cold pending work. When to use: at the wind-down threshold when a goal is genuinely partly-done and you want to bank the verified portion and hand off the rest. Returns { completion:'partial', closed:{slug,criteriaMet,archivedAt}, successor:{slug,carriedForward,handoff,lineage,payload}, verify, events, ownershipAccuracy, nextStep }.",
+    inputSchema: z.object({
+      slug: z.string().min(1).describe("Goal slug to fission (the partially-met goal to split)."),
+      criteriaMet: z.array(z.boolean()).optional().describe("Per-criterion met flags aligned BY INDEX with the goal's exit-criteria (true = done). Falls back to the goal's stamped criteria-met. An all-true vector is rejected (complete normally); an all-false vector is rejected (nothing finished to close) — fission needs a genuine partial."),
+      verifyCommand: z.string().optional().describe("Verify-command scoped to ONLY the MET criteria (e.g. a single test file/path) — the ISOLATION proof that gates the split. Required unless the goal carries a `partial-verify-command` frontmatter field. Without it fission BLOCKS: the whole-goal verify-command can't be isolated to the met criteria, and forking unverified debt is refused (no silent debt fork)."),
+      successorSlug: z.string().optional().describe("Override the forked successor's slug (default <slug>-cont, deduped against live + archived goals)."),
+      done: z.array(z.union([z.string(), z.object({ criterion: z.string(), evidence: z.string().optional() })])).optional().describe("Evidence for the MET criteria, recorded on the carry-forward handoff. Defaults to the met criteria text."),
+      decisions: z.array(z.string()).optional().describe("Non-trivial decisions made while working the goal — recorded on the handoff for the successor's fresh head."),
+      remaining: z.array(z.string()).optional().describe("Override the successor's carried-forward backlog. Defaults to the UNMET criteria."),
+      continuationNotes: z.string().optional().describe("Free-form notes for the successor's fresh head: where you left off, gotchas, what to re-plan."),
+      openQuestions: z.array(z.string()).optional().describe("Unresolved questions for a human or fresh-context decision."),
+      actualFiles: z.array(z.string()).optional().describe("Files this goal actually touched. Unioned with the git working tree for the handoff's ownership-accuracy signal."),
+      model: z.string().optional().describe("Authoring model id (e.g. claude-opus-4-8), recorded on the handoff."),
+      notes: z.string().optional().describe("Completion notes for the closed partial record."),
+      timeSpent: z.string().optional().describe("Explicit hands-on effort (e.g. '2h', '90m') for the closed partial record."),
+    }),
+    handler: async ({ slug, criteriaMet, verifyCommand, successorSlug, done, decisions, remaining, continuationNotes, openQuestions, actualFiles, model, notes, timeSpent }) => {
+      const cwd = process.cwd();
+      return runGoalFission({ archDir: requireArchDir(cwd), cwd, slug, criteriaMet, verifyCommand, successorSlug, done, decisions, remaining, continuationNotes, openQuestions, actualFiles, model, notes, timeSpent });
     },
   },
 
@@ -479,7 +581,7 @@ export const tools = {
   },
 
   archkit_doctor: {
-    description: "Workflow logistic gauge — aggregates archkit_resolve_warmup + archkit_drift findings AND adds four surface checks that ask whether .arch/ is actually load-bearing: (1) skills with zero real WRONG/RIGHT/WHY gotchas (present on disk but contributing nothing to archkit_review), (2) BAN directives in BOUNDARIES.md whose source-glob matches no file in the working tree (warning, not error — could be future-protecting, could be stale), (3) active CGR goals in .arch/goals/ with vacuous exit-criteria (<8 chars or generic phrases like \"ship it\", \"done\") or no required-reading, (4) whether archkit's guardrail hooks are even installed (D-HOOKS) — if not, the SessionStart digest, CGR Stop-guard, and review-on-edit never fire; fix with archkit_install_hooks. Returns { pass, checks:[{id,name,status,detail}], blockers, warnings, summary, intent, sources, nextStep }. Different from warmup: warmup runs at session start and is structural (\"can I trust .arch/ at all?\"); doctor runs on demand and is intent-checking (\"does the configured surface actually fire?\"). When to use: as a periodic health check before a long session, after BOUNDARIES.md edits, after adding skills, or when archkit-driven reviews start feeling like noise.",
+    description: "Workflow logistic gauge — aggregates archkit_resolve_warmup + archkit_drift findings AND adds four surface checks that ask whether .arch/ is actually load-bearing: (1) playbooks with zero real WRONG/RIGHT/WHY gotchas (present on disk but contributing nothing to archkit_review), (2) BAN directives in BOUNDARIES.md whose source-glob matches no file in the working tree (warning, not error — could be future-protecting, could be stale), (3) active CGR goals in .arch/goals/ with vacuous exit-criteria (<8 chars or generic phrases like \"ship it\", \"done\") or no required-reading, (4) whether archkit's guardrail hooks are even installed (D-HOOKS) — if not, the SessionStart digest, CGR Stop-guard, and review-on-edit never fire; fix with archkit_install_hooks. Returns { pass, checks:[{id,name,status,detail}], blockers, warnings, summary, intent, sources, nextStep }. Different from warmup: warmup runs at session start and is structural (\"can I trust .arch/ at all?\"); doctor runs on demand and is intent-checking (\"does the configured surface actually fire?\"). When to use: as a periodic health check before a long session, after BOUNDARIES.md edits, after adding playbooks, or when archkit-driven reviews start feeling like noise.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -524,7 +626,7 @@ export const tools = {
   },
 
   archkit_init_generate: {
-    description: "GENERATE the .arch/ scaffold from structured answers — the acting counterpart to archkit_init, which only INSTRUCTS. Use this to complete greenfield setup end-to-end: after archkit_init returns the wizard instructions, archetype skeletons, and PRD signal, decide the answers WITH the user (which archetype, what stack, the feature list) and call this tool to WRITE the files — no inquirer TTY required. It drives the same scaffold-generation core the interactive wizard wraps, so the output is identical: .arch/SYSTEM.md, INDEX.md, README.md, BOUNDARIES.md, CONTEXT.compact.md, clusters/*.graph (one per feature + infra + events), skills/*.skill, apis/*.api, lenses/*, and — when claudeMode (default true) — CLAUDE.md + .claude/rules/ + .claude/skills/ + .claude/settings.json hooks, plus a git pre-commit review hook when a .git dir is present. REFUSES to clobber an existing .arch/ unless overwrite:true. After it returns, call archkit_resolve_warmup to verify and archkit_log_decision to record the foundation ADR. Required: appName, appType. Everything else has archetype-derived defaults.",
+    description: "GENERATE the .arch/ scaffold from structured answers — the acting counterpart to archkit_init, which only INSTRUCTS. Use this to complete greenfield setup end-to-end: after archkit_init returns the wizard instructions, archetype skeletons, and PRD signal, decide the answers WITH the user (which archetype, what stack, the feature list) and call this tool to WRITE the files — no inquirer TTY required. It drives the same scaffold-generation core the interactive wizard wraps, so the output is identical: .arch/SYSTEM.md, INDEX.md, README.md, BOUNDARIES.md, CONTEXT.compact.md, clusters/*.graph (one per feature + infra + events), playbooks/*.playbook, apis/*.api, lenses/*, and — when claudeMode (default true) — CLAUDE.md + .claude/rules/ + .claude/skills/ + .claude/settings.json hooks, plus a git pre-commit review hook when a .git dir is present. REFUSES to clobber an existing .arch/ unless overwrite:true. After it returns, call archkit_resolve_warmup to verify and archkit_log_decision to record the foundation ADR. Required: appName, appType. Everything else has archetype-derived defaults.",
     inputSchema: z.object({
       appName: z.string().min(1).describe("Project/app name shown in generated files (e.g. \"acme-billing\")."),
       appType: z.enum(["saas", "ecommerce", "realtime", "data", "ai", "mobile", "ios-swift", "internal", "content"]).describe("Archetype — determines architecture pattern, folder conventions, reserved words, default stack, and graph node templates. Pick from archkit_init's skeletonsIndex. \"ios-swift\" = native Swift/SwiftUI iOS app (MVVM) with decision-aware backend/storage option sets — see stackDecision."),
@@ -534,7 +636,7 @@ export const tools = {
         name: z.string().optional().describe("Human display name. Defaults from id."),
         keywords: z.string().optional().describe("Comma-separated routing keywords for INDEX.md. Defaults to id."),
       })).optional().describe("Features to scaffold as clusters. Omit to use the archetype's suggested features. At least one feature is required (after defaults)."),
-      skills: z.array(z.string()).optional().describe("Package skill ids to scaffold (must exist in the skill catalog, e.g. \"postgres\", \"stripe\"). Unknown ids are rejected. Default none."),
+      skills: z.array(z.string()).optional().describe("Package playbook ids to scaffold (must exist in the playbook catalog, e.g. \"postgres\", \"stripe\"). Unknown ids are rejected. Default none. The param is named `skills` for back-compat."),
       crossRefs: z.union([z.literal("ai"), z.array(z.object({ from: z.string(), to: z.string(), reason: z.string() }))]).optional().describe("Feature dependency edges: \"ai\" to mark them AI-inferred at codegen time, or an explicit list of {from,to,reason}. Default none."),
       stackDecision: z.object({
         serverStack: z.object({

@@ -20,6 +20,8 @@ import {
   listGoals,
   nextOrderBase,
   loadGoal,
+  partitionLanes,
+  stampGoalFields,
   completeGoal,
   abandonGoal,
   markTesting,
@@ -46,7 +48,14 @@ import {
   writeGraphProposal,
   acceptGraphProposal,
   bucketCompletion,
+  ownsOf,
+  filesToTouchOf,
+  windDownAt,
+  partitionCriteria,
+  fissionDecision,
+  forkSuccessor,
 } from "../lib/goals.mjs";
+import { writeHandoff, appendEvent } from "../lib/board.mjs";
 import crypto from "node:crypto";
 import { detectTestCommand, runTests } from "../lib/test-runner.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -104,11 +113,34 @@ export function runGoalIntake({ archDir, cwd, sourceAsk, goals }) {
     batchIndex++;
     const { slug, filepath } = writeGoal(archDir, g);
     written.push({ slug, filepath: path.relative(cwd, filepath), verifyCommand: g.verifyCommand || null });
-    const { payload, length, withinBudget } = renderPayload(archDir, slug);
-    payloads.push({ slug, payload, length, withinBudget });
   }
+
+  // Lane planning (intake-dag-ownership / ADR 0013): partition THIS batch into
+  // parallel lanes by feature cohesion + disjoint ownership, with exclusive goals
+  // as solo barriers, then stamp each goal's computed `lane` onto its frontmatter
+  // so archkit_session_state's `lanes` slice reflects the intended partition. The
+  // partition is over the just-written batch (load them back so the accessors read
+  // the persisted owns/feature/exclusive). Stamping happens BEFORE renderPayload so
+  // a goal's payload could surface its lane. Best-effort: a planning hiccup must not
+  // sink intake, so it never throws.
+  let lanePlan = null;
+  try {
+    const batch = written.map((w) => loadGoal(archDir, w.slug)).filter(Boolean);
+    lanePlan = partitionLanes(batch);
+    for (const lane of [...lanePlan.lanes, ...lanePlan.barriers]) {
+      for (const slug of lane.goals) stampGoalFields(archDir, slug, { lane: lane.lane });
+    }
+  } catch { lanePlan = null; }
+
+  // Render payloads AFTER lane stamping so each payload reflects its final frontmatter.
+  for (const w of written) {
+    const { payload, length, withinBudget } = renderPayload(archDir, w.slug);
+    payloads.push({ slug: w.slug, payload, length, withinBudget });
+  }
+
   return {
     written,
+    lanes: lanePlan,
     testGate: detected
       ? `Detected test command "${detected.command}" (${detected.source}) — baked onto goals as verify-command. archkit_goal_complete will run it and refuse to complete on red.`
       : `No test command detected (no package.json scripts.test). Goals have no test gate — set verifyCommand per goal to enable one.`,
@@ -277,6 +309,58 @@ export function runGoalStart({ archDir, slug }) {
   };
 }
 
+// Author the wind-down handoff artifact (handoff-and-winddown, ADR 0015). The
+// degradation-tolerant tail's productive output: the linchpin carry-forward that
+// is the worker return, PreCompact flush, rehydration input, and fission
+// successor-input all at once. Predicted ownership = the goal's `owns` globs ∪ its
+// declared files-to-touch; actual = the caller-supplied list ∪ the git working
+// tree, so the ownership-accuracy signal is computed from real edits even when the
+// caller passes nothing. Stamps the `handoff` pointer onto the goal AND onto an
+// optional `successor` CGR (the fission carry-forward reference), so the handoff is
+// referenceable from successor frontmatter and surfaces in archkit_session_state's
+// `handoffs` slice. Does NOT complete or move the goal — wind-down is authoring,
+// not closing.
+export function runGoalHandoff({ archDir, cwd = process.cwd(), slug, model, done, decisions, remaining, continuationNotes, openQuestions, verificationStatus, actualFiles, successor } = {}) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) {
+    const active = listGoals(archDir).map((g) => g.slug);
+    throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+      suggestion: active.length ? `Active goals: ${active.join(", ")}` : "No active goals — nothing to author a handoff for.",
+    });
+  }
+  const predicted = [...new Set([...ownsOf(goal), ...filesToTouchOf(goal)])];
+  const actual = [...new Set([...(Array.isArray(actualFiles) ? actualFiles : []), ...gitModifiedFiles(cwd)])];
+
+  const written = writeHandoff(archDir, slug, {
+    model, done, decisions, remaining, continuationNotes, openQuestions, verificationStatus,
+    predicted, actual,
+  });
+
+  // Reference the handoff from the goal itself and, when given, the fission
+  // successor (exit-criterion 3: referenced by successor CGR frontmatter).
+  stampGoalFields(archDir, slug, { handoff: written.pointer });
+  let successorStamped = null;
+  if (successor && loadGoal(archDir, successor)) {
+    stampGoalFields(archDir, successor, { handoff: written.pointer });
+    successorStamped = successor;
+  }
+
+  const threshold = windDownAt(archDir, { model });
+  const o = written.ownership;
+  return {
+    slug,
+    path: written.relPath,
+    pointer: written.pointer,
+    handoff: written.pointer,
+    successor: successorStamped,
+    verificationStatus: written.verificationStatus,
+    ownershipAccuracy: written.ownershipAccuracy,
+    ownership: { matched: o.matched, unexpected: o.unexpected, missed: o.missed },
+    windDownAt: threshold,
+    nextStep: `Handoff authored at .arch/board/handoff/${slug}.md (accuracy ${written.ownershipAccuracy}, ${written.verificationStatus}); readable via archkit_session_state. ${written.verificationStatus === "green" ? `Green — archkit_goal_complete ${slug}.` : `Not green — verify, or park with archkit_goal_testing ${slug}.`}`,
+  };
+}
+
 export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, timeSpent }) {
   // HARD test gate: if the goal declares a verify-command, run it and refuse to
   // complete on red (or if it can't run). This is what makes "done" provably
@@ -390,6 +474,136 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
     nextStep: next
       ? `${bucketNote ? bucketNote.trim() + " Then: " : ""}Run /clear, then /mcp__archkit__goal_next to begin ${next.slug}.${timeNote}${graphNote}`
       : `CGR queue empty.${bucketNote}${drainNote}${timeNote}${graphNote}${bucketNote ? "" : " Ask the user what to tackle next."}`,
+  };
+}
+
+// CGR 2.0 FISSION — partial-complete split with a HARD verify gate (fission-
+// transition, ADR 0014/0015). At wind-down a fully-met goal closes normally
+// (archkit_goal_complete); a PARTIALLY-met goal splits here. The MET criteria are
+// verified IN ISOLATION, and only on green does the finished portion close as a
+// terminal `partial` record while a lean SUCCESSOR carrying just the UNMET
+// criteria + carry-forward handoff + lineage is forked. The gate is HARD (mirrors
+// runGoalComplete): if verification can't be ISOLATED to the met criteria (no
+// isolated verify-command supplied) OR is RED, fission BLOCKS and surfaces to
+// attention — it NEVER silently forks unverified debt into the successor. On
+// success it appends cgr.closed(partial) (a `completed` event, completion:partial)
+// and cgr.forked (a `fissioned` event carrying lineage) to the board.
+export function runGoalFission({ archDir, cwd = process.cwd(), slug, criteriaMet, verifyCommand, successorSlug, done, decisions, remaining, continuationNotes, openQuestions, actualFiles, model, notes, timeSpent } = {}) {
+  const goal = loadGoal(archDir, slug);
+  if (!goal) {
+    const active = listGoals(archDir).map((g) => g.slug);
+    throw archkitError("unknown_goal", `unknown goal: ${slug}`, {
+      suggestion: active.length ? `Active goals: ${active.join(", ")}` : "No active goals — nothing to fission.",
+    });
+  }
+
+  // Exit-criterion 1: decide what wind-down close this goal warrants.
+  const decision = fissionDecision(goal, criteriaMet);
+  if (decision.total === 0) {
+    throw archkitError("fission_no_criteria", `goal "${slug}" has no exit-criteria to partition`, {
+      suggestion: `Add exit-criteria to .arch/goals/${slug}.md, or close it with archkit_goal_complete / archkit_goal_abandon ${slug}.`,
+    });
+  }
+  if (decision.action === "complete") {
+    throw archkitError("fission_fully_met", `all ${decision.total} exit-criteria of "${slug}" are met — a fully-met CGR closes normally, it does not fission`, {
+      suggestion: `Run archkit_goal_complete ${slug} (fission is only for a PARTIAL split — some met, some unmet).`,
+    });
+  }
+  if (decision.action === "none") {
+    throw archkitError("fission_none_met", `no exit-criteria of "${slug}" are met yet — nothing finished to close`, {
+      suggestion: `Keep working, set it aside with archkit_goal_hold ${slug}, or drop it with archkit_goal_abandon ${slug}. Pass criteriaMet flags when some criteria are genuinely done.`,
+    });
+  }
+
+  // Exit-criterion 2 — HARD verify gate. The partial close runs the verify-
+  // command on the MET criteria. ISOLATION source = an explicit `verifyCommand`
+  // scoped to the met criteria (or the goal's `partial-verify-command`). Without
+  // one we cannot isolate the whole-goal command to the met criteria, so we BLOCK
+  // rather than silently fork unverified debt into the successor.
+  const isolated = String(verifyCommand || goal.meta["partial-verify-command"] || "").trim();
+  const wholeCommand = verifyCommandOf(goal);
+  if (!isolated) {
+    throw archkitError("fission_unverifiable_partial", `cannot isolate verification to the ${decision.met.length} MET criterion/criteria of "${slug}" — fission BLOCKED (no silent debt fork)`, {
+      suggestion: wholeCommand
+        ? `The goal's verify-command "${wholeCommand}" covers the WHOLE goal, including the unmet work. Pass \`verifyCommand\` scoped to ONLY the met criteria (e.g. a single test file/path) so the finished portion proves green before forking — or park with archkit_goal_testing ${slug} until the rest is done.`
+        : `Pass \`verifyCommand\` scoped to ONLY the met criteria so the finished portion can be proven green before forking — or park with archkit_goal_hold ${slug}.`,
+    });
+  }
+  const r = runTests({ cwd, command: isolated });
+  if (!r.ran) {
+    throw archkitError("fission_verify_unrunnable", `isolated verify-command "${isolated}" could not run: ${r.reason || "spawn failed"} — fission BLOCKED`, {
+      suggestion: `Fix or correct the command, then retry archkit_goal_fission ${slug}. Fission refuses to fork until the MET criteria verify GREEN.`,
+    });
+  }
+  if (!r.passed) {
+    throw archkitError("fission_verify_red", `isolated verify-command "${isolated}" is RED${r.timedOut ? " (timed out)" : ` (exit ${r.exitCode})`} — fission BLOCKED (no silent debt fork)`, {
+      suggestion: `The supposedly-met criteria don't verify green. Fix them (or correct the criteriaMet flags), then retry archkit_goal_fission ${slug}. Tail:\n${r.outputTail || "(no output)"}`,
+    });
+  }
+
+  // GREEN. Author the carry-forward handoff (remaining = the unmet criteria),
+  // fork the lean successor, append the board events, then close the finished
+  // portion as a terminal `partial` record. The handoff is computed exactly like
+  // runGoalHandoff: predicted = owns ∪ files-to-touch, actual = caller list ∪ git.
+  const predicted = [...new Set([...ownsOf(goal), ...filesToTouchOf(goal)])];
+  const actual = [...new Set([...(Array.isArray(actualFiles) ? actualFiles : []), ...gitModifiedFiles(cwd)])];
+  const handoff = writeHandoff(archDir, slug, {
+    model,
+    done: Array.isArray(done) && done.length ? done : decision.met,
+    decisions,
+    remaining: Array.isArray(remaining) && remaining.length ? remaining : decision.unmet,
+    continuationNotes,
+    openQuestions,
+    verificationStatus: "partial",
+    predicted,
+    actual,
+  });
+
+  // Exit-criterion 3: lean successor carrying ONLY the unmet criteria + handoff +
+  // lineage (forked_from / superseded_by), linked both ways by forkSuccessor.
+  const { successor } = forkSuccessor(archDir, slug, {
+    successorSlug,
+    unmet: decision.unmet,
+    handoff: handoff.pointer,
+  });
+  // The parent references the same carry-forward handoff (the linchpin artifact).
+  stampGoalFields(archDir, slug, { handoff: handoff.pointer });
+
+  // Exit-criterion 4: append cgr.closed(partial) + cgr.forked to the board.
+  appendEvent(archDir, { type: "completed", slug, completion: "partial" });
+  appendEvent(archDir, { type: "fissioned", slug, successor, lineage: { forked_from: slug, superseded_by: successor } });
+
+  // Close the finished portion as a terminal `partial` record (archived to done/
+  // carrying completion + which criteria were met + the isolated-verify evidence).
+  const result = completeGoal(archDir, slug, {
+    notes: notes || `Fission: ${decision.met.length}/${decision.total} criteria met and verified green; forked "${successor}" for the ${decision.unmet.length} remaining.`,
+    timeSpent,
+    extraMeta: {
+      completion: "partial",
+      "criteria-met": decision.metFlags.map(String),
+      "tests-passed": true,
+      "tests-command": isolated,
+      "tests-at": new Date().toISOString().slice(0, 10),
+    },
+  });
+
+  const { payload } = renderPayload(archDir, successor, { budget: RELAY_PAYLOAD_BUDGET });
+  return {
+    slug,
+    completion: "partial",
+    closed: { slug, criteriaMet: decision.met, archivedAt: result.archivedAt },
+    successor: {
+      slug: successor,
+      carriedForward: decision.unmet,
+      handoff: handoff.pointer,
+      lineage: { forked_from: slug },
+      payload,
+    },
+    handoff: handoff.pointer,
+    verify: { command: isolated, isolated: true, passed: true },
+    events: ["completed(partial)", "fissioned"],
+    ownershipAccuracy: handoff.ownershipAccuracy,
+    nextStep: `Fissioned "${slug}": closed ${decision.met.length}/${decision.total} met criteria (verified green via "${isolated}"), forked lean successor "${successor}" carrying ${decision.unmet.length} unmet criterion/criteria + handoff + lineage. The scheduler prefers this continuation over cold pending work — run /clear then /mcp__archkit__goal_next to pick it up.`,
   };
 }
 
@@ -659,6 +873,7 @@ async function main() {
     console.log(`${C.gray}    testing <slug>               Park a goal in testing/ (edits applied, verify pending)${C.reset}`);
     console.log(`${C.gray}    hold <slug>                  Set a goal aside as on-hold (resumable, guard released)${C.reset}`);
     console.log(`${C.gray}    complete <slug> [--notes X] [--time-spent 2h]  Mark a goal done, archive to done/${C.reset}`);
+    console.log(`${C.gray}    fission <slug> --verify "<cmd>" --met t,f,t  Split a partial goal: close met, fork rest${C.reset}`);
     console.log(`${C.gray}    consolidate                  Digest terminal goals → done/digest/, archive raw${C.reset}`);
     console.log(`${C.gray}    graph-accept <slug> --line X Apply an authored node line from a graph-proposal${C.reset}`);
     console.log(`${C.gray}    intake --json <json>         Accept decomposed-goals JSON (agent driver)${C.reset}`);
@@ -769,6 +984,29 @@ async function main() {
         } else {
           console.log(`  ${C.dim}all goals complete${C.reset}\n`);
         }
+        break;
+      }
+      case "fission": {
+        const slug = args[1];
+        if (!slug) throw archkitError("invalid_input", "slug required", { suggestion: "archkit goal fission <slug> --verify \"<cmd scoped to met criteria>\" --met true,false,true" });
+        const verifyIdx = args.indexOf("--verify");
+        const verifyCommand = verifyIdx > 0 ? (args[verifyIdx + 1] || "") : "";
+        const metIdx = args.indexOf("--met");
+        const criteriaMet = metIdx > 0 && args[metIdx + 1]
+          ? args[metIdx + 1].split(",").map((s) => s.trim().toLowerCase() === "true" || s.trim() === "1")
+          : undefined;
+        const succIdx = args.indexOf("--successor");
+        const successorSlug = succIdx > 0 ? (args[succIdx + 1] || undefined) : undefined;
+        const notesIdx = args.indexOf("--notes");
+        const notes = notesIdx > 0 ? (args[notesIdx + 1] || "") : "";
+        const timeIdx = args.indexOf("--time-spent");
+        const timeSpent = timeIdx > 0 ? (args[timeIdx + 1] || "") : "";
+        const out = runGoalFission({ archDir, cwd: process.cwd(), slug, verifyCommand, criteriaMet, successorSlug, notes, timeSpent });
+        if (isJson) { console.log(JSON.stringify(out)); break; }
+        commandBanner("archkit goal", `fission ${slug}`);
+        console.log(`\n  ${C.green}${I.check}${C.reset} closed partial: ${out.closed.criteriaMet.length} met criteria verified green`);
+        console.log(`  ${C.green}${I.dot}${C.reset} forked successor: ${out.successor.slug} (${out.successor.carriedForward.length} carried forward)`);
+        console.log(`  ${C.dim}events: ${out.events.join(", ")}${C.reset}\n`);
         break;
       }
       case "consolidate": {

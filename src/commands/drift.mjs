@@ -8,6 +8,7 @@ import { collectDeps, resolveWorkspaceGlobs } from "../lib/workspace-deps.mjs";
 import * as log from "../lib/logger.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { archkitError } from "../lib/errors.mjs";
+import { listPlaybooks, listPlaybookIds } from "../lib/playbooks.mjs";
 
 function banner() {
   commandBanner("arch-drift", "Detect stale .arch/ files and architectural drift");
@@ -41,11 +42,9 @@ function detectFindings(archDir, cwd, arch = createArchReader(archDir)) {
     }
   }
 
-  // 2. Check .skill files against package.json
-  const skillsDir = path.join(archDir, "skills");
-  const skillFiles = fs.existsSync(skillsDir)
-    ? fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill")).map(f => f.replace(".skill", ""))
-    : [];
+  // 2. Check playbook files against package.json (reads both
+  // .arch/playbooks/*.playbook and legacy .arch/skills/*.skill, ADR 0016).
+  const skillFiles = listPlaybookIds(archDir);
 
   // Union root + workspace-member deps so a skill whose package is declared in
   // a workspace package.json (apps/*, packages/*) isn't flagged as orphaned in
@@ -65,7 +64,7 @@ function detectFindings(archDir, cwd, arch = createArchReader(archDir)) {
   for (const skillId of skillFiles) {
     const npmName = knownMappings[skillId];
     if (npmName && Object.keys(pkgDeps).length > 0 && !pkgDeps[npmName]) {
-      findings.push({ type: "orphaned-skill", id: skillId, detail: `skills/${skillId}.skill exists but ${npmName} is not in package.json` });
+      findings.push({ type: "orphaned-skill", id: skillId, detail: `playbook ${skillId} exists but ${npmName} is not in package.json` });
     }
   }
 
@@ -163,20 +162,19 @@ export async function runDriftJson({ archDir, cwd = process.cwd() }) {
   // Reuses the reader's memoized INDEX.md parse — no second parse this call.
   const index = arch.index();
   const clustersDir = path.join(archDir, "clusters");
-  const skillsDir = path.join(archDir, "skills");
   const scanned = {
     indexNodes: Object.keys(index.nodeCluster).length,
     graphFiles: fs.existsSync(clustersDir) ? fs.readdirSync(clustersDir).filter(f => f.endsWith(".graph")).length : 0,
-    skillFiles: fs.existsSync(skillsDir) ? fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill")).length : 0,
+    skillFiles: listPlaybooks(archDir).length,
   };
   const staleNote = stale.length === 0
-    ? `Checked ${scanned.indexNodes} index node(s), ${scanned.graphFiles} graph(s), ${scanned.skillFiles} skill(s) — all consistent with the source tree.`
+    ? `Checked ${scanned.indexNodes} index node(s), ${scanned.graphFiles} graph(s), ${scanned.skillFiles} playbook(s) — all consistent with the source tree.`
     : undefined;
   const nextStep = stale.length === 0
     ? `No drift to fix. Re-run after refactors or dependency removals.`
     : lowOnly
       ? `All ${stale.length} finding(s) are low-confidence (workspace/monorepo layout) — review only. They false-fire when a dep lives in a workspace member archkit couldn't enumerate, or a source path resolves via a path alias. Safe to ignore if so.`
-      : `Resolve drift: missing-source/missing-file → restore the file or update INDEX.md basePath; orphaned-index-node → add the .graph or remove the INDEX.md entry; orphaned-skill → remove the .skill or re-add the dep. Low-confidence findings (workspace layouts) are hints, not hard errors.`;
+      : `Resolve drift: missing-source/missing-file → restore the file or update INDEX.md basePath; orphaned-index-node → add the .graph or remove the INDEX.md entry; orphaned-skill → remove the playbook or re-add the dep. Low-confidence findings (workspace layouts) are hints, not hard errors.`;
 
   return { stale, summary, scanned, staleNote, nextStep };
 }

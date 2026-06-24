@@ -24,36 +24,41 @@ import { isMainModule, C, ICONS as I, findArchDir as _findArchDir } from "../lib
 import { commandBanner } from "../lib/banner.mjs";
 import * as log from "../lib/logger.mjs";
 import { archkitError } from "../lib/errors.mjs";
+import { listPlaybooks, listPlaybookIds, resolvePlaybookPath, playbookWriteDir, playbookWriteExt } from "../lib/playbooks.mjs";
 
 function banner() {
-  commandBanner("arch-gotcha", "Capture bad AI patterns into .skill files");
+  commandBanner("arch-gotcha", "Capture bad AI patterns into .playbook files");
   console.log(`${C.gray}  Every fix makes the system permanently smarter${C.reset}`);
   console.log("");
 }
 
 function findArchDir() {
-  return _findArchDir({ requireFile: "skills" });
+  // Discover .arch/ layout-agnostically (ADR 0016): the new playbooks/ dir, the
+  // legacy skills/ dir, or any initialized .arch/ (SYSTEM.md) all anchor it.
+  return _findArchDir({ requireFile: "playbooks" })
+    || _findArchDir({ requireFile: "skills" })
+    || _findArchDir({ requireFile: "SYSTEM.md" })
+    || _findArchDir();
 }
 
+// A playbook id ("skillId" kept as the param name for the existing gotcha
+// vocabulary) resolves across both .arch/playbooks/*.playbook and the legacy
+// .arch/skills/*.skill layouts.
 function listSkills(archDir) {
-  const skillsDir = path.join(archDir, "skills");
-  if (!fs.existsSync(skillsDir)) return [];
-  return fs.readdirSync(skillsDir)
-    .filter(f => f.endsWith(".skill"))
-    .map(f => f.replace(".skill", ""));
+  return listPlaybookIds(archDir);
 }
 
 function countGotchas(archDir, skillId) {
-  const filepath = path.join(archDir, "skills", `${skillId}.skill`);
-  if (!fs.existsSync(filepath)) return 0;
+  const filepath = resolvePlaybookPath(archDir, skillId);
+  if (!filepath) return 0;
   const content = fs.readFileSync(filepath, "utf8");
   return (content.match(/^WRONG:/gm) || []).length;
 }
 
 function appendGotcha(archDir, skillId, wrong, right, why) {
-  const filepath = path.join(archDir, "skills", `${skillId}.skill`);
-  if (!fs.existsSync(filepath)) {
-    console.log(`${C.red}  ${I.warn} Skill file not found: ${filepath}${C.reset}`);
+  const filepath = resolvePlaybookPath(archDir, skillId);
+  if (!filepath) {
+    console.log(`${C.red}  ${I.warn} Playbook file not found: ${skillId}${C.reset}`);
     console.log(`${C.gray}  Run archkit first, or create the file manually.${C.reset}`);
     return false;
   }
@@ -90,8 +95,8 @@ function rejectedDir(archDir) { return path.join(archDir, "gotcha-proposals", "r
 async function interactiveMode(archDir) {
   const skills = listSkills(archDir);
   if (skills.length === 0) {
-    console.log(`${C.red}  ${I.warn} No .skill files found in ${archDir}/skills/${C.reset}`);
-    console.log(`${C.gray}  Run archkit first to generate skill skeletons.${C.reset}`);
+    console.log(`${C.red}  ${I.warn} No .playbook files found in ${archDir}/playbooks/ (or legacy skills/)${C.reset}`);
+    console.log(`${C.gray}  Run archkit first to generate playbook skeletons.${C.reset}`);
     return;
   }
 
@@ -180,10 +185,10 @@ async function interactiveMode(archDir) {
     return;
   }
 
-  log.gotcha(`Adding gotcha to ${skillId}.skill`);
+  log.gotcha(`Adding gotcha to ${skillId} playbook`);
   const ok = appendGotcha(archDir, skillId, wrong, right, why);
   if (ok) {
-    log.ok(`Gotcha saved to ${skillId}.skill`);
+    log.ok(`Gotcha saved to ${skillId} playbook`);
     const total = countGotchas(archDir, skillId);
     console.log("");
     console.log(`${C.green}  ${I.check} Gotcha added to ${skillId}.skill${C.reset}`);
@@ -225,7 +230,7 @@ async function debriefMode(archDir) {
   log.gotcha("Starting session debrief...");
   const skills = listSkills(archDir);
   if (skills.length === 0) {
-    console.log(`${C.red}  ${I.warn} No .skill files found.${C.reset}`);
+    console.log(`${C.red}  ${I.warn} No playbook files found.${C.reset}`);
     return;
   }
 
@@ -261,7 +266,7 @@ async function debriefMode(archDir) {
         const { why } = await inquirer.prompt([{ type: "input", name: "why", message: `${C.yellow}WHY:${C.reset}`, prefix: `  ${I.arch}` }]);
         if (right && why) {
           appendGotcha(archDir, skillId, wrong, right, why);
-          log.ok(`Gotcha saved to ${skillId}.skill`);
+          log.ok(`Gotcha saved to ${skillId} playbook`);
           console.log(`${C.green}  ${I.check} Gotcha saved to ${skillId}.skill${C.reset}`);
         }
       }
@@ -331,8 +336,8 @@ async function debriefMode(archDir) {
       prefix: `  ${I.arch}`,
     }]);
     if (surprise) {
-      const skillPath = path.join(archDir, "skills", `${skillId2}.skill`);
-      if (fs.existsSync(skillPath)) {
+      const skillPath = resolvePlaybookPath(archDir, skillId2);
+      if (skillPath) {
         let content = fs.readFileSync(skillPath, "utf8");
         const gotchaIdx = content.indexOf("## Gotchas");
         if (gotchaIdx !== -1) {
@@ -344,7 +349,7 @@ async function debriefMode(archDir) {
             content += entry;
           }
           fs.writeFileSync(skillPath, content);
-          console.log(`${C.green}  ${I.check} Note added to ${skillId2}.skill (mark as TODO-GOTCHA)${C.reset}`);
+          console.log(`${C.green}  ${I.check} Note added to ${skillId2} playbook (mark as TODO-GOTCHA)${C.reset}`);
         }
       }
     }
@@ -377,8 +382,8 @@ async function debriefMode(archDir) {
       prefix: `  ${I.arch}`,
     }]);
     if (pattern) {
-      const skillPath = path.join(archDir, "skills", `${patternSkill}.skill`);
-      if (fs.existsSync(skillPath)) {
+      const skillPath = resolvePlaybookPath(archDir, patternSkill);
+      if (skillPath) {
         let content = fs.readFileSync(skillPath, "utf8");
         const patternsIdx = content.indexOf("## Patterns");
         if (patternsIdx !== -1) {
@@ -562,7 +567,7 @@ async function cliMode(args) {
       const hash = file.replace(".json", "");
       console.log(`${C.gray}  ${"─".repeat(50)}${C.reset}`);
       console.log(`${C.blue}${C.bold}  Proposal ${i + 1} of ${files.length}${C.reset}`);
-      console.log(`${C.gray}  Skill:  ${C.reset}${C.bold}${proposal.skill}${C.reset}`);
+      console.log(`${C.gray}  Playbook:  ${C.reset}${C.bold}${proposal.skill}${C.reset}`);
       if (proposal.source) console.log(`${C.gray}  Source: ${proposal.source}  (${proposal.created_at || "unknown date"})${C.reset}`);
       console.log("");
       console.log(`${C.red}  WRONG: ${C.reset}${proposal.wrong}`);
@@ -576,7 +581,7 @@ async function cliMode(args) {
         message: "What do you want to do?",
         prefix: `  ${I.arch}`,
         choices: [
-          { name: `${C.green}Accept${C.reset} (append to ${proposal.skill}.skill)`, value: "accept" },
+          { name: `${C.green}Accept${C.reset} (append to ${proposal.skill} playbook)`, value: "accept" },
           { name: `${C.blue}Edit${C.reset}   (modify in $EDITOR, then accept)`, value: "edit" },
           { name: `${C.red}Reject${C.reset} (move to rejected/)`, value: "reject" },
           { name: `${C.gray}Skip${C.reset}   (leave in queue)`, value: "skip" },
@@ -617,27 +622,30 @@ async function cliMode(args) {
         }
       }
 
-      // Accept: append to skill file
-      const skillPath = path.join(archDir, "skills", `${finalProposal.skill}.skill`);
-      if (!fs.existsSync(skillPath)) {
+      // Accept: append to the playbook file (creating it in the canonical layout if missing)
+      let skillPath = resolvePlaybookPath(archDir, finalProposal.skill);
+      if (!skillPath) {
+        const writeDir = playbookWriteDir(archDir);
+        const newPath = path.join(writeDir, `${finalProposal.skill}${playbookWriteExt(archDir)}`);
         const { create } = await inquirer.prompt([{
           type: "confirm",
           name: "create",
-          message: `${finalProposal.skill}.skill doesn't exist. Create it?`,
+          message: `${finalProposal.skill} playbook doesn't exist. Create it?`,
           default: true,
           prefix: `  ${I.arch}`,
         }]);
-        if (!create) { console.log(`${C.gray}  Skipped — skill file not created.${C.reset}\n`); continue; }
-        fs.mkdirSync(path.dirname(skillPath), { recursive: true });
-        fs.writeFileSync(skillPath, `# ${finalProposal.skill}\n\n## Gotchas\n`);
-        log.generate(`Created ${finalProposal.skill}.skill`);
+        if (!create) { console.log(`${C.gray}  Skipped — playbook file not created.${C.reset}\n`); continue; }
+        fs.mkdirSync(writeDir, { recursive: true });
+        fs.writeFileSync(newPath, `# ${finalProposal.skill}\n\n## Gotchas\n`);
+        skillPath = newPath;
+        log.generate(`Created ${finalProposal.skill}${playbookWriteExt(archDir)}`);
       }
 
       const ok = appendGotcha(archDir, finalProposal.skill, finalProposal.wrong, finalProposal.right, finalProposal.why);
       if (ok) {
         fs.unlinkSync(filePath);
         const total = countGotchas(archDir, finalProposal.skill);
-        console.log(`${C.green}  ${I.check} Accepted — added to ${finalProposal.skill}.skill (${total} total)${C.reset}\n`);
+        console.log(`${C.green}  ${I.check} Accepted — added to ${finalProposal.skill} playbook (${total} total)${C.reset}\n`);
       }
     }
     console.log(`${C.green}  ${I.check} Review complete.${C.reset}\n`);
@@ -685,8 +693,8 @@ async function cliMode(args) {
 
     // Process API surprise
     if (input.apiSurprise && input.apiSurprise.skill && input.apiSurprise.note) {
-      const skillPath = path.join(archDir, "skills", `${input.apiSurprise.skill}.skill`);
-      if (fs.existsSync(skillPath)) {
+      const skillPath = resolvePlaybookPath(archDir, input.apiSurprise.skill);
+      if (skillPath) {
         let content = fs.readFileSync(skillPath, "utf8");
         const gotchaIdx = content.indexOf("## Gotchas");
         if (gotchaIdx !== -1) {
@@ -705,8 +713,8 @@ async function cliMode(args) {
 
     // Process good pattern
     if (input.goodPattern && input.goodPattern.skill && input.goodPattern.pattern) {
-      const skillPath = path.join(archDir, "skills", `${input.goodPattern.skill}.skill`);
-      if (fs.existsSync(skillPath)) {
+      const skillPath = resolvePlaybookPath(archDir, input.goodPattern.skill);
+      if (skillPath) {
         let content = fs.readFileSync(skillPath, "utf8");
         const patternsIdx = content.indexOf("## Patterns");
         if (patternsIdx !== -1) {
@@ -764,16 +772,16 @@ async function cliMode(args) {
     process.exit(1);
   }
 
-  // Check if skill file exists — warn and offer to create
-  const skillPath = path.join(archDir, "skills", `${skillId}.skill`);
-  if (!fs.existsSync(skillPath)) {
+  // Check if the playbook file exists — warn and offer to create
+  const skillPath = resolvePlaybookPath(archDir, skillId);
+  if (!skillPath) {
     if (jsonMode) {
-      console.log(JSON.stringify({ error: `Skill file not found: ${skillId}.skill`, available: listSkills(archDir), hint: `Create it first or use a different skill. Available: ${listSkills(archDir).join(", ")}` }));
+      console.log(JSON.stringify({ error: `Playbook file not found: ${skillId}`, available: listSkills(archDir), hint: `Create it first or use a different playbook. Available: ${listSkills(archDir).join(", ")}` }));
       process.exit(1);
     }
-    console.log(`${C.red}  ${I.warn} Skill file not found: ${skillId}.skill${C.reset}`);
-    console.log(`${C.gray}  Available skills: ${listSkills(archDir).join(", ")}${C.reset}`);
-    console.log(`${C.gray}  To create a new skill: archkit extend create --from-preset add-skill${C.reset}`);
+    console.log(`${C.red}  ${I.warn} Playbook file not found: ${skillId}${C.reset}`);
+    console.log(`${C.gray}  Available playbooks: ${listSkills(archDir).join(", ")}${C.reset}`);
+    console.log(`${C.gray}  To create a new playbook: archkit extend create --from-preset add-skill${C.reset}`);
     console.log("");
     process.exit(1);
   }
@@ -783,7 +791,7 @@ async function cliMode(args) {
     console.log(JSON.stringify({ success: ok, skill: skillId, total: ok ? countGotchas(archDir, skillId) : 0 }));
   } else if (ok) {
     const total = countGotchas(archDir, skillId);
-    console.log(`${C.green}  ${I.check} Gotcha added to ${skillId}.skill (${total} total)${C.reset}`);
+    console.log(`${C.green}  ${I.check} Gotcha added to ${skillId} playbook (${total} total)${C.reset}`);
   }
 }
 
@@ -791,32 +799,27 @@ async function cliMode(args) {
 
 export async function runGotchaListJson({ archDir }) {
   if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
-  const skillsDir = path.join(archDir, "skills");
-  if (!fs.existsSync(skillsDir)) {
+  // Reads both .arch/playbooks/*.playbook and legacy .arch/skills/*.skill.
+  // The `skills` key is kept for MCP back-compat (ADR 0016).
+  const units = listPlaybooks(archDir);
+  if (units.length === 0) {
     return {
       skills: [],
-      skillsNote: `No .arch/skills/ directory in this project — no skills means review can't pattern-match against known WRONG/RIGHT examples.`,
-      nextStep: `Create .arch/skills/<package>.skill files for libraries this project uses (Stripe, Prisma, etc.); then call archkit_gotcha_propose to queue WRONG/RIGHT/WHY entries.`,
+      skillsNote: `No playbooks in this project — review can't pattern-match against known WRONG/RIGHT examples.`,
+      nextStep: `Create .arch/playbooks/<package>.playbook files for libraries this project uses (Stripe, Prisma, etc.); then call archkit_gotcha_propose to queue WRONG/RIGHT/WHY entries.`,
     };
   }
-  const skills = [];
-  for (const file of fs.readdirSync(skillsDir).filter(f => f.endsWith(".skill"))) {
-    const id = file.replace(".skill", "");
-    const content = fs.readFileSync(path.join(skillsDir, file), "utf8");
-    const gotchas = (content.match(/^WRONG:/gm) || []).length;
-    skills.push({ id, gotchas });
-  }
+  const skills = units.map(u => {
+    const content = fs.readFileSync(u.path, "utf8");
+    return { id: u.id, gotchas: (content.match(/^WRONG:/gm) || []).length };
+  });
   const empty = skills.filter(s => s.gotchas === 0);
-  const skillsNote = skills.length === 0
-    ? `.arch/skills/ exists but contains no .skill files yet.`
-    : empty.length > 0
-      ? `${empty.length} of ${skills.length} skill(s) have 0 gotchas: ${empty.slice(0, 5).map(s => s.id).join(", ")}${empty.length > 5 ? "…" : ""} — these contribute nothing to review.`
-      : undefined;
-  const nextStep = skills.length === 0
-    ? `Add .skill files (one per dependency you want review to enforce), then call archkit_gotcha_propose with WRONG/RIGHT/WHY patterns.`
-    : empty.length > 0
-      ? `Call archkit_gotcha_propose for the empty skills so review has patterns to grep.`
-      : `Catalog looks healthy. Call archkit_gotcha_propose whenever you fix a new wrong-pattern.`;
+  const skillsNote = empty.length > 0
+    ? `${empty.length} of ${skills.length} playbook(s) have 0 gotchas: ${empty.slice(0, 5).map(s => s.id).join(", ")}${empty.length > 5 ? "…" : ""} — these contribute nothing to review.`
+    : undefined;
+  const nextStep = empty.length > 0
+    ? `Call archkit_gotcha_propose for the empty playbooks so review has patterns to grep.`
+    : `Catalog looks healthy. Call archkit_gotcha_propose whenever you fix a new wrong-pattern.`;
   return { skills, skillsNote, nextStep };
 }
 
@@ -838,7 +841,7 @@ export async function runGotchaProposeJson({ archDir, skill, wrong, right, why, 
   return {
     queued: true,
     proposalPath: proposalFile,
-    nextStep: `Proposal queued. A human must run \`archkit gotcha --review\` (interactive) to accept/edit/reject it before it lands in ${skill}.skill.`,
+    nextStep: `Proposal queued. A human must run \`archkit gotcha --review\` (interactive) to accept/edit/reject it before it lands in the ${skill} playbook.`,
   };
 }
 

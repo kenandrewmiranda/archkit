@@ -14,6 +14,7 @@
 
 import fs from "node:fs";
 import { findArchDir } from "../lib/shared.mjs";
+import { conductorPlan } from "../lib/board.mjs";
 import {
   getActiveGoal,
   routeNextGoal,
@@ -27,6 +28,7 @@ import {
   listDigests,
   listGoalProposals,
   goalsCompletedOn,
+  windDownAt,
 } from "../lib/goals.mjs";
 
 function archDirOrNull() {
@@ -63,7 +65,7 @@ export function doneTodayTally(archDir, today) {
 // "done today" breadcrumb so the relay loop keeps yesterday/today's progress in
 // view across /clear. Each variant also asks the agent to restate the goal in
 // one sentence before working — orientation the user only ever sees here.
-export function relayHeader(slug, status = "in-progress", { tallyLine = "" } = {}) {
+export function relayHeader(slug, status = "in-progress", { tallyLine = "", windDownThreshold = null } = {}) {
   const inTesting = status === "testing";
   const lines = [];
   if (tallyLine) lines.push(tallyLine, ``);
@@ -71,6 +73,15 @@ export function relayHeader(slug, status = "in-progress", { tallyLine = "" } = {
     `[archkit CGR relay] Active goal: ${slug}${inTesting ? " (TESTING — edits applied, verification pending)" : ""}`,
     `Work ONLY this goal to its exit-criteria. Do not start other goals in this context.`,
   );
+  // Attention-gradient wind-down policy (ADR 0015): the tail of the context window
+  // is for handoff authoring, not for accepting more work. Surface the threshold so
+  // the worker self-enforces the mode switch (archkit is stateless — it can't read
+  // your fill; it emits the policy, you act on it).
+  if (!inTesting && windDownThreshold != null) {
+    lines.push(
+      `Wind-down policy: once your context fill reaches ~${windDownThreshold}, STOP accepting new goals and author your handoff with archkit_goal_handoff ${slug} (done+evidence, decisions, remaining, continuation-notes) — the degraded tail is for writing down, not novel work.`,
+    );
+  }
   if (inTesting) {
     lines.push(
       `This goal is in the verification window: its edits already landed. Re-run the verify-command and confirm every exit-criterion is green, then call archkit_goal_complete ${slug} (it re-runs the gate and refuses on red). It is NOT done until verified.`,
@@ -143,7 +154,7 @@ export const prompts = {
       const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
       startGoal(archDir, goal.slug);
       const today = new Date().toISOString().slice(0, 10);
-      return textMessage(relayHeader(goal.slug, "in-progress", { tallyLine: doneTodayTally(archDir, today) }) + payload);
+      return textMessage(relayHeader(goal.slug, "in-progress", { tallyLine: doneTodayTally(archDir, today), windDownThreshold: windDownAt(archDir, {}) }) + payload);
     },
   },
 
@@ -164,7 +175,7 @@ export const prompts = {
       }
       const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
       const today = new Date().toISOString().slice(0, 10);
-      return textMessage(relayHeader(goal.slug, statusOf(goal), { tallyLine: doneTodayTally(archDir, today) }) + payload);
+      return textMessage(relayHeader(goal.slug, statusOf(goal), { tallyLine: doneTodayTally(archDir, today), windDownThreshold: windDownAt(archDir, {}) }) + payload);
     },
   },
 
@@ -203,6 +214,56 @@ export const prompts = {
         `  • promote the chosen ones: archkit_goal_promote with hashes:[...] (or all:true if they picked everything)`,
         `  • dismiss the rest if they explicitly reject them: archkit_goal_dismiss with hashes:[...]`,
         `Leave anything they neither promote nor dismiss as pending. After promoting, tell them to /clear then /mcp__archkit__goal_next to start the first new goal.`
+      );
+      return textMessage(lines.join("\n"));
+    },
+  },
+
+  conductor: {
+    config: {
+      title: "archkit: run the conductor loop",
+      description:
+        "CGR 2.0 conductor — fold the board into one orchestration pass and drive the loop: claim the frontier under a lease, spawn one worktree-isolated worker per lane, collect handoffs, deep-review only exceptions, then drain the dependency-ordered merge queue verify-after-each. Run after /clear or compaction to orchestrate parallel lanes instead of coding in the foreground.",
+    },
+    handler: async () => {
+      const archDir = archDirOrNull();
+      if (!archDir) return textMessage(NO_ARCH);
+      const plan = conductorPlan(archDir);
+      const c = plan.counts;
+      const idle = c.frontier === 0 && c.in_flight === 0 && c.merge_queue === 0 && c.leases_expired === 0;
+      if (idle) {
+        return textMessage([
+          `[archkit CGR conductor] Nothing to orchestrate — no frontier, nothing in flight, empty merge queue.`,
+          `The board is purely derived from .arch/board/events.ndjson + the CGR files.`,
+          `Queue work with archkit_goal_intake, then start a goal with /mcp__archkit__goal_next.`,
+        ].join("\n"));
+      }
+      const lines = [
+        `[archkit CGR conductor] Orchestration pass — you are the CONDUCTOR, not a worker. Do NOT code in this context; dispatch and integrate.`,
+        ``,
+        `Board: ${c.frontier} frontier (${c.claimableLanes} claimable lane${c.claimableLanes === 1 ? "" : "s"}${c.barriers ? ` + ${c.barriers} barrier${c.barriers === 1 ? "" : "s"}` : ""}), ${c.in_flight} in flight, ${c.merge_queue} to merge, ${c.blocked} blocked, ${c.exceptions} exception${c.exceptions === 1 ? "" : "s"}, ${c.leases_expired} expired lease${c.leases_expired === 1 ? "" : "s"}.`,
+        ``,
+        `Run the loop:`,
+        `1. RECLAIM ${c.leases_expired} orphan lease${c.leases_expired === 1 ? "" : "s"}${c.leases_expired ? ` (${plan.leasesExpired.map((l) => l.slug).join(", ")})` : ""} — their TTL elapsed; they're free to re-claim.`,
+      ];
+      const laneList = Object.entries(plan.claimableLanes);
+      if (laneList.length) {
+        lines.push(`2. CLAIM + DISPATCH — spawn ONE worker subagent per claimable lane, each in an isolated git worktree (lanes have disjoint ownership → run them in parallel):`);
+        for (const [lane, slugs] of laneList) lines.push(`   • lane ${lane}: ${slugs.join(" → ")}`);
+      } else {
+        lines.push(`2. CLAIM + DISPATCH — no claimable lanes right now.`);
+      }
+      if (plan.barriers.length) lines.push(`   • BARRIERS (run SOLO, everything before merges first): ${plan.barriers.join(", ")}`);
+      lines.push(
+        `3. COLLECT each worker's handoff return (archkit_goal_handoff authored at wind-down).`,
+        plan.exceptions.length
+          ? `4. DEEP-REVIEW ONLY these exceptions — rubber-stamp the rest:\n${plan.exceptions.map((e) => `   • ${e.slug}: ${e.reasons.join(", ")}`).join("\n")}`
+          : `4. DEEP-REVIEW: no exceptions — the returns are clean, rubber-stamp them.`,
+        plan.mergeOrder.length
+          ? `5. MERGE the queue SEQUENTIALLY in this dependency order, verifying after EACH: ${plan.mergeOrder.map((m) => m.slug).join(" → ")}`
+          : `5. MERGE: queue empty, nothing to integrate.`,
+        ``,
+        `Read archkit_conductor / archkit_session_state for the structured plan. archkit emits the plan; YOU spawn workers, review, and run the git merges.`,
       );
       return textMessage(lines.join("\n"));
     },

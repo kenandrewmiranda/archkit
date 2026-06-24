@@ -146,7 +146,7 @@ test("--agent-scaffold creates expected files in empty dir", () => {
     assert.ok(result.created.length >= 3, `Expected >= 3 created files, got ${result.created.length}`);
     assert.ok(fs.existsSync(path.join(dir, ".arch", "BOUNDARIES.md")), ".arch/BOUNDARIES.md not found");
     assert.ok(fs.existsSync(path.join(dir, ".arch", "SYSTEM.md")), ".arch/SYSTEM.md not found");
-    assert.ok(fs.existsSync(path.join(dir, ".arch", "skills", "README.md")), ".arch/skills/README.md not found");
+    assert.ok(fs.existsSync(path.join(dir, ".arch", "playbooks", "README.md")), ".arch/playbooks/README.md not found");
     assert.ok(fs.existsSync(path.join(dir, "CLAUDE.md")), "CLAUDE.md not found");
   });
 });
