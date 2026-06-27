@@ -152,7 +152,7 @@ await test("Stop hook does NOT block when only an on-hold goal exists (nudges to
     markOnHold(archDir, "g1");
     const out = runHook({ cwd: dir, assistant_response: "Parked it for now." });
     assert.notEqual(out?.decision, "block", "no guard on a deliberately parked goal");
-    assert.match(out.systemMessage, /goal_next/, "surfaces the parked goal as resumable");
+    assert.match(out.systemMessage, /conductor/, "surfaces the parked goal as resumable");
   });
 });
 
@@ -212,7 +212,7 @@ await test("runGoalHold returns on-hold status + a resume-focused nextStep", () 
     const out = runGoalHold({ archDir, slug: "g1" });
     assert.equal(out.status, STATUS_ON_HOLD);
     assert.match(out.nextStep, /on-hold/i);
-    assert.match(out.nextStep, /goal_next/);
+    assert.match(out.nextStep, /conductor/);
   });
 });
 

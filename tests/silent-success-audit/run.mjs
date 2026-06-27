@@ -187,6 +187,8 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_goal_list", {}],
         ["archkit_session_state", {}],
         ["archkit_conductor", {}],
+        // Read-only config view (one-time finalize setup is driven elsewhere).
+        ["archkit_finalize_config", { show: true }],
         ["archkit_goal_start", { slug: "audit-goal" }],
         // Wind-down handoff authored while the goal is in-progress (ADR 0015).
         ["archkit_goal_handoff", { slug: "audit-goal", done: [{ criterion: "done", evidence: "audit" }], verificationStatus: "partial", actualFiles: ["src/features/auth/login.js"] }],

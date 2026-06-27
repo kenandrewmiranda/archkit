@@ -41,6 +41,7 @@ const commands = {
   sync:     "../src/commands/sync.mjs",
   update:   "../src/commands/update.mjs",
   migrate:  "../src/commands/migrate.mjs",
+  finalize: "../src/commands/finalize.mjs",
   market:   "../src/commands/market.mjs",
   "boundary-check": "../src/commands/boundary.mjs",
   goal:     "../src/commands/goal.mjs",

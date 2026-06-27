@@ -5,7 +5,7 @@
 //   - Active-goal lifecycle: startGoal → in-progress, getActiveGoal finds it
 //   - nextEligibleGoal respects depends-on (skips dep-blocked goals)
 //   - Turn-cap state: bump increments, reset clears
-//   - /mcp__archkit__goal_next prompt marks in-progress + injects payload
+//   - /mcp__archkit__conductor prompt marks in-progress + injects payload
 //   - Stop hook blocks (decision:block) while a goal is in-progress,
 //     does NOT block on a question-to-user, nudges when none active,
 //     and stays silent once the goal is done.
@@ -128,15 +128,17 @@ await test("bumpLoopBlock increments per slug; resetLoopState clears; startGoal 
   });
 });
 
-console.log("\n  cgr-relay — goal_next prompt");
+console.log("\n  cgr-relay — conductor prompt (unified relay)");
 
-await test("goal_next marks the next goal in-progress and injects a relay payload", async () => {
+await test("conductor foregrounds the next single goal in-progress and injects a relay payload", async () => {
   await withArchDir(async ({ dir, archDir }) => {
     writeGoal(archDir, { slug: "g1", title: "First goal", exitCriteria: ["criterion A", "criterion B"] });
     const prevCwd = process.cwd();
     process.chdir(dir);
     try {
-      const res = await prompts.goal_next.handler();
+      // One eligible goal → no parallelism → conductor works it in the foreground
+      // (the former goal_next behavior, now folded into conductor).
+      const res = await prompts.conductor.handler();
       const text = res.messages[0].content.text;
       assert.match(text, /\[archkit CGR relay\] Active goal: g1/);
       assert.match(text, /criterion A/);
@@ -144,17 +146,17 @@ await test("goal_next marks the next goal in-progress and injects a relay payloa
     } finally {
       process.chdir(prevCwd);
     }
-    assert.equal(statusOf(getActiveGoal(archDir)), "in-progress", "goal_next started the goal");
+    assert.equal(statusOf(getActiveGoal(archDir)), "in-progress", "conductor started the goal");
   });
 });
 
-await test("goal_next on an empty queue returns guidance, starts nothing", async () => {
+await test("conductor on an empty queue returns guidance, starts nothing", async () => {
   await withArchDir(async ({ dir, archDir }) => {
     const prevCwd = process.cwd();
     process.chdir(dir);
     try {
-      const res = await prompts.goal_next.handler();
-      assert.match(res.messages[0].content.text, /No eligible CGR goal/);
+      const res = await prompts.conductor.handler();
+      assert.match(res.messages[0].content.text, /Nothing to advance/);
     } finally {
       process.chdir(prevCwd);
     }
@@ -325,7 +327,7 @@ await test("Stop hook nudges (no block) when no goal active but one is queued", 
     const out = runHook({ cwd: dir, assistant_response: "Here is a summary." });
     assert.ok(out, "hook produced output");
     assert.notEqual(out.decision, "block");
-    assert.match(out.systemMessage, /goal_next/);
+    assert.match(out.systemMessage, /conductor/);
   });
 });
 

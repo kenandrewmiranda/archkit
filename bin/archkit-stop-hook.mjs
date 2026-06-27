@@ -18,7 +18,7 @@
 //      proposed goals to .arch/goals/proposed/<hash>.json (goal-detector lib),
 //      surfaced via /mcp__archkit__goal_review for promote-or-dismiss.
 //   5. CGR relay guard (proto/cgr-relay-loop): when a goal is in-progress
-//      (started via /mcp__archkit__goal_next), block stopping with
+//      (started via /mcp__archkit__conductor), block stopping with
 //      decision:"block" until the agent calls archkit_goal_complete — unless
 //      the response is a genuine question to the user, or the per-goal turn
 //      cap is hit. When no goal is active, nudge toward the next queued goal.
@@ -208,7 +208,7 @@ async function main() {
   //    exit-criteria aren't released (released = agent called
   //    archkit_goal_complete, which moves the goal to done/ so it's no longer
   //    active). Naturally scoped: fires only when a goal was started via the
-  //    /mcp__archkit__goal_next relay prompt (status in-progress).
+  //    /mcp__archkit__conductor relay prompt (status in-progress).
   let blockReason = null;
   const activeGoal = getActiveGoal(archDir);
   if (activeGoal) {
@@ -276,7 +276,7 @@ async function main() {
     const next = nextEligibleGoal(archDir);
     if (next) {
       sections.push(
-        `CGR relay: no goal in progress and "${next.slug}" is queued. Run /clear then /mcp__archkit__goal_next to start it in a fresh context.`
+        `CGR relay: no goal in progress and "${next.slug}" is queued. Run /clear then /mcp__archkit__conductor to start it in a fresh context.`
       );
     } else {
       // Queue fully drained (session-end safety net): incrementally consolidate

@@ -54,6 +54,9 @@ import {
   partitionCriteria,
   fissionDecision,
   forkSuccessor,
+  readFinalizeConfig,
+  buildFinalizeGoal,
+  FINALIZE_STEPS,
 } from "../lib/goals.mjs";
 import { writeHandoff, appendEvent } from "../lib/board.mjs";
 import crypto from "node:crypto";
@@ -97,7 +100,7 @@ export function runGoalIntake({ archDir, cwd, sourceAsk, goals }) {
   // that doesn't override it — so completion gates on green tests by default
   // (the agent can scope/override per goal via the goal's verifyCommand field).
   const detected = detectTestCommand(cwd);
-  // Auto-stamp `order` from decomposition order so /mcp__archkit__goal_next
+  // Auto-stamp `order` from decomposition order so /mcp__archkit__conductor
   // honors the sequence the agent intended (the goals array order), not the
   // incidental alphabetical-slug fallback. Offset past any existing live goals
   // so a follow-up intake appends after the current queue. An explicit `order`
@@ -113,6 +116,32 @@ export function runGoalIntake({ archDir, cwd, sourceAsk, goals }) {
     batchIndex++;
     const { slug, filepath } = writeGoal(archDir, g);
     written.push({ slug, filepath: path.relative(cwd, filepath), verifyCommand: g.verifyCommand || null });
+  }
+
+  // Auto-append the configurable finalization goal (cgr.finalize): a wrap-up that
+  // runs LAST and SOLO (exclusive barrier, depends on every batch slug) — update
+  // the changelog, refresh docs, finalize commits with notes, and the opt-in
+  // outward steps (push / release / deploy-to-dev). On by default with the safe
+  // local steps; fully opt-out per project. The user goals are decomposed by the
+  // agent; THIS goal is synthesized from config so a sprawling ask always ends
+  // with its release chores in a fresh context.
+  // Only append once the project has run the one-time setup (configured:true), so
+  // a first-ever intake surfaces the opt-in prompt instead of a surprise goal. The
+  // setup itself (archkit_finalize_config) back-fills the finalize goal onto this
+  // same batch when the user enables it, so nothing is lost on the first run.
+  const finalizeCfg = readFinalizeConfig(archDir);
+  let finalizeSlug = null;
+  if (finalizeCfg.configured) {
+    const finalizeGoal = buildFinalizeGoal(archDir, {
+      batchSlugs: written.map((w) => w.slug),
+      order: orderBase + batchIndex,
+      sourceAsk,
+    });
+    if (finalizeGoal) {
+      const { slug, filepath } = writeGoal(archDir, finalizeGoal);
+      written.push({ slug, filepath: path.relative(cwd, filepath), verifyCommand: null });
+      finalizeSlug = slug;
+    }
   }
 
   // Lane planning (intake-dag-ownership / ADR 0013): partition THIS batch into
@@ -138,19 +167,48 @@ export function runGoalIntake({ archDir, cwd, sourceAsk, goals }) {
     payloads.push({ slug: w.slug, payload, length, withinBudget });
   }
 
+  // Finalization summary + one-time setup nudge. When the project hasn't run the
+  // setup yet (configured:false), surface the questions so the agent asks the user
+  // ONCE (via AskUserQuestion) and persists with archkit_finalize_config — after
+  // which `configured` suppresses this. The default (on, safe local steps) is
+  // already active, so opting out is a deliberate, one-time choice.
+  const finalize = {
+    appended: finalizeSlug,
+    enabled: finalizeCfg.enabled,
+    steps: finalizeCfg.steps,
+    configured: finalizeCfg.configured,
+    ...(finalizeCfg.configured
+      ? {}
+      : {
+          setup: {
+            firstRun: true,
+            options: FINALIZE_STEPS.map((s) => ({ key: s.key, label: s.label, default: s.default })),
+            instruction:
+              "First CGR intake for this project: a finalization goal was appended with the default steps " +
+              "(changelog, docs, commits ON; push, release, deploy-to-dev OFF). Ask the user ONCE (AskUserQuestion, " +
+              "multi-select) which steps to enable and whether their CI/CD is github-actions/custom (+ a deploy command), " +
+              "then call archkit_finalize_config with their choices to save it to .arch/config.json. To turn the whole " +
+              "thing off, call archkit_finalize_config with enabled:false. This is asked once — `configured` then suppresses it.",
+          },
+        }),
+  };
+
   return {
     written,
     lanes: lanePlan,
+    finalize,
     testGate: detected
       ? `Detected test command "${detected.command}" (${detected.source}) — baked onto goals as verify-command. archkit_goal_complete will run it and refuse to complete on red.`
       : `No test command detected (no package.json scripts.test). Goals have no test gate — set verifyCommand per goal to enable one.`,
     payloads,
     nextStep:
-      payloads.length === 1
-        ? `Tell the user: run /clear, then /mcp__archkit__goal_next to start the goal (fallback: paste the payload above after /goal).`
-        : `Tell the user: run /clear, then /mcp__archkit__goal_next to start the first goal. Repeat /clear + /mcp__archkit__goal_next after each archkit_goal_complete to advance the queue.`,
+      (finalizeSlug ? `A finalization goal ("${finalizeSlug}") was appended to run LAST (changelog/docs/commits${finalizeCfg.steps.push || finalizeCfg.steps.release || finalizeCfg.steps.deployDev ? " + release" : ""}); ${finalize.setup ? "ask the user once to confirm/adjust the finalize steps (see finalize.setup), then " : ""}` : "") +
+      (payloads.length === 1
+        ? `tell the user: run /clear, then /mcp__archkit__conductor to start the goal (fallback: paste the payload above after /goal).`
+        : `tell the user: run /clear, then /mcp__archkit__conductor to start the first goal. Repeat /clear + /mcp__archkit__conductor after each archkit_goal_complete to advance the queue.`),
   };
 }
+
 
 export function runGoalList({ archDir }) {
   const active = listGoals(archDir);
@@ -186,7 +244,7 @@ export function runGoalList({ archDir }) {
     created: g.meta.created || "",
     // Intentional sequencing (cgr-goal-ordering): the relay sort key and epic
     // group label. `active` is already sorted by listGoals, so this list is in
-    // queue order — activeList[0] is the goal /goal_next will pick next.
+    // queue order — activeList[0] is the goal /conductor will pick next.
     epic: g.meta.epic || undefined,
     order: Number.isFinite(Number(g.meta.order)) ? Number(g.meta.order) : undefined,
     // Branch-isolated feature set (cgr-project-branch-grouping, ADR 0007): the
@@ -231,7 +289,7 @@ export function runGoalPayload({ archDir, slug }) {
   return {
     ...out,
     nextStep: out.withinBudget
-      ? `Tell the user: run /clear, then /mcp__archkit__goal_next (fallback: paste this payload after /goal).`
+      ? `Tell the user: run /clear, then /mcp__archkit__conductor (fallback: paste this payload after /goal).`
       : `Payload is over the 3800-char budget. Trim required-reading or files-to-touch in .arch/goals/${slug}.md, then re-call.`,
   };
 }
@@ -263,7 +321,7 @@ export function runGoalTesting({ archDir, slug }) {
 // Park an active goal in `on-hold` — deliberately set aside but resumable (ADR
 // 0003). Unlike `testing`, parking RELEASES the Stop-hook guard (the session may
 // end) and the goal is not auto-selected ahead of pending/testing work; a later
-// /mcp__archkit__goal_next resumes it (startGoal flips it back to in-progress)
+// /mcp__archkit__conductor resumes it (startGoal flips it back to in-progress)
 // only once nothing live is left. Distinct from archkit_goal_defer, which stashes
 // a follow-up PROPOSAL — on-hold parks a real, already-queued goal.
 export function runGoalHold({ archDir, slug }) {
@@ -277,13 +335,13 @@ export function runGoalHold({ archDir, slug }) {
   const result = markOnHold(archDir, slug);
   return {
     ...result,
-    nextStep: `Goal "${slug}" parked on-hold (guard released — session can end). Resume later via /clear + /mcp__archkit__goal_next once nothing live is ahead of it; to DROP it instead, use archkit_goal_abandon ${slug}.`,
+    nextStep: `Goal "${slug}" parked on-hold (guard released — session can end). Resume later via /clear + /mcp__archkit__conductor once nothing live is ahead of it; to DROP it instead, use archkit_goal_abandon ${slug}.`,
   };
 }
 
-// Start a SPECIFIC goal by slug — the actionable companion to the goal_next
+// Start a SPECIFIC goal by slug — the actionable companion to the conductor
 // relay's queue-vs-project routing choice (cgr-relay-queue-vs-project-routing).
-// goal_next auto-picks, but when both the queue and a project track have ready
+// The conductor relay auto-picks, but when both the queue and a project track have ready
 // work it surfaces a choice; once the user picks a track the agent calls this
 // with that track's next slug to begin it. Marks the goal in-progress and returns
 // its relay payload. Renders BEFORE starting so the first ungrouped queue goal
@@ -468,11 +526,11 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
       ? {
           slug: next.slug,
           ...renderPayload(archDir, next.slug),
-          instruction: `Run /clear, then /mcp__archkit__goal_next (fallback: paste the payload above after /goal).`,
+          instruction: `Run /clear, then /mcp__archkit__conductor (fallback: paste the payload above after /goal).`,
         }
       : null,
     nextStep: next
-      ? `${bucketNote ? bucketNote.trim() + " Then: " : ""}Run /clear, then /mcp__archkit__goal_next to begin ${next.slug}.${timeNote}${graphNote}`
+      ? `${bucketNote ? bucketNote.trim() + " Then: " : ""}Run /clear, then /mcp__archkit__conductor to begin ${next.slug}.${timeNote}${graphNote}`
       : `CGR queue empty.${bucketNote}${drainNote}${timeNote}${graphNote}${bucketNote ? "" : " Ask the user what to tackle next."}`,
   };
 }
@@ -603,7 +661,7 @@ export function runGoalFission({ archDir, cwd = process.cwd(), slug, criteriaMet
     verify: { command: isolated, isolated: true, passed: true },
     events: ["completed(partial)", "fissioned"],
     ownershipAccuracy: handoff.ownershipAccuracy,
-    nextStep: `Fissioned "${slug}": closed ${decision.met.length}/${decision.total} met criteria (verified green via "${isolated}"), forked lean successor "${successor}" carrying ${decision.unmet.length} unmet criterion/criteria + handoff + lineage. The scheduler prefers this continuation over cold pending work — run /clear then /mcp__archkit__goal_next to pick it up.`,
+    nextStep: `Fissioned "${slug}": closed ${decision.met.length}/${decision.total} met criteria (verified green via "${isolated}"), forked lean successor "${successor}" carrying ${decision.unmet.length} unmet criterion/criteria + handoff + lineage. The scheduler prefers this continuation over cold pending work — run /clear then /mcp__archkit__conductor to pick it up.`,
   };
 }
 
@@ -691,7 +749,7 @@ export function runGoalAbandon({ archDir, slug, reason }) {
     ...result,
     nextGoal: next ? { slug: next.slug, ...renderPayload(archDir, next.slug) } : null,
     nextStep: next
-      ? `Goal ${slug} abandoned (archived to done/). Run /clear then /mcp__archkit__goal_next to start ${next.slug}.`
+      ? `Goal ${slug} abandoned (archived to done/). Run /clear then /mcp__archkit__conductor to start ${next.slug}.`
       : `Goal ${slug} abandoned. CGR queue is empty — ask the user what to tackle next.`,
   };
 }
@@ -827,7 +885,7 @@ export function runGoalPromote({ archDir, hashes, all }) {
     notFound,
     remaining,
     nextStep: promoted.length
-      ? `Promoted ${promoted.length} proposal(s) to planned goals: ${promoted.map((p) => p.slug).join(", ")}. ${remaining} still pending. Run /clear then /mcp__archkit__goal_next to start the first one.`
+      ? `Promoted ${promoted.length} proposal(s) to planned goals: ${promoted.map((p) => p.slug).join(", ")}. ${remaining} still pending. Run /clear then /mcp__archkit__conductor to start the first one.`
       : `No proposals matched the given hashes. ${remaining} still pending.`,
   };
 }
@@ -960,7 +1018,7 @@ async function main() {
         if (isJson) { console.log(JSON.stringify(out)); break; }
         commandBanner("archkit goal", `on-hold ${slug}`);
         console.log(`\n  ${C.yellow}${I.dot}${C.reset} parked on-hold: .arch/goals/${slug}.md`);
-        console.log(`  ${C.dim}deliberately set aside — guard released, resume with /mcp__archkit__goal_next${C.reset}\n`);
+        console.log(`  ${C.dim}deliberately set aside — guard released, resume with /mcp__archkit__conductor${C.reset}\n`);
         break;
       }
       case "complete": {

@@ -104,6 +104,7 @@ await log("tools/list returns all 41 tools", async () => {
         "archkit_decisions_search",
         "archkit_doctor",
         "archkit_drift",
+        "archkit_finalize_config",
         "archkit_goal_abandon",
         "archkit_goal_complete",
         "archkit_goal_consolidate",
@@ -225,36 +226,41 @@ await log("prompts/list registers the CGR relay prompts", async () => {
     await withClient(tmp, async (client) => {
       const { prompts } = await client.listPrompts();
       const names = prompts.map(p => p.name).sort();
-      assert.deepEqual(names, ["conductor", "goal_next", "goal_resume", "goal_review", "goal_status"]);
-      const next = prompts.find(p => p.name === "goal_next");
-      assert.ok(next, "goal_next prompt should be registered");
-      assert.equal(typeof next.description, "string");
-      assert.ok(next.description.length > 0, "goal_next should carry a description");
+      // Unified relay: `conductor` is the one advance command; `intake` decomposes
+      // an ask. The old `goal_next` was folded into `conductor`.
+      assert.deepEqual(names, ["conductor", "goal_resume", "goal_review", "goal_status", "intake"]);
+      const cond = prompts.find(p => p.name === "conductor");
+      assert.ok(cond, "conductor prompt should be registered");
+      assert.equal(typeof cond.description, "string");
+      assert.ok(cond.description.length > 0, "conductor should carry a description");
+      assert.ok(prompts.find(p => p.name === "intake"), "intake prompt should be registered");
+      assert.ok(!prompts.find(p => p.name === "goal_next"), "goal_next should no longer be registered");
     });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-await log("goal_next prompt returns the relay payload for the next goal", async () => {
+await log("conductor prompt foregrounds the next single goal (former goal_next)", async () => {
   const tmp = makeFixture();
   writeGoal(tmp, { slug: "demo-goal", title: "Demo relay goal" });
   try {
     await withClient(tmp, async (client) => {
-      const res = await client.getPrompt({ name: "goal_next", arguments: {} });
+      const res = await client.getPrompt({ name: "conductor", arguments: {} });
       // Shape: { messages: [{ role: "user", content: { type: "text", text } }] }
       assert.ok(Array.isArray(res.messages) && res.messages.length === 1, "expected one message");
       const msg = res.messages[0];
       assert.equal(msg.role, "user");
       assert.equal(msg.content.type, "text");
       const text = msg.content.text;
-      // Relay header + rendered payload markers.
+      // One eligible goal → no parallelism → conductor foregrounds it (relay header
+      // + rendered payload markers), exactly as goal_next used to.
       assert.match(text, /\[archkit CGR relay\] Active goal: demo-goal/);
       assert.match(text, /archkit_goal_complete demo-goal/);
       assert.match(text, /ARCHKIT GOAL: demo-goal/);
       assert.match(text, /First exit criterion/);
     });
-    // goal_next marks the goal in-progress as a side effect — confirm it stuck.
+    // conductor marks the goal in-progress as a side effect — confirm it stuck.
     const onDisk = fs.readFileSync(path.join(tmp, ".arch", "goals", "demo-goal.md"), "utf8");
     assert.match(onDisk, /status: in-progress/);
   } finally {
@@ -262,13 +268,28 @@ await log("goal_next prompt returns the relay payload for the next goal", async 
   }
 });
 
-await log("goal_next prompt with empty queue returns a no-eligible-goal notice", async () => {
+await log("conductor prompt with empty queue returns a nothing-to-advance notice", async () => {
   const tmp = makeFixture();
   try {
     await withClient(tmp, async (client) => {
-      const res = await client.getPrompt({ name: "goal_next", arguments: {} });
+      const res = await client.getPrompt({ name: "conductor", arguments: {} });
       const text = res.messages[0].content.text;
-      assert.match(text, /No eligible CGR goal/);
+      assert.match(text, /Nothing to advance/);
+      assert.match(text, /\/mcp__archkit__intake/);
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await log("intake prompt returns decomposition guidance", async () => {
+  const tmp = makeFixture();
+  try {
+    await withClient(tmp, async (client) => {
+      const res = await client.getPrompt({ name: "intake", arguments: {} });
+      const text = res.messages[0].content.text;
+      assert.match(text, /archkit_goal_intake/);
+      assert.match(text, /\/mcp__archkit__conductor/);
     });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

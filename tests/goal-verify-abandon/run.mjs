@@ -73,7 +73,7 @@ await test("abandon returns the next pending goal's payload", () => {
     writeGoal(archDir, { slug: "g2", title: "G2", exitCriteria: ["y"] });
     const res = runGoalAbandon({ archDir, slug: "g1" });
     assert.ok(res.nextGoal && res.nextGoal.slug === "g2", "next goal surfaced");
-    assert.match(res.nextStep, /goal_next/);
+    assert.match(res.nextStep, /conductor/);
   });
 });
 
