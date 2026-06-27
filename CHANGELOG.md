@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.16.0 — 2026-06-27 — unified relay + auto-finalization
+
+Collapses the CGR relay to a **three-command workflow**: `/mcp__archkit__intake` → `/clear` → `/mcp__archkit__conductor`. Previously the loop needed both `/goal_next` (single goal) and `/conductor` (parallel lanes); now `conductor` is the single advance command and picks the mode automatically. Plus a configurable finalization goal that auto-appends release chores to every batch.
+
+### Changed
+
+- **`/mcp__archkit__conductor` is the one relay command.** It folds the board and auto-selects: with a single eligible goal it loads that goal's payload to work in the foreground (the former `goal_next` behavior); with ≥2 parallel lanes — or workers in flight / a non-empty merge queue / expired leases — it runs the CGR 2.0 orchestration pass (spawn worktree-isolated workers, deep-review exceptions, drain the dependency-ordered merge queue verify-after-each).
+- **New `/mcp__archkit__intake` prompt** — a first-class entry point that guides decomposing a sprawling ask into goals + lanes via `archkit_goal_intake`.
+- **The SessionStart nudge, Stop-hook, and all relay guidance now point at `/conductor`** instead of `/goal_next`.
+
+### Removed
+
+- **`/mcp__archkit__goal_next` is removed** — its behavior is fully absorbed by `/conductor`. (`goal_resume`, `goal_status`, and `goal_review` remain as secondary commands.)
+
+### Added — auto-appended finalization goal (`cgr.finalize`)
+
+- **Every CGR batch can end with a wrap-up goal** that runs **last and solo** (an exclusive barrier depending on every batch goal): update the changelog, refresh docs, finalize commits with notes, and the opt-in outward steps (push / set up a release / deploy to development). So a sprawling ask always closes out its release chores in a fresh, focused context instead of tacking them onto the last feature goal.
+- **One-time, per-project setup.** A project's first `archkit_goal_intake` appends nothing and instead surfaces a setup prompt; the agent asks you once (which steps + CI/CD), and the choice persists to `.arch/config.json` → `cgr.finalize` so it's never re-asked. Enabling **back-fills** the finalize goal onto the already-queued batch.
+- **Configurable + opt-out.** New `archkit_finalize_config` MCP tool and `archkit finalize` CLI to read/toggle the feature, any individual step, and the CI/CD flavor (`none` / `github-actions` / `custom` + a deploy command). Defaults: changelog/docs/commit **on**, push/release/deploy-to-dev **off** (outward-facing actions are a deliberate opt-in). `enabled:false` turns the whole thing off.
+- Consistent with archkit's rule that it **emits guidance, never runs git/deploy itself** — the goal carries the steps as exit-criteria; the agent does the local ones and instructs you for the rest.
+
 ## v1.15.0 — 2026-06-23
 
 Three bodies of work land together: **CGR 2.0** parallel-lane orchestration (**ADRs 0013–0015**), the **skills → playbooks** rename (**ADR 0016**), and a **CLI dispatch fix**. Everything is additive and back-compat — existing `.arch/` projects and CLI usage keep working unchanged.

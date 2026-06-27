@@ -49,7 +49,7 @@ archkit solves this by compiling your architecture into structured files the age
 ## Highlights
 
 - **Clear Goal Run (CGR)** *(v1.7+)* — decompose a sprawling ask into discrete, one-per-fresh-context goals, then advance the queue with a single keystroke. A goal-aware Stop hook keeps the agent on the current goal until its exit-criteria are met. [See below](#clear-goal-run-cgr).
-- **Full MCP server** — **31 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **4 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **Full MCP server** — **31 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **5 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
 - **CGR test gate + deferred-goal proposals** *(v1.9)* — every goal carries an auto-detected `verify-command`, and `archkit_goal_complete` refuses to finish a goal whose tests are red. Follow-up work spotted mid-goal is captured as a **proposed** goal (`archkit_goal_defer` + Stop-hook auto-drafting) and reviewed later instead of lost. [See below](#the-test-gate-v19).
 - **Continuous-guardrail hooks** *(v1.6+)* — SessionStart, UserPromptSubmit, PostToolUse, and a goal-aware Stop hook fire every turn so archkit stays in working memory even on long sessions. Self-installing via `archkit_install_hooks` or the plugin.
 - **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
@@ -104,7 +104,7 @@ Then restart Claude Code (or run `/plugin`) so the MCP server, four guardrail ho
 
 The plugin includes:
 
-- **MCP server** — all 31 `archkit_*` tools, the 4 CGR relay prompts, and `@archkit:` resources
+- **MCP server** — all 31 `archkit_*` tools, the 5 CGR relay prompts, and `@archkit:` resources
 - **Four guardrail hooks** — SessionStart, UserPromptSubmit, PostToolUse, and the goal-aware Stop hook (wired automatically; no `archkit_install_hooks` step needed)
 - **`/archkit-init` wizard** + bundled archetype skeletons — nine archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data) plus a generic fallback
 
@@ -219,9 +219,14 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 
 ### Prompts (slash commands)
 
-The CGR relay surfaces as **user-typed** slash commands (prompts are user-initiated; the agent can't invoke them — which is exactly why they pair with `/clear`):
+The CGR relay surfaces as **user-typed** slash commands (prompts are user-initiated; the agent can't invoke them — which is exactly why they pair with `/clear`). The **day-to-day loop is just three commands**:
 
-- `/mcp__archkit__goal_next` — load the next eligible goal into a fresh context (one keystroke instead of pasting a payload)
+- `/mcp__archkit__intake` — decompose a sprawling ask into discrete goals + parallel lanes
+- `/clear` — reset the context window (built-in)
+- `/mcp__archkit__conductor` — **the one relay command.** Folds the board and auto-picks: works the next single goal in the foreground, or orchestrates parallel lanes (spawn workers, merge queue) when the board has them
+
+Secondary (not part of the core loop):
+
 - `/mcp__archkit__goal_resume` — re-inject the active goal without changing state
 - `/mcp__archkit__goal_status` — queue orientation
 - `/mcp__archkit__goal_review` — review follow-up goals proposed in prior sessions and choose which to promote
@@ -245,12 +250,12 @@ A long agent session accumulates context, drifts off-task, and re-litigates sett
   you: <a big, multi-part ask>
    |
    v
-  archkit_goal_intake        decompose into goals/<slug>.md, each with exit-criteria
+  /mcp__archkit__intake      decompose into goals/<slug>.md (exit-criteria) + lanes
    |
    v
   you: /clear                fresh context window
-  you: /mcp__archkit__goal_next   <- one keystroke loads the next goal (no copy-paste)
-   |
+  you: /mcp__archkit__conductor   <- one command: works the next goal, or
+   |                                  orchestrates parallel lanes if the board has them
    v
   agent works the goal ...
   Stop hook: exit-criteria unmet? -> keep going.   met? -> release.
@@ -258,13 +263,14 @@ A long agent session accumulates context, drifts off-task, and re-litigates sett
    v
   archkit_goal_complete      archive, advance the queue
    |
-   '--> /clear + /mcp__archkit__goal_next  (repeat until the queue is empty)
+   '--> /clear + /mcp__archkit__conductor  (repeat until the queue is empty)
 ```
 
 - **Fresh context per goal.** Each goal starts in a `/clear`'d window, so the agent isn't dragging an entire session's noise into focused work.
-- **One keystroke to advance.** `/mcp__archkit__goal_next` marks the next goal in-progress and injects its payload — replacing the old copy-paste-after-`/goal` step (still available as a fallback).
+- **One command to advance.** `/mcp__archkit__conductor` marks the next goal in-progress and injects its payload (or, when independent lanes exist, runs the orchestration pass) — replacing the old copy-paste-after-`/goal` step (still available as a fallback).
 - **A goal-aware Stop hook** blocks stopping while a goal's exit-criteria are unmet, and releases when the agent calls `archkit_goal_complete`. It won't trap a genuine question to you, and a per-goal turn cap prevents runaway loops. It only fires for relay-started goals — plain sessions are untouched.
 - **Verify before you finish.** `archkit_goal_verify` reports objective evidence (which planned files changed, what a staged review finds) so "done" isn't just a vibe. `archkit_goal_abandon` drops a mis-scoped goal without marking it complete.
+- **Finalization goal** *(cgr.finalize)*. Once configured, intake auto-appends a wrap-up goal that runs **last and solo** — update the changelog, refresh docs, finalize commits, and the opt-in push / release / deploy-to-dev — so a sprawling ask closes out its release chores in a fresh context. A project's first intake asks you once which steps to enable (saved to `.arch/config.json` → `cgr.finalize`); reconfigure or opt out anytime with `archkit_finalize_config` or `archkit finalize`. Defaults: changelog/docs/commit on, outward steps off. archkit emits the steps as exit-criteria — it never runs git/deploy itself.
 
 ### The goal lifecycle
 
@@ -283,10 +289,10 @@ A goal moves through a small, explicit set of states (the `status:` field in the
 - **in-progress** — actively being worked; the Stop-hook relay guard is engaged.
 - **testing** *(v1.10.0)* — edits applied, **verification still pending**. This is the antidote to premature completion: instead of `archkit_goal_complete`-ing the moment a fast mass-edit lands (hiding unverified work in `done/`), call `archkit_goal_testing` to park it as **visible debt** in `.arch/goals/testing/`. A testing goal survives `/clear` and stays guarded — it is *not* done until a later session runs its `verify-command` green and completes it.
 - **completed** — terminal success, archived to `.arch/goals/done/`. (Internally `done`; reconciled to `completed` in the lifecycle vocabulary.)
-- **on-hold** *(v1.10.0)* — a real, queued goal **deliberately set aside** via `archkit_goal_hold`. Unlike `testing`, parking *releases* the guard so the session can end, and the goal isn't auto-selected ahead of pending/testing work — `/mcp__archkit__goal_next` resumes it (back to in-progress) only once nothing live is left. Distinct from a **proposed** follow-up (`archkit_goal_defer`), which isn't a queued goal at all.
+- **on-hold** *(v1.10.0)* — a real, queued goal **deliberately set aside** via `archkit_goal_hold`. Unlike `testing`, parking *releases* the guard so the session can end, and the goal isn't auto-selected ahead of pending/testing work — `/mcp__archkit__conductor` resumes it (back to in-progress) only once nothing live is left. Distinct from a **proposed** follow-up (`archkit_goal_defer`), which isn't a queued goal at all.
 - **abandoned** — terminal drop without success (`archkit_goal_abandon`).
 
-**Scan ordering.** `/mcp__archkit__goal_next` resumes an in-progress goal first, then prefers **pending** work until the testing backlog crosses a configurable threshold (`.arch/config.json` → `cgr.backlogThreshold`, default 5 items / 7 days), at which point it switches to **draining testing** before the verification debt grows unbounded. On-hold goals are offered last.
+**Scan ordering.** `/mcp__archkit__conductor` resumes an in-progress goal first, then prefers **pending** work until the testing backlog crosses a configurable threshold (`.arch/config.json` → `cgr.backlogThreshold`, default 5 items / 7 days), at which point it switches to **draining testing** before the verification debt grows unbounded. On-hold goals are offered last.
 
 **Consolidation.** At queue-drain (after `archkit_goal_complete`) and session-end (the Stop hook) — or on demand via `archkit_goal_consolidate` — terminal goals are folded into a dated per-day **digest** (`.arch/goals/done/digest/<date>.md`) and each raw CGR is preserved verbatim under `.arch/goals/done/archive/<slug>.md` so full context stays recoverable. Digests are discoverable through `archkit_goal_list`.
 
@@ -494,7 +500,7 @@ archkit detects or asks for your application type and tailors rules, review logi
 | `archkit goal complete <slug> [--notes X]` | Mark done, archive, advance the queue |
 | `archkit goal intake --json '<json>'` | Accept a decomposed-goals payload (agent driver) |
 
-Most CGR usage is via MCP: `archkit_goal_intake` to decompose, then `/clear` + `/mcp__archkit__goal_next` to advance, plus `archkit_goal_verify` / `archkit_goal_abandon`. See [Clear Goal Run](#clear-goal-run-cgr).
+Most CGR usage is via MCP: `/mcp__archkit__intake` to decompose, then `/clear` + `/mcp__archkit__conductor` to advance, plus `archkit_goal_verify` / `archkit_goal_abandon`. See [Clear Goal Run](#clear-goal-run-cgr).
 
 </details>
 

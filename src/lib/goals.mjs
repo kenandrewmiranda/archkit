@@ -25,6 +25,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createArchReader, loadGraphCluster } from "./parsers.mjs";
+import { archkitError } from "./errors.mjs";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
 // Copy-paste ceiling: the `archkit goal payload` / `/goal` fallback path pastes
@@ -32,7 +33,7 @@ const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
 // slack for inline edits. Still the default for renderPayload.
 export const PAYLOAD_BUDGET = 3800;
 
-// Relay ceiling: the /mcp__archkit__goal_next prompt injects the payload as an
+// Relay ceiling: the /mcp__archkit__conductor prompt injects the payload as an
 // MCP message directly into the conversation — no slash-command arg limit binds
 // it, so the relay path (now the primary workflow) can carry a fuller graph
 // slice + untruncated exit-criteria/source-ask. Kept finite so an injected goal
@@ -901,7 +902,7 @@ export function effortOf(goal) {
 //
 // The base CGR flow tracks status: planned | done. The relay loop adds an
 // "in-progress" state so a goal-aware Stop hook knows which goal's
-// exit-criteria to guard, and the /mcp__archkit__goal_next prompt can advance
+// exit-criteria to guard, and the /mcp__archkit__conductor prompt can advance
 // the queue without copy-paste.
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -1798,6 +1799,181 @@ export function leaseTtlHours(archDir) {
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_LEASE_TTL_HOURS;
 }
 
+// ── CGR finalization (cgr.finalize) ──────────────────────────────────────────
+// A configurable wrap-up goal auto-appended to every intake batch so a sprawling
+// ask always ends with the release chores done in a fresh, focused context:
+// update the changelog, refresh docs, finalize commits with notes, push, set up a
+// release, deploy to development. Each step is opt-in/out per project. The
+// outward-facing steps (push / release / deployDev) default OFF so they are a
+// deliberate choice, never a surprise the agent takes on its own. Persisted under
+// .arch/config.json → cgr.finalize so the one-time setup isn't re-asked.
+//
+// archkit never runs git/deploy itself (same principle as the branch guidance):
+// the finalize goal carries the steps as exit-criteria; the agent executes the
+// local ones (changelog/docs/commit) and instructs the user for push/release/deploy.
+export const FINALIZE_STEPS = [
+  { key: "changelog", label: "Update the changelog", default: true,
+    criterion: "CHANGELOG updated with an entry covering this batch's changes" },
+  { key: "docs", label: "Update documentation", default: true,
+    criterion: "Docs (README / docs/) updated to match the changes" },
+  { key: "commit", label: "Finalize commits with notes/comments", default: true,
+    criterion: "Work committed with descriptive messages and the project's commit trailer" },
+  { key: "push", label: "Push to remote", default: false,
+    criterion: "Branch pushed to the remote" },
+  { key: "release", label: "Set up a release", default: false,
+    criterion: "Release prepared (version bump + tag) per the project's release flow" },
+  { key: "deployDev", label: "Deploy to development", default: false,
+    criterion: "Deployed to the development environment" },
+];
+
+export const FINALIZE_SLUG = "finalize-release";
+
+const DEFAULT_FINALIZE = Object.freeze({
+  enabled: true,
+  configured: false,
+  steps: Object.freeze(Object.fromEntries(FINALIZE_STEPS.map((s) => [s.key, s.default]))),
+  ciCd: "none", // none | github-actions | custom
+  deployCommand: "",
+});
+
+// Read cgr.finalize merged over defaults — every field coerced, never throws.
+export function readFinalizeConfig(archDir) {
+  const raw = readCgrConfig(archDir).finalize;
+  const f = raw && typeof raw === "object" ? raw : {};
+  const steps = {};
+  for (const s of FINALIZE_STEPS) {
+    steps[s.key] = (f.steps && typeof f.steps === "object" && f.steps[s.key] !== undefined)
+      ? f.steps[s.key] === true
+      : s.default;
+  }
+  return {
+    enabled: f.enabled !== undefined ? f.enabled === true : DEFAULT_FINALIZE.enabled,
+    configured: f.configured === true,
+    steps,
+    ciCd: typeof f.ciCd === "string" ? f.ciCd : DEFAULT_FINALIZE.ciCd,
+    deployCommand: typeof f.deployCommand === "string" ? f.deployCommand : "",
+  };
+}
+
+// True once the user has run the one-time setup (so intake stops nudging).
+export function isFinalizeConfigured(archDir) {
+  return readFinalizeConfig(archDir).configured;
+}
+
+// Merge-write cgr.finalize into .arch/config.json, preserving every other config
+// key. Stamps configured:true by default so the one-time setup isn't re-asked.
+// Returns the resolved finalize config. Never partially writes — a single
+// JSON.stringify of the whole file.
+export function writeFinalizeConfig(archDir, patch = {}) {
+  const fp = path.join(archDir, "config.json");
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(fp, "utf8")); } catch { cfg = {}; }
+  if (!cfg || typeof cfg !== "object") cfg = {};
+  if (!cfg.cgr || typeof cfg.cgr !== "object") cfg.cgr = {};
+  const cur = readFinalizeConfig(archDir);
+  const steps = { ...cur.steps };
+  if (patch.steps && typeof patch.steps === "object") {
+    for (const s of FINALIZE_STEPS) {
+      if (patch.steps[s.key] !== undefined) steps[s.key] = patch.steps[s.key] === true;
+    }
+  }
+  const next = {
+    enabled: patch.enabled !== undefined ? patch.enabled === true : cur.enabled,
+    configured: patch.configured !== undefined ? patch.configured === true : true,
+    steps,
+    ciCd: patch.ciCd !== undefined ? String(patch.ciCd) : cur.ciCd,
+    deployCommand: patch.deployCommand !== undefined ? String(patch.deployCommand) : cur.deployCommand,
+  };
+  cfg.cgr.finalize = next;
+  fs.mkdirSync(archDir, { recursive: true });
+  fs.writeFileSync(fp, JSON.stringify(cfg, null, 2) + "\n");
+  return next;
+}
+
+// Synthesize the finalization goal for a batch, or null when finalize is disabled
+// or no steps are enabled. It depends on every batch slug and is an exclusive
+// barrier, so the lane partition schedules it LAST and SOLO — correct, because it
+// touches changelog/docs/git across the whole batch. Exit-criteria are exactly the
+// enabled steps (so a project that only wants changelog+docs gets a 2-line goal).
+export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk = "" } = {}) {
+  const cfg = readFinalizeConfig(archDir);
+  if (!cfg.enabled) return null;
+  const enabled = FINALIZE_STEPS.filter((s) => cfg.steps[s.key]);
+  if (enabled.length === 0) return null;
+  const outward = cfg.steps.push || cfg.steps.release || cfg.steps.deployDev;
+  const exitCriteria = enabled.map((s) => {
+    if (s.key === "deployDev" && cfg.deployCommand) return `${s.criterion} (\`${cfg.deployCommand}\`)`;
+    return s.criterion;
+  });
+  const ciCdNote = cfg.ciCd && cfg.ciCd !== "none" ? ` CI/CD: ${cfg.ciCd}.` : "";
+  const why =
+    `Auto-appended by archkit (cgr.finalize) so this batch ends with its release chores in a fresh context: ` +
+    enabled.map((s) => s.label.toLowerCase()).join(", ") + `.` + ciCdNote +
+    ` archkit never runs git/deploy itself — do the local steps and instruct the user for push/release/deploy. ` +
+    `Adjust or opt out with archkit_finalize_config (or \`archkit finalize\`).`;
+  return {
+    slug: FINALIZE_SLUG,
+    title: outward ? "Finalize: changelog, docs, commits + release" : "Finalize: changelog, docs, commits",
+    exitCriteria,
+    dependsOn: batchSlugs.slice(),
+    exclusive: true,
+    feature: "finalize",
+    owns: ["CHANGELOG.md", "CHANGELOG", "README.md", "docs/**"],
+    order,
+    why,
+    sourceAsk,
+    verifyCommand: "", // meta wrap-up — no test gate
+  };
+}
+
+// Read or update the CGR finalization config (.arch/config.json → cgr.finalize).
+// With show:true (or no mutating fields) it returns the current resolved config;
+// otherwise it merge-writes the patch and stamps configured:true so intake stops
+// nudging. The persistence side of the one-time setup the agent drives via
+// AskUserQuestion when intake surfaces finalize.setup. Lives in the lib (not the
+// goal command) so the `archkit finalize` CLI can call it without importing the
+// self-executing goal command module.
+export function runFinalizeConfig({ archDir, show, enabled, steps, ciCd, deployCommand } = {}) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  const mutating = enabled !== undefined || steps !== undefined || ciCd !== undefined || deployCommand !== undefined;
+  if (show || !mutating) {
+    const config = readFinalizeConfig(archDir);
+    return {
+      config,
+      configured: config.configured,
+      nextStep: config.configured
+        ? `Finalization is ${config.enabled ? "ON" : "OFF"}. Change any step with archkit_finalize_config (e.g. steps:{ push:true }), or enabled:false to disable.`
+        : `Not configured yet. Present the steps to the user (AskUserQuestion), then call archkit_finalize_config with their choices to save + stop the intake nudge.`,
+    };
+  }
+  const saved = writeFinalizeConfig(archDir, { enabled, steps, ciCd, deployCommand, configured: true });
+  const onSteps = FINALIZE_STEPS.filter((s) => saved.steps[s.key]).map((s) => s.key);
+
+  // Back-fill: enabling during a project's FIRST intake (goals already queued, no
+  // finalize goal yet) would otherwise leave the current batch without its wrap-up
+  // until the next intake. If there are live non-finalize goals and no finalize
+  // goal in the queue, append one now over the current pending slugs.
+  let backfilled = null;
+  if (saved.enabled) {
+    const live = listGoals(archDir);
+    const hasFinalize = live.some((g) => g.slug === FINALIZE_SLUG);
+    const userSlugs = live.map((g) => g.slug).filter((s) => s !== FINALIZE_SLUG);
+    if (!hasFinalize && userSlugs.length > 0) {
+      const fg = buildFinalizeGoal(archDir, { batchSlugs: userSlugs, order: nextOrderBase(archDir) });
+      if (fg) { writeGoal(archDir, fg); backfilled = fg.slug; }
+    }
+  }
+
+  return {
+    saved: true,
+    config: saved,
+    backfilled,
+    nextStep: saved.enabled
+      ? `Saved to .arch/config.json → cgr.finalize.${backfilled ? ` Appended a "${backfilled}" goal to the current queue.` : ""} Each archkit_goal_intake now appends a "${FINALIZE_SLUG}" goal with: ${onSteps.join(", ") || "(no steps — effectively off)"}. Re-run anytime to change.`
+      : `Saved — finalization is OFF. No finalize goal will be appended at intake. Re-enable with archkit_finalize_config enabled:true.`,
+  };
+}
+
 function daysBetween(fromISODate, now) {
   // Tolerate both date-only (legacy) and full-datetime stamps by comparing on
   // the calendar day — a datetime `testing-since` must still age correctly.
@@ -1866,7 +2042,7 @@ export function nextEligibleGoal(archDir) {
   if (preferred[0] || fallback[0]) return preferred[0] || fallback[0];
 
   // (3) Nothing live to do — offer a deliberately-parked goal as a last resort.
-  // Resuming it is an explicit act (the user ran goal_next), so this respects
+  // Resuming it is an explicit act (the user ran the conductor relay), so this respects
   // "parked" while still keeping on-hold work discoverable instead of lost.
   const onHold = goals.filter((g) => statusOf(g) === STATUS_ON_HOLD && depsSatisfied(g));
   return onHold[0] || null;
@@ -2461,7 +2637,7 @@ export function goalsCompletedOn(archDir, day) {
 // A copy-pasteable day-by-day log of COMPLETED goals — title, outcome, time, and
 // completion notes — built as a pure report over completed-goal data already on
 // disk. The deliverable users asked for: something to post to Jira / standups so
-// the goal_next→/clear→goal_next loop stops losing track of what got done.
+// the /conductor→/clear→/conductor loop stops losing track of what got done.
 //
 // Time honesty (mirrors effortOf): the explicit hand-entered effort (time-spent)
 // wins when set; otherwise the derived started→completed wall-clock is shown

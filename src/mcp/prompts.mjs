@@ -4,8 +4,13 @@
 // These surface in Claude Code as /mcp__archkit__<name> slash commands. After
 // a /clear, one keystroke loads the next (or current) goal's payload into the
 // conversation — replacing the manual copy-paste of the /goal payload that was
-// CGR's main friction point. State changes are deliberate and minimal:
-//   goal_next   → marks the next eligible goal in-progress, injects its payload
+// CGR's main friction point. The day-to-day loop is just three commands:
+// /mcp__archkit__intake (decompose an ask) → /clear → /mcp__archkit__conductor.
+// State changes are deliberate and minimal:
+//   intake      → guidance to decompose an ask into goals (calls archkit_goal_intake)
+//   conductor   → the unified relay: foregrounds the next single goal in-progress
+//                 (injects its payload), OR orchestrates parallel lanes when the
+//                 board has them. The merge of the old goal_next + conductor.
 //   goal_resume → re-injects the active goal's payload, no state change
 //   goal_status → read-only orientation
 //
@@ -124,39 +129,31 @@ export function relayRoutingChoice(route) {
   return lines.join("\n");
 }
 
-const NO_ARCH = "No .arch/ project found here. Run /archkit-init to set one up, then decompose your ask with archkit_goal_intake.";
+const NO_ARCH = "No .arch/ project found here. Run /archkit-init to set one up, then decompose your ask with /mcp__archkit__intake (archkit_goal_intake).";
+
+// Single-goal foreground relay: pick the next eligible goal, mark it
+// in-progress, and return its payload to work in THIS context. Extracted from
+// the former goal_next prompt — the unified `conductor` relay falls back to this
+// when the board has no parallelism to orchestrate (the common one-goal case).
+// Returns the message string, or null when no goal is eligible (caller decides
+// the idle message).
+function singleGoalRelayMessage(archDir) {
+  const route = routeNextGoal(archDir);
+  if (route.kind === "none") return null;
+  // Both the queue and a project track have ready work → surface the choice
+  // rather than silently auto-picking (cgr-relay-queue-vs-project-routing).
+  if (route.kind === "choice") return relayRoutingChoice(route);
+  // resume / single → auto-pick. Render BEFORE starting so the first ungrouped
+  // queue goal sees "create -c cgr-queue-<date>" (startGoal records the branch
+  // afterward, so subsequent picks render "switch").
+  const goal = route.goal;
+  const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
+  startGoal(archDir, goal.slug);
+  const today = new Date().toISOString().slice(0, 10);
+  return relayHeader(goal.slug, "in-progress", { tallyLine: doneTodayTally(archDir, today), windDownThreshold: windDownAt(archDir, {}) }) + payload;
+}
 
 export const prompts = {
-  goal_next: {
-    config: {
-      title: "archkit: start next goal",
-      description:
-        "CGR relay — load the next eligible goal (marks it in-progress) and inject its payload. Run after /clear to advance the goal queue without copy-pasting the /goal payload. Scan order: resume an in-progress goal first, else pending-first until the testing (verification-debt) backlog crosses the configured threshold (then drain testing first), and as a last resort resume an on-hold goal once nothing live is left.",
-    },
-    handler: async () => {
-      const archDir = archDirOrNull();
-      if (!archDir) return textMessage(NO_ARCH);
-      const route = routeNextGoal(archDir);
-      if (route.kind === "none") {
-        return textMessage(
-          "No eligible CGR goal to start — the queue is empty or every remaining goal is blocked by an incomplete dependency. Call archkit_goal_list to inspect, or archkit_goal_intake to decompose a new ask."
-        );
-      }
-      // Both the queue and a project track have ready work → surface the choice
-      // rather than silently auto-picking (cgr-relay-queue-vs-project-routing).
-      if (route.kind === "choice") {
-        return textMessage(relayRoutingChoice(route));
-      }
-      // resume / single → auto-pick. Render BEFORE starting so the first ungrouped
-      // queue goal sees "create -c cgr-queue-<date>" (startGoal records the branch
-      // afterward, so subsequent picks render "switch").
-      const goal = route.goal;
-      const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
-      startGoal(archDir, goal.slug);
-      const today = new Date().toISOString().slice(0, 10);
-      return textMessage(relayHeader(goal.slug, "in-progress", { tallyLine: doneTodayTally(archDir, today), windDownThreshold: windDownAt(archDir, {}) }) + payload);
-    },
-  },
 
   goal_resume: {
     config: {
@@ -170,7 +167,7 @@ export const prompts = {
       const goal = getActiveGoal(archDir);
       if (!goal) {
         return textMessage(
-          "No goal is in progress. Run /mcp__archkit__goal_next to start the next eligible goal, or archkit_goal_list to see the queue."
+          "No goal is in progress. Run /mcp__archkit__conductor to start the next eligible goal, or archkit_goal_list to see the queue."
         );
       }
       const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
@@ -213,7 +210,7 @@ export const prompts = {
         `Then act on their choice:`,
         `  • promote the chosen ones: archkit_goal_promote with hashes:[...] (or all:true if they picked everything)`,
         `  • dismiss the rest if they explicitly reject them: archkit_goal_dismiss with hashes:[...]`,
-        `Leave anything they neither promote nor dismiss as pending. After promoting, tell them to /clear then /mcp__archkit__goal_next to start the first new goal.`
+        `Leave anything they neither promote nor dismiss as pending. After promoting, tell them to /clear then /mcp__archkit__conductor to start the first new goal.`
       );
       return textMessage(lines.join("\n"));
     },
@@ -221,21 +218,28 @@ export const prompts = {
 
   conductor: {
     config: {
-      title: "archkit: run the conductor loop",
+      title: "archkit: advance the relay (conductor)",
       description:
-        "CGR 2.0 conductor — fold the board into one orchestration pass and drive the loop: claim the frontier under a lease, spawn one worktree-isolated worker per lane, collect handoffs, deep-review only exceptions, then drain the dependency-ordered merge queue verify-after-each. Run after /clear or compaction to orchestrate parallel lanes instead of coding in the foreground.",
+        "CGR relay — the ONE command to advance work after /clear or compaction. Folds the board and auto-picks the mode: with parallel lanes (or workers in flight / a non-empty merge queue / expired leases) it runs the CGR 2.0 conductor pass — claim the frontier under a lease, spawn one worktree-isolated worker per lane, collect handoffs, deep-review only exceptions, then drain the dependency-ordered merge queue verify-after-each; with a single eligible goal it loads that goal's payload to work in THIS context (no worker spawn). Pair with /mcp__archkit__intake to decompose an ask and /clear to reset context.",
     },
     handler: async () => {
       const archDir = archDirOrNull();
       if (!archDir) return textMessage(NO_ARCH);
       const plan = conductorPlan(archDir);
       const c = plan.counts;
-      const idle = c.frontier === 0 && c.in_flight === 0 && c.merge_queue === 0 && c.leases_expired === 0;
-      if (idle) {
+      // Orchestrate only when there's genuine parallelism (>=2 claimable lanes)
+      // or live worker/merge state to manage; otherwise fall back to the
+      // single-goal foreground relay so the common one-goal case stays a simple
+      // /clear -> /conductor loop instead of spawning a worker for a lone goal.
+      const orchestrate =
+        c.claimableLanes >= 2 || c.in_flight > 0 || c.merge_queue > 0 || c.leases_expired > 0;
+      if (!orchestrate) {
+        const single = singleGoalRelayMessage(archDir);
+        if (single) return textMessage(single);
         return textMessage([
-          `[archkit CGR conductor] Nothing to orchestrate — no frontier, nothing in flight, empty merge queue.`,
+          `[archkit CGR] Nothing to advance — no eligible goal, no parallel lanes, empty merge queue.`,
           `The board is purely derived from .arch/board/events.ndjson + the CGR files.`,
-          `Queue work with archkit_goal_intake, then start a goal with /mcp__archkit__goal_next.`,
+          `Decompose a new ask with /mcp__archkit__intake (archkit_goal_intake), then /clear and run /mcp__archkit__conductor.`,
         ].join("\n"));
       }
       const lines = [
@@ -307,17 +311,40 @@ export const prompts = {
         ``,
       ];
       if (active) {
-        lines.push(`Resume with /mcp__archkit__goal_resume, or finish it then /clear + /mcp__archkit__goal_next.`);
+        lines.push(`Resume with /mcp__archkit__goal_resume, or finish it then /clear + /mcp__archkit__conductor.`);
       } else if (testing.length) {
-        lines.push(`${testing.length} goal(s) await verification. Run /clear + /mcp__archkit__goal_next to drain the testing backlog (verify green, then archkit_goal_complete).`);
+        lines.push(`${testing.length} goal(s) await verification. Run /clear + /mcp__archkit__conductor to drain the testing backlog (verify green, then archkit_goal_complete).`);
       } else if (pending.length) {
-        lines.push(`Start with /clear + /mcp__archkit__goal_next.`);
+        lines.push(`Start with /clear + /mcp__archkit__conductor.`);
       } else if (onHold.length) {
-        lines.push(`Only on-hold (parked) goals remain. Run /clear + /mcp__archkit__goal_next to resume one, or archkit_goal_abandon to drop it.`);
+        lines.push(`Only on-hold (parked) goals remain. Run /clear + /mcp__archkit__conductor to resume one, or archkit_goal_abandon to drop it.`);
       } else {
-        lines.push(`Queue empty. Run archkit_goal_consolidate to fold any un-consolidated done/ goals into a dated digest, or archkit_goal_intake to decompose a new ask.`);
+        lines.push(`Queue empty. Run archkit_goal_consolidate to fold any un-consolidated done/ goals into a dated digest, or /mcp__archkit__intake to decompose a new ask.`);
       }
       return textMessage(lines.join("\n"));
+    },
+  },
+
+  intake: {
+    config: {
+      title: "archkit: decompose an ask into goals",
+      description:
+        "CGR relay — the entry point for a sprawling or multi-part ask. Decompose the user's request into discrete CGR goals (one per fresh context) via archkit_goal_intake: split it into 1..N goals, each with a kebab-case slug, a one-line title, 2-5 exit-criteria, and optionally filesToTouch / requiredReading / dependsOn / owns / feature / exclusive so intake can partition the batch into parallel lanes. After intake persists the goals, the loop is: /clear → /mcp__archkit__conductor (which works a lone goal in the foreground or orchestrates parallel lanes automatically).",
+    },
+    handler: async () => {
+      const archDir = archDirOrNull();
+      if (!archDir) return textMessage(NO_ARCH);
+      return textMessage([
+        `[archkit CGR intake] Decompose the user's ask into discrete CGR goals, then call archkit_goal_intake.`,
+        ``,
+        `Do this now:`,
+        `1. Take the user's most recent ask (if none is in view, ask them for it).`,
+        `2. Split it into 1..N goals — each a self-contained unit of work for one fresh context. Per goal: a kebab-case slug, a one-line title, 2-5 concrete exit-criteria, and optionally filesToTouch, requiredReading, dependsOn (DAG edges), owns (predicted file-ownership globs), feature (cohesion tag), exclusive (run-solo barrier).`,
+        `3. Call archkit_goal_intake with the goals array. It persists each to .arch/goals/<slug>.md and partitions them into parallel lanes (disjoint ownership → run concurrently; exclusive → solo barrier).`,
+        `4. If the ask is genuinely a single goal, pass a one-element array. If it's ambiguous, ASK the user to clarify BEFORE calling intake.`,
+        ``,
+        `Then advance the loop: tell the user to run /clear, then /mcp__archkit__conductor — it works a lone goal in the foreground or orchestrates the lanes automatically.`,
+      ].join("\n"));
     },
   },
 };
