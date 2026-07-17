@@ -37,9 +37,15 @@ jobs:
           fi
       - run: npm run check:versions
       - run: npm test
-      # Auth via the NPM_TOKEN secret (NODE_AUTH_TOKEN). Provenance dropped as a
-      # diagnostic: token auth still 403'd WITH --provenance, so testing whether
-      # provenance attestation (not the account) is the blocker.
-      - run: npm publish --access public
+      # Auth via the NPM_TOKEN secret (NODE_AUTH_TOKEN). Provenance retained
+      # (id-token: write + public repo).
+      #
+      # KNOWN BLOCKER (2026-06-24 → 2026-07-17, unresolved): the registry 403s on
+      # PUT regardless of auth path. Confirmed all three 403 identically — pure
+      # OIDC, token+provenance, and token without provenance — so it is neither the
+      # token nor provenance nor OIDC config. The token authenticates (403 Forbidden,
+      # not 401), so it is an account/package-side hold. Resolution is npm-support
+      # only; once cleared, just re-tag vX.Y.Z to publish — no workflow change needed.
+      - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
