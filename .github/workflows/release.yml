@@ -37,8 +37,9 @@ jobs:
           fi
       - run: npm run check:versions
       - run: npm test
-      # Auth via the NPM_TOKEN secret (NODE_AUTH_TOKEN). Provenance still works
-      # because `id-token: write` is granted above and the repo is public.
-      - run: npm publish --provenance --access public
+      # Auth via the NPM_TOKEN secret (NODE_AUTH_TOKEN). Provenance dropped as a
+      # diagnostic: token auth still 403'd WITH --provenance, so testing whether
+      # provenance attestation (not the account) is the blocker.
+      - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
