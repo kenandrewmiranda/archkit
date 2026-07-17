@@ -19,11 +19,11 @@ jobs:
           # (https://docs.npmjs.com/trusted-publishers/).
           node-version: 22
           cache: npm
-          # NOTE: deliberately NO `registry-url`. setup-node's registry-url writes an
-          # .npmrc with `always-auth=true` + `_authToken=${NODE_AUTH_TOKEN}`, making npm
-          # attempt TOKEN auth. With the package set to require OIDC / disallow tokens,
-          # that empty-token attempt 403s instead of falling through to OIDC. Omitting
-          # registry-url lets `npm publish` use pure OIDC trusted publishing.
+          # Token auth: registry-url writes an .npmrc wiring `_authToken=${NODE_AUTH_TOKEN}`
+          # so `npm publish` authenticates with the NPM_TOKEN secret. (Pure OIDC Trusted
+          # Publishing 403'd account-side from 2026-06-24 onward — see release history; this
+          # is the token-based fallback while that hold is unresolved.)
+          registry-url: 'https://registry.npmjs.org'
       # Node 22 ships npm 10.x; OIDC trusted publishing needs >= 11.5.1, so upgrade.
       - run: npm install -g npm@latest
       - run: npm ci
@@ -37,7 +37,8 @@ jobs:
           fi
       - run: npm run check:versions
       - run: npm test
-      # No NODE_AUTH_TOKEN: authentication is via Trusted Publishing (OIDC),
-      # configured at npmjs.com → package Settings → Trusted Publisher.
-      # Provenance is emitted automatically under OIDC; --provenance is explicit.
+      # Auth via the NPM_TOKEN secret (NODE_AUTH_TOKEN). Provenance still works
+      # because `id-token: write` is granted above and the repo is public.
       - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
