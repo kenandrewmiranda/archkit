@@ -3,6 +3,23 @@
     "windDownAt": 0.65,
     "windDownAtByModel": {},
     "leaseTtlHours": 24,
-    "backlogThreshold": { "count": 5, "ageDays": 7 }
+    "backlogThreshold": {
+      "count": 5,
+      "ageDays": 7
+    },
+    "finalize": {
+      "enabled": true,
+      "configured": true,
+      "steps": {
+        "changelog": true,
+        "docs": true,
+        "commit": true,
+        "push": true,
+        "release": false,
+        "deployDev": false
+      },
+      "ciCd": "github-actions",
+      "deployCommand": ""
+    }
   }
 }

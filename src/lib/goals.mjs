@@ -150,6 +150,222 @@ export function migratePendingGoalsToQueue(archDir) {
   return { moved };
 }
 
+// The quarantine drawer: where reconcileGoalsLayout parks .md files it can't
+// place — no frontmatter, or frontmatter with no `status:` field. They're moved
+// OUT of the live goals tree (not deleted) so a junk file can never masquerade
+// as a goal and get picked up by the relay, while a human can still recover it.
+export function quarantineDir(archDir) {
+  return path.join(goalsDir(archDir), "quarantine");
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Full-tree placement reconciliation (reconcile-goals-layout)
+//
+// Status is the source of truth; the folder is a DERIVED cache (ADR 0003). After
+// working several projects, CGR files drift into the narrow scan's blind spots
+// (queueGoalFiles only looks one level deep; flatGoalFiles only at each dir's top
+// level) and get skipped — or a stale zombie copy shadows the live one and the
+// relay picks the wrong goal. migratePendingGoalsToQueue fixes ONLY legacy root
+// pending; this is the general form: walk the ENTIRE goals tree at any depth,
+// read each file's status, and re-file it into the folder that status dictates.
+//
+// Canonical folder per (normalized) status:
+//   pending                 → queue/  (or queue/<project>/ when project-tagged)
+//   in-progress | on-hold   → goals/ root   (live work; status distinguishes them)
+//   testing                 → testing/
+//   completed | abandoned   → done/   (a copy already under done/archive/ counts as placed)
+// Any other/unknown-but-present status is left where it is (conservative — only
+// the states we own are re-filed). A file with NO status is not a goal → quarantined.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Normalized status if the file actually declares one, else null. Unlike
+// statusOf, this does NOT default a status-less file to `pending` — a missing
+// status is the signal that the file isn't a goal (→ quarantine), so we must be
+// able to tell "no status" apart from "status: pending".
+function declaredStatus(meta) {
+  const raw = meta?.status;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const v = raw.trim();
+  return STATUS_ALIASES[v] || v;
+}
+
+// The folder a goal's status dictates. Returns null for statuses we don't own
+// (e.g. proposed, or anything unrecognized) so those files are left untouched.
+function canonicalDirFor(archDir, status, project) {
+  switch (status) {
+    case STATUS_PENDING:
+      return project ? path.join(queueDir(archDir), slugify(project)) : queueDir(archDir);
+    case STATUS_ACTIVE:
+    case STATUS_ON_HOLD:
+      return goalsDir(archDir);
+    case STATUS_TESTING:
+      return testingDir(archDir);
+    case STATUS_COMPLETED:
+    case "abandoned":
+      return doneDir(archDir);
+    default:
+      return null;
+  }
+}
+
+// Is this goal file already in the folder its status dictates? For terminal
+// goals, an already-consolidated copy under done/archive/ also counts as placed
+// (so reconcile never drags archived history back up to done/ top-level).
+function isPlacedCorrectly(archDir, g) {
+  const canonical = canonicalDirFor(archDir, g.status, g.project);
+  if (!canonical) return true; // status we don't re-file → leave it
+  const dir = path.resolve(g.dir);
+  if (dir === path.resolve(canonical)) return true;
+  if ((g.status === STATUS_COMPLETED || g.status === "abandoned") &&
+      dir === path.resolve(archiveDir(archDir))) return true;
+  return false;
+}
+
+// Every *.md file anywhere under goals/, at any depth — EXCEPT the coordination
+// board (chat.md, not a goal) and the non-goal drawers (digest/ holds digests,
+// proposed/ holds proposals, quarantine/ is already-parked junk). Never throws;
+// an unreadable dir is skipped. This is the wide scan migratePendingGoalsToQueue
+// deliberately isn't.
+function walkGoalMarkdownFiles(archDir) {
+  const root = goalsDir(archDir);
+  const skip = new Set(
+    [digestDir(archDir), proposedDir(archDir), quarantineDir(archDir)].map((d) => path.resolve(d)),
+  );
+  const out = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (skip.has(path.resolve(full))) continue;
+        walk(full);
+      } else if (e.isFile() && e.name.endsWith(".md") && e.name !== CHAT_BOARD_FILENAME) {
+        out.push(full);
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
+// Park a file in quarantine/ (never delete). Keeps the basename, disambiguating
+// on collision so two junk `notes.md` files don't clobber each other. Tolerant —
+// a hiccup skips the file rather than throwing.
+function quarantineFile(archDir, file) {
+  try {
+    const qDir = quarantineDir(archDir);
+    fs.mkdirSync(qDir, { recursive: true });
+    const base = path.basename(file);
+    let dest = path.join(qDir, base);
+    let n = 1;
+    while (fs.existsSync(dest) && path.resolve(dest) !== path.resolve(file)) {
+      dest = path.join(qDir, base.replace(/\.md$/, `-${n}.md`));
+      n++;
+    }
+    if (path.resolve(dest) !== path.resolve(file)) {
+      fs.writeFileSync(dest, fs.readFileSync(file, "utf8"));
+      fs.rmSync(file, { force: true });
+    }
+    return path.relative(archDir, dest);
+  } catch { return null; }
+}
+
+// Reconcile every goal file to the folder its status dictates. Pure dry-run when
+// apply:false (computes the report, writes nothing); apply:true performs the
+// moves, resolves zombie duplicate slugs (keeps the copy whose location already
+// matches its status, removes the rest), and quarantines status-less/unparseable
+// .md files. Never throws — a reconcile hiccup must not block the relay (mirrors
+// migratePendingGoalsToQueue's tolerance) — and idempotent: a second run over a
+// reconciled tree reports nothing and moves nothing. Returns a structured report:
+//   { moved:[{slug,from,to,status}], duplicates:[{slug,kept,removed}],
+//     quarantined:[{file,reason}], outOfPlaceCount }
+// where outOfPlaceCount is the number of misfiled goals (== moved.length) — the
+// health signal a startup auto-fix keys off of.
+export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
+  const report = { moved: [], duplicates: [], quarantined: [], outOfPlaceCount: 0 };
+  const rel = (f) => path.relative(archDir, f);
+
+  let files;
+  try { files = walkGoalMarkdownFiles(archDir); } catch { return report; }
+
+  // Pass 1: parse. Status-less / unreadable files are quarantined; the rest
+  // become goal records carrying their slug, normalized status, and project.
+  const goals = [];
+  for (const file of files) {
+    let meta;
+    try { ({ meta } = parseGoal(fs.readFileSync(file, "utf8"))); }
+    catch {
+      report.quarantined.push({ file: rel(file), reason: "unreadable" });
+      if (apply) quarantineFile(archDir, file);
+      continue;
+    }
+    const status = declaredStatus(meta);
+    if (!status) {
+      report.quarantined.push({
+        file: rel(file),
+        reason: meta && Object.keys(meta).length ? "missing status field" : "no parseable frontmatter",
+      });
+      if (apply) quarantineFile(archDir, file);
+      continue;
+    }
+    goals.push({
+      file,
+      dir: path.dirname(file),
+      slug: String(meta.slug || path.basename(file).replace(/\.md$/, "")).trim(),
+      status,
+      project: String(meta.project || "").trim(),
+    });
+  }
+
+  // Pass 2: resolve zombie duplicate slugs. Keep the copy whose location already
+  // matches its status (deterministic tie-break by path); remove the rest.
+  const bySlug = new Map();
+  for (const g of goals) {
+    if (!bySlug.has(g.slug)) bySlug.set(g.slug, []);
+    bySlug.get(g.slug).push(g);
+  }
+  const survivors = [];
+  for (const [slug, group] of bySlug) {
+    if (group.length === 1) { survivors.push(group[0]); continue; }
+    const byPath = [...group].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+    const placed = byPath.filter((g) => isPlacedCorrectly(archDir, g));
+    const keeper = placed[0] || byPath[0];
+    for (const g of byPath) {
+      if (g === keeper) continue;
+      report.duplicates.push({ slug, kept: rel(keeper.file), removed: rel(g.file) });
+      if (apply) { try { fs.rmSync(g.file, { force: true }); } catch {} }
+    }
+    survivors.push(keeper);
+  }
+
+  // Pass 3: re-file misplaced survivors into their canonical folder.
+  for (const g of survivors) {
+    if (isPlacedCorrectly(archDir, g)) continue;
+    const canonical = canonicalDirFor(archDir, g.status, g.project);
+    if (!canonical) continue; // status we don't own — left in place
+    const dest = path.join(canonical, `${g.slug}.md`);
+    report.moved.push({ slug: g.slug, from: rel(g.file), to: rel(dest), status: g.status });
+    if (apply) {
+      try {
+        fs.mkdirSync(canonical, { recursive: true });
+        if (fs.existsSync(dest) && path.resolve(dest) !== path.resolve(g.file)) {
+          // A different file already sits at the destination — treat as a zombie
+          // duplicate: keep the one already in place, drop the mover.
+          report.duplicates.push({ slug: g.slug, kept: rel(dest), removed: rel(g.file) });
+          fs.rmSync(g.file, { force: true });
+        } else {
+          fs.writeFileSync(dest, fs.readFileSync(g.file, "utf8"));
+          if (path.resolve(dest) !== path.resolve(g.file)) fs.rmSync(g.file, { force: true });
+        }
+      } catch { /* skip this file, keep going */ }
+    }
+  }
+
+  report.outOfPlaceCount = report.moved.length;
+  return report;
+}
+
 export function slugify(s) {
   return String(s || "")
     .toLowerCase()
