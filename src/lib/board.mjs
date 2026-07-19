@@ -41,6 +41,7 @@ import {
   stampGoalFields,
   leaseTtlHours,
   STATUS_PENDING,
+  triageNextGoal,
 } from "./goals.mjs";
 
 // The closed vocabulary of board events (ADR 0014). Anything else is refused at
@@ -805,6 +806,57 @@ export function rehydrateConductor(archDir, { now = new Date().toISOString(), ow
   clearFlushMarker(archDir);
   const plan = conductorPlan(archDir, { now, ownershipFloor });
   return { reclaimed, flush, plan };
+}
+
+// ── Compact SessionStart board snapshot (cgr-conductor-startup-board-awareness) ─
+//
+// The SessionStart digest only rehydrated the board when there was LIVE parallel
+// conductor state (frontier / in-flight / merge / leases). In the common
+// single-goal case the user opened a session BLIND to what's queued, in testing,
+// on-hold, or split across project tracks — the board, a durable orientation
+// surface, was doing none of that job. boardSnapshot folds the WHOLE board into a
+// single compact line via triageNextGoal (the same pure classifier the conductor
+// relay uses — no new mutable state), so both surfaces agree on what's live.
+//
+// Shape: "queue N (next <slug>) - testing N - projects (label:count, ...) - on-hold N",
+// optionally prefixed with "active <slug>" when a goal is mid-flight. Returns ""
+// when NOTHING is live (greenfield / no-CGR / all-done boards stay noise-free).
+// When the board is MIXED — triage would surface a choice rather than auto-pick —
+// a second line nudges toward /clear + /mcp__archkit__conductor, matching the
+// ambiguity-gated selection (ADR 0019) instead of implying a mindless next pick.
+export function boardSnapshot(archDir) {
+  let t;
+  try { t = triageNextGoal(archDir); } catch { return ""; }
+
+  const queueN = t.queue.length;
+  const testingN = t.testing.count;
+  const onHoldN = t.onHold.count;
+  const projectEntries = Object.entries(t.projects);
+  const active = t.kind === "resume" ? (t.goal?.slug || null) : null;
+
+  // Nothing live at all → no snapshot (empty / greenfield / all-done stays clean).
+  if (!active && !queueN && !testingN && !projectEntries.length && !onHoldN) return "";
+
+  const parts = [];
+  if (active) parts.push(`active ${active}`);
+  parts.push(`queue ${queueN}${queueN && t.queueNext ? ` (next ${t.queueNext})` : ""}`);
+  parts.push(`testing ${testingN}`);
+  parts.push(
+    projectEntries.length
+      ? `projects (${projectEntries.map(([p, slugs]) => `${p}:${slugs.length}`).join(", ")})`
+      : `projects 0`,
+  );
+  parts.push(`on-hold ${onHoldN}`);
+
+  const lines = [`[archkit CGR board] ${parts.join(" - ")}`];
+  // Mixed board → the triage would ASK rather than auto-pick; point the user at the
+  // one command that runs that choice, so startup orientation matches selection.
+  if (t.kind === "choice") {
+    lines.push(
+      `Mixed board — no single obvious next pick. Run /clear then /mcp__archkit__conductor to choose which track to advance (queue / project / drain testing / plan something new).`,
+    );
+  }
+  return lines.join("\n");
 }
 
 // ── Per-lane Stop-guard release (exit-criterion 5) ────────────────────────────

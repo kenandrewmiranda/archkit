@@ -46,6 +46,7 @@ const commands = {
   "boundary-check": "../src/commands/boundary.mjs",
   goal:     "../src/commands/goal.mjs",
   worklog:  "../src/commands/worklog.mjs",
+  statusline: "../src/commands/statusline.mjs",
   doctor:   "../src/commands/doctor.mjs",
 };
 
@@ -138,6 +139,7 @@ Knowledge
 Goals / output
   goal               CGR goal relay
   worklog            Session worklog
+  statusline         Compact CGR segment for the Claude Code status line
   export             Emit AGENTS.md / editor-native context files
   market <sub>       Community playbook packs (login/search/install/info)
   boundary-check     Enforce BAN rules

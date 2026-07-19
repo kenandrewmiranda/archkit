@@ -1231,6 +1231,56 @@ export function getActiveGoal(archDir) {
     || null;
 }
 
+// ── Status-line segment (statusline-archkit-context) ─────────────────────────
+//
+// The Claude Code status line is a plain shell subprocess — it CANNOT call MCP
+// tools — but it can shell out to `archkit statusline`, which reads .arch/ goal
+// state off disk and emits a compact heads-up-display segment: the active goal
+// slug plus how much pending work is queued behind it (e.g. the shape used in
+// the goal example, `⛏ fix-conductor-triage (3 queued)`).
+//
+// Contract (exit-criteria 2 & 3):
+//   • Returns null — the "show NOTHING" signal — when there is no archDir
+//     (outside an archkit project) OR no active/in-progress (or testing) goal.
+//     The CLI turns null into empty output so the segment silently disappears.
+//   • NEVER throws. A missing/malformed .arch/ is swallowed and treated as
+//     "nothing to show" so the status line can never crash or print garbage.
+//   • The queue count is the number of PENDING goals; it is omitted from the
+//     text when zero (`⛏ slug` with no "(0 queued)" noise).
+//   • A testing-state active goal uses a distinct glyph so "edits applied,
+//     verification pending" reads differently from live in-progress work.
+//
+// Returns { text, slug, status, queued, glyph } or null. `text` is plain (no
+// ANSI) — the status-line wrapper applies color so the segment matches the rest
+// of the layout; the CLI's --color flag wraps it for direct use.
+export function statuslineSegment(archDir, { glyph = "⛏", testingGlyph = "🧪" } = {}) {
+  if (!archDir) return null;
+  let goals;
+  try {
+    goals = listGoals(archDir);
+  } catch {
+    // Malformed/unreadable .arch/ — degrade to silence, never throw.
+    return null;
+  }
+  let active = null;
+  let queued = 0;
+  try {
+    active = goals.find((g) => statusOf(g) === STATUS_ACTIVE)
+      || goals.find((g) => statusOf(g) === STATUS_TESTING)
+      || null;
+    queued = goals.filter((g) => statusOf(g) === STATUS_PENDING).length;
+  } catch {
+    return null;
+  }
+  if (!active) return null;
+  const slug = String(active.slug || "").trim();
+  if (!slug) return null;
+  const status = statusOf(active);
+  const g = status === STATUS_TESTING ? testingGlyph : glyph;
+  const text = queued > 0 ? `${g} ${slug} (${queued} queued)` : `${g} ${slug}`;
+  return { text, slug, status, queued, glyph: g };
+}
+
 // ── Cross-CGR file-overlap detection (cgr-files-to-touch-conflict-detection) ──
 //
 // Every goal already declares files-to-touch, so archkit can mechanically warn
@@ -2110,6 +2160,147 @@ export function routeNextGoal(archDir) {
   // (3) One track (or neither) → auto-pick with the existing threshold ordering.
   const goal = nextEligibleGoal(archDir);
   return goal ? { kind: "single", goal } : { kind: "none" };
+}
+
+// ── Ambiguity-gated triage (cgr-conductor-ambiguity-triage) ──────────────────
+//
+// routeNextGoal only surfaced a choice on ONE axis of ambiguity — an ungrouped
+// queue AND a project track both live. Every OTHER mixed board state was silently
+// auto-picked: accumulating verification debt (testing), deliberately-parked work
+// (on-hold), multiple project tracks, an empty/blocked queue. That silent
+// auto-pick is the root of "the conductor just mindlessly picks the next queue
+// number and runs it".
+//
+// triageNextGoal generalizes the decision across ALL those dimensions. It
+// classifies the board into:
+//   single — exactly ONE obvious thing to do and no notable debt → auto-pick,
+//            preserving the frictionless /clear → /conductor loop for the common
+//            case (also what nextEligibleGoal would have returned).
+//   choice — mixed / ambiguous (>1 track, OR pending work alongside a non-empty
+//            testing backlog, OR any on-hold work, OR only-parked work) → the
+//            caller should ASK the user which axis to advance rather than guess.
+//   none   — nothing eligible AND nothing parked (empty:true) → the caller offers
+//            a plan / intake path instead of pretending there's work.
+//   resume — an in-progress goal is mid-flight → always pre-empts any choice.
+//
+// The `choice`/`none` returns carry every board slice the caller needs to render
+// the question WITHOUT re-reading the board: the ungrouped queue (slugs + next),
+// each project track (slugs + next), the testing backlog (count + slugs), the
+// on-hold set (count + slugs), a `recommended` auto-pick slug, and an explicit
+// `empty` flag. `single`/`resume` also carry the slices (harmless, uniform shape).
+//
+// A `cgr.triageMode` knob (ambiguity default | always | off) overrides the
+// gate: `always` forces a choice every pass (whenever there's anything to choose),
+// `off` restores pure auto-pick (single/none, exactly nextEligibleGoal). Resolved
+// tolerantly from .arch/config.json via readCgrConfig — a missing/invalid config
+// falls back to the default, never blocks selection.
+export const DEFAULT_TRIAGE_MODE = "ambiguity";
+export const TRIAGE_MODES = Object.freeze(["ambiguity", "always", "off"]);
+const TRIAGE_MODE_SET = new Set(TRIAGE_MODES);
+
+// Resolve cgr.triageMode from .arch/config.json (readCgrConfig pattern): a
+// recognized value wins, anything else (missing / invalid / unknown string) →
+// the `ambiguity` default. Never throws.
+export function triageMode(archDir) {
+  const v = readCgrConfig(archDir).triageMode;
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return TRIAGE_MODE_SET.has(s) ? s : DEFAULT_TRIAGE_MODE;
+}
+
+// Build the board slices shared by every triage return — computed once so
+// `single`, `choice`, and `none` all carry the same uniform shape. `eligible` is
+// the deps-satisfied, not-done, not-parked set (pending + testing); `onHold` is
+// the deps-satisfied parked set. Kept internal to triageNextGoal.
+function triageSlices({ ungrouped, projects, testing, onHold }) {
+  const projectNext = {};
+  for (const [p, slugs] of Object.entries(projects)) projectNext[p] = slugs[0];
+  return {
+    queue: ungrouped,
+    queueNext: ungrouped[0] || null,
+    projects,
+    projectNext,
+    testing: { count: testing.length, slugs: testing },
+    onHold: { count: onHold.length, slugs: onHold },
+  };
+}
+
+// The generalized next-goal decision (see block comment above). Returns one of:
+//   { kind: "resume", goal, mode, ...slices }
+//   { kind: "single", goal, recommended, mode, empty:false, ...slices }
+//   { kind: "choice", recommended, mode, empty, ...slices }
+//   { kind: "none",   recommended:null, mode, empty:true, ...slices }
+// where ...slices = { queue, queueNext, projects, projectNext, testing, onHold }.
+export function triageNextGoal(archDir) {
+  const goals = listGoals(archDir);
+  const mode = triageMode(archDir);
+
+  // (1) Resume actively-worked goal first — a genuinely in-progress goal is never
+  // interrupted by a choice, regardless of triageMode (exit-criterion 3).
+  const inProgress = goals.find((g) => statusOf(g) === STATUS_ACTIVE);
+
+  const depsSatisfied = (g) => {
+    const deps = ensureArray(g.meta["depends-on"]);
+    return !deps.some((d) => !isGoalDone(archDir, d));
+  };
+  // Eligible = not done, not parked (on-hold), deps satisfied — the same gate
+  // nextEligibleGoal / routeNextGoal apply. Continuations float to the front.
+  const eligible = preferContinuations(goals.filter((g) => {
+    const s = statusOf(g);
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_ACTIVE) return false;
+    return depsSatisfied(g);
+  }));
+  const projectOf = (g) => String(g?.meta?.project || "").trim();
+  const testingGoals = eligible.filter((g) => statusOf(g) === STATUS_TESTING);
+  const pending = eligible.filter((g) => statusOf(g) !== STATUS_TESTING);
+  const ungrouped = pending.filter((g) => !projectOf(g)).map((g) => g.slug);
+  const projects = {};
+  for (const g of pending.filter((g) => projectOf(g))) (projects[projectOf(g)] ||= []).push(g.slug);
+  const testing = testingGoals.map((g) => g.slug);
+  const onHold = goals.filter((g) => statusOf(g) === STATUS_ON_HOLD && depsSatisfied(g)).map((g) => g.slug);
+
+  const slices = triageSlices({ ungrouped, projects, testing, onHold });
+  // `recommended` = what a pure auto-pick would choose (the frictionless default),
+  // so a `choice` caller can pre-highlight it. Uses the full precedence
+  // (in-progress resume → threshold ordering → on-hold last resort).
+  const autoPick = nextEligibleGoal(archDir);
+  // Empty = truly nothing to act on: no in-progress, no eligible pending/testing,
+  // no parked work. This is the signal for the caller to offer a plan/intake path.
+  const empty = !inProgress && eligible.length === 0 && onHold.length === 0;
+
+  if (inProgress) {
+    return { kind: "resume", goal: inProgress, recommended: inProgress.slug, mode, empty: false, ...slices };
+  }
+  if (empty) {
+    return { kind: "none", recommended: null, mode, empty: true, ...slices };
+  }
+
+  // `off` → pure auto-pick, exactly nextEligibleGoal (single or, if somehow
+  // nothing pickable, none). Restores the pre-triage behavior.
+  if (mode === "off") {
+    return autoPick
+      ? { kind: "single", goal: autoPick, recommended: autoPick.slug, mode, empty: false, ...slices }
+      : { kind: "none", recommended: null, mode, empty: true, ...slices };
+  }
+
+  // How many distinct axes could the user reasonably pick between?
+  //   • each pending track (the ungrouped queue counts as one; each project one)
+  //   • the testing backlog, if any (drain verification debt)
+  //   • the on-hold set, if any (resume parked work vs. plan anew)
+  // Exactly one axis and a real auto-pick → the trivial case → single (frictionless).
+  // Two or more axes → genuinely ambiguous → choice. `always` forces choice.
+  const pendingTracks = (ungrouped.length ? 1 : 0) + Object.keys(projects).length;
+  const axes = pendingTracks + (testing.length ? 1 : 0) + (onHold.length ? 1 : 0);
+
+  if (mode !== "always" && axes <= 1 && autoPick && onHold.length === 0) {
+    // One obvious thing, no parked debt → auto-pick as today. (on-hold is excluded
+    // from the single fast-path: silently resuming parked work is exactly the
+    // "mindless auto-pick" this goal removes — parked-only boards go to choice.)
+    return { kind: "single", goal: autoPick, recommended: autoPick.slug, mode, empty: false, ...slices };
+  }
+
+  // Ambiguous (or `always`, or parked-only) → hand the caller the full slices to
+  // put the question to the user.
+  return { kind: "choice", recommended: autoPick ? autoPick.slug : null, mode, empty: false, ...slices };
 }
 
 // ── Turn-cap state for the goal-aware Stop hook ──

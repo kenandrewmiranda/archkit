@@ -22,7 +22,7 @@ import { findArchDir } from "../lib/shared.mjs";
 import { conductorPlan } from "../lib/board.mjs";
 import {
   getActiveGoal,
-  routeNextGoal,
+  triageNextGoal,
   startGoal,
   renderPayload,
   RELAY_PAYLOAD_BUDGET,
@@ -102,29 +102,59 @@ export function relayHeader(slug, status = "in-progress", { tallyLine = "", wind
   return lines.join("\n");
 }
 
-// Queue-vs-project routing choice (cgr-relay-queue-vs-project-routing). When both
-// the ungrouped queue AND one or more project feature-sets have ready work, the
-// relay does NOT auto-pick — it hands the agent a choice to put to the user. Each
-// track names its recommended next slug; the agent presents the options with
-// AskUserQuestion and then starts the chosen one via archkit_goal_start <slug>
-// (the only relay action that can begin a SPECIFIC goal). Starting an ungrouped
-// goal records the shared cgr-queue-<date> branch; a project goal branches on
-// feat/<project>.
-export function relayRoutingChoice(route) {
-  const projectEntries = Object.entries(route.projects);
+// Ambiguity-gated triage choice (cgr-conductor-ambiguity-triage, ADR 0019). When
+// the board has more than one thing worth pulling in next — an ungrouped queue AND
+// a project track, multiple project tracks, verification debt alongside pending
+// work, ANY parked (on-hold) work, or triageMode=always — the relay does NOT
+// auto-pick. It hands the agent a single-select choice to put to the user, one
+// option per axis (queue / each project / drain testing / resume parked / plan
+// something new). Each option names the concrete follow-up the agent runs WITHOUT
+// another round-trip: archkit_goal_start <slug> to begin a specific goal (queue
+// goals record the shared cgr-queue-<date> branch; project goals branch feat/
+// <project>), or /mcp__archkit__intake to decompose a fresh ask. Subsumes the old
+// queue-vs-project relayRoutingChoice — that case is just the two-track instance
+// of this generalized choice, so there is a single prompt, never a double one.
+export function relayTriageChoice(triage) {
+  const queue = triage.queue || [];
+  const projectEntries = Object.entries(triage.projects || {});
+  const testing = triage.testing || { count: 0, slugs: [] };
+  const onHold = triage.onHold || { count: 0, slugs: [] };
+
   const lines = [
-    `[archkit CGR relay] Two tracks have ready work — the queue and ${projectEntries.length} project branch${projectEntries.length === 1 ? "" : "es"}. Ask which to advance instead of auto-picking.`,
+    `[archkit CGR relay] The board has more than one thing you could reasonably pull in next — auto-picking here would be exactly the "mindlessly grab the next queue number" behavior. Ask the user which track to advance instead of guessing.`,
     ``,
-    `Present this choice to the user with the AskUserQuestion tool (single-select):`,
-    `  • Advance the queue (${route.queue.length} ungrouped goal${route.queue.length === 1 ? "" : "s"}, shared branch cgr-queue-<date>) → next: ${route.queueNext}`,
+    `Present this to the user with the AskUserQuestion tool (single-select). Each option maps to a concrete next action — take it directly once they choose, no extra round-trip:`,
   ];
+  if (queue.length) {
+    lines.push(
+      `  • Advance the queue — ${queue.length} ungrouped goal${queue.length === 1 ? "" : "s"} (shared branch cgr-queue-<date>), next: ${triage.queueNext}`,
+      `      → archkit_goal_start ${triage.queueNext}`,
+    );
+  }
   for (const [proj, slugs] of projectEntries) {
-    lines.push(`  • Project ${proj} (${slugs.length} goal${slugs.length === 1 ? "" : "s"}, branch feat/${proj}) → next: ${route.projectNext[proj]}`);
+    lines.push(
+      `  • Project ${proj} — ${slugs.length} goal${slugs.length === 1 ? "" : "s"} (branch feat/${proj}), next: ${triage.projectNext[proj]}`,
+      `      → archkit_goal_start ${triage.projectNext[proj]}`,
+    );
+  }
+  if (testing.count) {
+    lines.push(
+      `  • Drain verification debt — ${testing.count} goal${testing.count === 1 ? "" : "s"} in testing (${testing.slugs.join(", ")})`,
+      `      → archkit_goal_start ${testing.slugs[0]}, re-run its verify-command, then archkit_goal_complete`,
+    );
+  }
+  if (onHold.count) {
+    lines.push(
+      `  • Resume parked work — ${onHold.count} on-hold goal${onHold.count === 1 ? "" : "s"} (${onHold.slugs.join(", ")})`,
+      `      → archkit_goal_start ${onHold.slugs[0]}`,
+    );
   }
   lines.push(
+    `  • Plan something new — none of the above; decompose a fresh ask`,
+    `      → run /mcp__archkit__intake (archkit_goal_intake) to split a new request into goals`,
     ``,
-    `Once the user picks, call archkit_goal_start <slug> with that track's "next" slug — it marks the goal in-progress, injects its payload, and (for the queue) records the shared cgr-queue-<date> branch. Start exactly ONE.`,
-    `An in-progress goal would have been resumed automatically; this choice only appears because nothing is mid-flight and both tracks are unblocked.`,
+    `If they just want to keep moving, the frictionless default is: ${triage.recommended || "(none)"}.`,
+    `Call exactly ONE archkit_goal_start after they pick — it marks the goal in-progress, injects its payload, and records the branch. Nothing is started until they choose.`,
   );
   return lines.join("\n");
 }
@@ -138,15 +168,24 @@ const NO_ARCH = "No .arch/ project found here. Run /archkit-init to set one up, 
 // Returns the message string, or null when no goal is eligible (caller decides
 // the idle message).
 function singleGoalRelayMessage(archDir) {
-  const route = routeNextGoal(archDir);
-  if (route.kind === "none") return null;
-  // Both the queue and a project track have ready work → surface the choice
-  // rather than silently auto-picking (cgr-relay-queue-vs-project-routing).
-  if (route.kind === "choice") return relayRoutingChoice(route);
+  // Ambiguity-gated triage (ADR 0019) generalizes the old queue-vs-project route:
+  // it classifies the WHOLE board (tracks, testing debt, parked work, empty) into
+  // resume/single/choice/none, gated by cgr.triageMode (ambiguity default | always
+  // | off). `off` collapses to pure auto-pick (single/none), preserving today's
+  // silent behavior byte-for-byte.
+  const triage = triageNextGoal(archDir);
+  // Nothing eligible and nothing parked → let the conductor's empty branch offer
+  // the plan/intake path (returning null keeps that dead-end-free message as the
+  // single source of the "decompose a new ask" nudge).
+  if (triage.kind === "none") return null;
+  // Ambiguous board (>1 axis, testing debt alongside pending work, ANY parked
+  // work, or triageMode=always) → do NOT auto-pick; hand the agent a choice to put
+  // to the user. Subsumes the old relayRoutingChoice — one prompt, never a double.
+  if (triage.kind === "choice") return relayTriageChoice(triage);
   // resume / single → auto-pick. Render BEFORE starting so the first ungrouped
   // queue goal sees "create -c cgr-queue-<date>" (startGoal records the branch
   // afterward, so subsequent picks render "switch").
-  const goal = route.goal;
+  const goal = triage.goal;
   const { payload } = renderPayload(archDir, goal.slug, { budget: RELAY_PAYLOAD_BUDGET });
   startGoal(archDir, goal.slug);
   const today = new Date().toISOString().slice(0, 10);
