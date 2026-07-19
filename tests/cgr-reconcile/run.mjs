@@ -21,6 +21,7 @@ import {
   doneDir,
   archiveDir,
 } from "../../src/lib/goals.mjs";
+import { runGoalReconcile } from "../../src/commands/goal.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -275,6 +276,49 @@ test("legacy status aliases (planned/done) reconcile by their normalized status"
     assert.ok(exists(queueDir(archDir), "lp.md"), "planned alias filed to queue/");
     assert.ok(exists(doneDir(archDir), "ld.md"), "done alias filed to done/");
   });
+});
+
+console.log("\n  cgr-reconcile — runGoalReconcile handler (MCP wiring)");
+
+test("handler dry-run by DEFAULT: reports proposed moves but writes nothing", () => {
+  withArchDir(({ archDir }) => {
+    plant(archDir, "a/b/deep.md", { slug: "deep", status: "pending" });
+    const out = runGoalReconcile({ archDir }); // apply omitted → dry-run
+    assert.equal(out.apply, false, "defaults to dry-run");
+    assert.ok(out.moved.some((m) => m.slug === "deep"), "reports the move");
+    assert.equal(out.outOfPlaceCount, out.moved.length, "count matches moved");
+    assert.ok(typeof out.nextStep === "string" && out.nextStep.length > 0, "carries nextStep");
+    // Disk untouched.
+    assert.ok(exists(goalsDir(archDir), "a", "b", "deep.md"), "source still in place");
+    assert.ok(!exists(queueDir(archDir), "deep.md"), "queue/ not written");
+  });
+});
+
+test("handler apply:true performs the moves", () => {
+  withArchDir(({ archDir }) => {
+    plant(archDir, "queue/comp.md", { slug: "comp", status: "completed" });
+    const out = runGoalReconcile({ archDir, apply: true });
+    assert.equal(out.apply, true);
+    assert.ok(out.moved.some((m) => m.slug === "comp" && m.status === "completed"));
+    assert.ok(exists(doneDir(archDir), "comp.md"), "moved into done/");
+    assert.ok(!exists(queueDir(archDir), "comp.md"), "source removed");
+  });
+});
+
+test("handler on an already-tidy tree returns a reconcileNote + nextStep, no changes", () => {
+  withArchDir(({ archDir }) => {
+    plant(archDir, "queue/pend.md", { slug: "pend", status: "pending" });
+    const out = runGoalReconcile({ archDir, apply: true });
+    assert.equal(out.moved.length, 0);
+    assert.equal(out.duplicates.length, 0);
+    assert.equal(out.quarantined.length, 0);
+    assert.ok(typeof out.reconcileNote === "string" && out.reconcileNote.length > 0, "silent-success note present");
+    assert.ok(out.nextStep.length > 0);
+  });
+});
+
+test("handler throws a structured no_arch_dir error when archDir is missing", () => {
+  assert.throws(() => runGoalReconcile({ archDir: null }), (err) => err.code === "no_arch_dir");
 });
 
 console.log(`\n  ${passed} passed, ${failed} failed`);

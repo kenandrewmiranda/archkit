@@ -206,6 +206,8 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_goal_hold", { slug: "audit-goal-two" }],
         ["archkit_goal_abandon", { slug: "audit-goal-two" }],
         ["archkit_goal_consolidate", {}],
+        // Dry-run reconcile (apply omitted) — read-only, safe anywhere in the run.
+        ["archkit_goal_reconcile", {}],
         // Worklog renders over the goal(s) completed/consolidated above.
         ["archkit_worklog", {}],
         ["archkit_goal_defer", { title: "audit follow-up goal" }],

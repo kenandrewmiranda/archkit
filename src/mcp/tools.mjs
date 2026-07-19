@@ -27,7 +27,7 @@ import { runDoctorJson } from "../commands/doctor.mjs";
 import { runSyncJson } from "../commands/sync.mjs";
 import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
-import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalStart, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGraphAccept, runGoalHandoff, runGoalFission } from "../commands/goal.mjs";
+import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalStart, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGoalReconcile, runGraphAccept, runGoalHandoff, runGoalFission } from "../commands/goal.mjs";
 import { runWorklog } from "../commands/worklog.mjs";
 import { loadGoal, runFinalizeConfig } from "../lib/goals.mjs";
 import { sessionState, conductorPlan } from "../lib/board.mjs";
@@ -513,6 +513,17 @@ export const tools = {
     handler: async () => {
       const cwd = process.cwd();
       return runGoalConsolidate({ archDir: requireArchDir(cwd) });
+    },
+  },
+
+  archkit_goal_reconcile: {
+    description: "Reconcile the CGR goal tree so every goal sits in the folder its STATUS dictates — STATUS IS THE SOURCE OF TRUTH; the folder a goal lives in is a DERIVED cache (ADR 0003), never the other way around. After working several projects, goal files drift into the narrow scans' blind spots (the queue scan only looks one level deep; the flat scans only at each dir's top level) and get skipped by the relay, or a stale zombie copy shadows the live one and /mcp__archkit__conductor picks the wrong goal. This walks the ENTIRE .arch/goals/ tree at ANY depth, reads each file's declared status, and re-files it into the canonical folder for that status (pending→queue/ or queue/<project>/, in-progress|on-hold→goals/ root, testing→testing/, completed|abandoned→done/), collapses duplicate slugs to the copy already in its correct place (removing the zombies), and quarantines status-less / unparseable .md files into goals/quarantine/ (moved, never deleted). DRY-RUN BY DEFAULT: with apply omitted/false it computes and returns the proposed { moved, duplicates, quarantined, outOfPlaceCount } WITHOUT touching disk — inspect it first. Pass apply:true to actually perform the moves/dedup/quarantine. Idempotent (a second apply over a reconciled tree changes nothing) and tolerant (never throws on a missing/unreadable tree). When to use: when the queue looks wrong (a goal you know exists isn't being picked, or a completed goal keeps resurfacing), after manual file surgery under .arch/goals/, or as a periodic tidy. Returns { moved:[{slug,from,to,status}], duplicates:[{slug,kept,removed}], quarantined:[{file,reason}], outOfPlaceCount, apply, nextStep }.",
+    inputSchema: z.object({
+      apply: z.boolean().optional().describe("false/omitted = DRY-RUN: return the proposed moves/dups/quarantine without writing. true = perform them. Default false — inspect before applying."),
+    }),
+    handler: async ({ apply }) => {
+      const cwd = process.cwd();
+      return runGoalReconcile({ archDir: requireArchDir(cwd), apply });
     },
   },
 

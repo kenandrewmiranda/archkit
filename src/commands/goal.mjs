@@ -57,6 +57,7 @@ import {
   readFinalizeConfig,
   buildFinalizeGoal,
   FINALIZE_STEPS,
+  reconcileGoalsLayout,
 } from "../lib/goals.mjs";
 import { writeHandoff, appendEvent } from "../lib/board.mjs";
 import crypto from "node:crypto";
@@ -677,6 +678,37 @@ export function runGoalConsolidate({ archDir }) {
     nextStep: r.consolidated > 0
       ? `Consolidated ${r.consolidated} terminal goal(s) into .arch/goals/done/digest/${r.date}.md. Raw CGRs preserved under goals/done/archive/ — full context recoverable. Recent digests surface in archkit_goal_list.`
       : `Nothing to consolidate — no un-archived terminal goals in .arch/goals/done/.`,
+  };
+}
+
+// On-demand full-tree placement reconciliation (reconcile-goals-layout). Status
+// is the source of truth; the folder a goal lives in is a DERIVED cache (ADR
+// 0003). Walks the ENTIRE goals tree at any depth, reads each file's declared
+// status, and re-files every goal into the folder that status dictates —
+// re-homing goals the narrow one-level scans miss, collapsing zombie duplicate
+// slugs to the in-place copy, and quarantining status-less junk .md files.
+// DRY-RUN by default (apply:false computes the report, writes nothing); apply:true
+// performs the moves. Delegates the whole computation to reconcileGoalsLayout —
+// this handler only wraps it with the JSON contract (nextStep + a silent-success
+// note when the tree is already reconciled).
+export function runGoalReconcile({ archDir, apply = false }) {
+  if (!archDir) throw archkitError("no_arch_dir", "No .arch/ directory found", { suggestion: "Run `archkit init`." });
+  const doApply = apply === true;
+  const report = reconcileGoalsLayout(archDir, { apply: doApply });
+  const changes = report.moved.length + report.duplicates.length + report.quarantined.length;
+  const summary = `${report.moved.length} misfiled, ${report.duplicates.length} duplicate(s), ${report.quarantined.length} quarantined`;
+  const nextStep = changes === 0
+    ? `Goal tree already reconciled — every goal sits in the folder its status dictates (status is the source of truth; the folder is a derived cache). Nothing to move.`
+    : doApply
+      ? `Reconciled: moved ${report.moved.length}, collapsed ${report.duplicates.length} duplicate(s), quarantined ${report.quarantined.length}. Run archkit_goal_list to see the corrected queue.`
+      : `Dry-run: ${summary}. Re-run archkit_goal_reconcile with apply:true to perform the moves (nothing has been written yet).`;
+  return {
+    ...report,
+    apply: doApply,
+    // Silent-success note: an empty report is a valid "already tidy" state, not a
+    // no-op failure — say so rather than returning three bare empty arrays.
+    reconcileNote: changes === 0 ? "Nothing out of place — placement is derived from each goal's status field." : undefined,
+    nextStep,
   };
 }
 
