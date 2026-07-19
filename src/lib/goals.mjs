@@ -2112,6 +2112,147 @@ export function routeNextGoal(archDir) {
   return goal ? { kind: "single", goal } : { kind: "none" };
 }
 
+// ── Ambiguity-gated triage (cgr-conductor-ambiguity-triage) ──────────────────
+//
+// routeNextGoal only surfaced a choice on ONE axis of ambiguity — an ungrouped
+// queue AND a project track both live. Every OTHER mixed board state was silently
+// auto-picked: accumulating verification debt (testing), deliberately-parked work
+// (on-hold), multiple project tracks, an empty/blocked queue. That silent
+// auto-pick is the root of "the conductor just mindlessly picks the next queue
+// number and runs it".
+//
+// triageNextGoal generalizes the decision across ALL those dimensions. It
+// classifies the board into:
+//   single — exactly ONE obvious thing to do and no notable debt → auto-pick,
+//            preserving the frictionless /clear → /conductor loop for the common
+//            case (also what nextEligibleGoal would have returned).
+//   choice — mixed / ambiguous (>1 track, OR pending work alongside a non-empty
+//            testing backlog, OR any on-hold work, OR only-parked work) → the
+//            caller should ASK the user which axis to advance rather than guess.
+//   none   — nothing eligible AND nothing parked (empty:true) → the caller offers
+//            a plan / intake path instead of pretending there's work.
+//   resume — an in-progress goal is mid-flight → always pre-empts any choice.
+//
+// The `choice`/`none` returns carry every board slice the caller needs to render
+// the question WITHOUT re-reading the board: the ungrouped queue (slugs + next),
+// each project track (slugs + next), the testing backlog (count + slugs), the
+// on-hold set (count + slugs), a `recommended` auto-pick slug, and an explicit
+// `empty` flag. `single`/`resume` also carry the slices (harmless, uniform shape).
+//
+// A `cgr.triageMode` knob (ambiguity default | always | off) overrides the
+// gate: `always` forces a choice every pass (whenever there's anything to choose),
+// `off` restores pure auto-pick (single/none, exactly nextEligibleGoal). Resolved
+// tolerantly from .arch/config.json via readCgrConfig — a missing/invalid config
+// falls back to the default, never blocks selection.
+export const DEFAULT_TRIAGE_MODE = "ambiguity";
+export const TRIAGE_MODES = Object.freeze(["ambiguity", "always", "off"]);
+const TRIAGE_MODE_SET = new Set(TRIAGE_MODES);
+
+// Resolve cgr.triageMode from .arch/config.json (readCgrConfig pattern): a
+// recognized value wins, anything else (missing / invalid / unknown string) →
+// the `ambiguity` default. Never throws.
+export function triageMode(archDir) {
+  const v = readCgrConfig(archDir).triageMode;
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return TRIAGE_MODE_SET.has(s) ? s : DEFAULT_TRIAGE_MODE;
+}
+
+// Build the board slices shared by every triage return — computed once so
+// `single`, `choice`, and `none` all carry the same uniform shape. `eligible` is
+// the deps-satisfied, not-done, not-parked set (pending + testing); `onHold` is
+// the deps-satisfied parked set. Kept internal to triageNextGoal.
+function triageSlices({ ungrouped, projects, testing, onHold }) {
+  const projectNext = {};
+  for (const [p, slugs] of Object.entries(projects)) projectNext[p] = slugs[0];
+  return {
+    queue: ungrouped,
+    queueNext: ungrouped[0] || null,
+    projects,
+    projectNext,
+    testing: { count: testing.length, slugs: testing },
+    onHold: { count: onHold.length, slugs: onHold },
+  };
+}
+
+// The generalized next-goal decision (see block comment above). Returns one of:
+//   { kind: "resume", goal, mode, ...slices }
+//   { kind: "single", goal, recommended, mode, empty:false, ...slices }
+//   { kind: "choice", recommended, mode, empty, ...slices }
+//   { kind: "none",   recommended:null, mode, empty:true, ...slices }
+// where ...slices = { queue, queueNext, projects, projectNext, testing, onHold }.
+export function triageNextGoal(archDir) {
+  const goals = listGoals(archDir);
+  const mode = triageMode(archDir);
+
+  // (1) Resume actively-worked goal first — a genuinely in-progress goal is never
+  // interrupted by a choice, regardless of triageMode (exit-criterion 3).
+  const inProgress = goals.find((g) => statusOf(g) === STATUS_ACTIVE);
+
+  const depsSatisfied = (g) => {
+    const deps = ensureArray(g.meta["depends-on"]);
+    return !deps.some((d) => !isGoalDone(archDir, d));
+  };
+  // Eligible = not done, not parked (on-hold), deps satisfied — the same gate
+  // nextEligibleGoal / routeNextGoal apply. Continuations float to the front.
+  const eligible = preferContinuations(goals.filter((g) => {
+    const s = statusOf(g);
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_ACTIVE) return false;
+    return depsSatisfied(g);
+  }));
+  const projectOf = (g) => String(g?.meta?.project || "").trim();
+  const testingGoals = eligible.filter((g) => statusOf(g) === STATUS_TESTING);
+  const pending = eligible.filter((g) => statusOf(g) !== STATUS_TESTING);
+  const ungrouped = pending.filter((g) => !projectOf(g)).map((g) => g.slug);
+  const projects = {};
+  for (const g of pending.filter((g) => projectOf(g))) (projects[projectOf(g)] ||= []).push(g.slug);
+  const testing = testingGoals.map((g) => g.slug);
+  const onHold = goals.filter((g) => statusOf(g) === STATUS_ON_HOLD && depsSatisfied(g)).map((g) => g.slug);
+
+  const slices = triageSlices({ ungrouped, projects, testing, onHold });
+  // `recommended` = what a pure auto-pick would choose (the frictionless default),
+  // so a `choice` caller can pre-highlight it. Uses the full precedence
+  // (in-progress resume → threshold ordering → on-hold last resort).
+  const autoPick = nextEligibleGoal(archDir);
+  // Empty = truly nothing to act on: no in-progress, no eligible pending/testing,
+  // no parked work. This is the signal for the caller to offer a plan/intake path.
+  const empty = !inProgress && eligible.length === 0 && onHold.length === 0;
+
+  if (inProgress) {
+    return { kind: "resume", goal: inProgress, recommended: inProgress.slug, mode, empty: false, ...slices };
+  }
+  if (empty) {
+    return { kind: "none", recommended: null, mode, empty: true, ...slices };
+  }
+
+  // `off` → pure auto-pick, exactly nextEligibleGoal (single or, if somehow
+  // nothing pickable, none). Restores the pre-triage behavior.
+  if (mode === "off") {
+    return autoPick
+      ? { kind: "single", goal: autoPick, recommended: autoPick.slug, mode, empty: false, ...slices }
+      : { kind: "none", recommended: null, mode, empty: true, ...slices };
+  }
+
+  // How many distinct axes could the user reasonably pick between?
+  //   • each pending track (the ungrouped queue counts as one; each project one)
+  //   • the testing backlog, if any (drain verification debt)
+  //   • the on-hold set, if any (resume parked work vs. plan anew)
+  // Exactly one axis and a real auto-pick → the trivial case → single (frictionless).
+  // Two or more axes → genuinely ambiguous → choice. `always` forces choice.
+  const pendingTracks = (ungrouped.length ? 1 : 0) + Object.keys(projects).length;
+  const axes = pendingTracks + (testing.length ? 1 : 0) + (onHold.length ? 1 : 0);
+
+  if (mode !== "always" && axes <= 1 && autoPick && onHold.length === 0) {
+    // One obvious thing, no parked debt → auto-pick as today. (on-hold is excluded
+    // from the single fast-path: silently resuming parked work is exactly the
+    // "mindless auto-pick" this goal removes — parked-only boards go to choice.)
+    return { kind: "single", goal: autoPick, recommended: autoPick.slug, mode, empty: false, ...slices };
+  }
+
+  // Ambiguous (or `always`, or parked-only) → hand the caller the full slices to
+  // put the question to the user.
+  return { kind: "choice", recommended: autoPick ? autoPick.slug : null, mode, empty: false, ...slices };
+}
+
 // ── Turn-cap state for the goal-aware Stop hook ──
 // Counts how many consecutive turns the hook has blocked the active goal, so a
 // stuck loop releases instead of trapping the agent forever (mirrors /goal's
