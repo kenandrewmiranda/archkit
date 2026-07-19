@@ -1,7 +1,7 @@
 ---
 slug: warmup-reconcile-surface
 title: Wire auto-fix + advisory triage into resolve_warmup (moves reported, threshold-gated)
-status: pending
+status: completed
 created: 2026-07-19
 order: 2
 exit-criteria:
@@ -10,6 +10,8 @@ exit-criteria:
   - Warmup calls detectStaleGoals and surfaces findings as an ADVISORY action ('N pending goals look like other-project cruft — hold/dismiss/keep?') — never auto-acted
   - Warmup stays never-throw and the reconcile/triage additions don't regress its <200ms structural-check budget materially
   - tests/mcp-server assertion covers the new warmup slices (moved report + stale advisory)
+  - archkit_resolve_warmup calls reconcileGoalsLayout(apply: true); moved/quarantined/duplicate items are REPORTED in the warmup checks/actions output (never a silent move)
+  - A configurable threshold gates escalation: when outOfPlaceCount crosses it, warmup emits a prominent warning; below it, a quiet informational note
 - archkit_resolve_warmup calls reconcileGoalsLayout(apply: true); moved/quarantined/duplicate items are REPORTED in the warmup checks/actions output (never a silent move)
 - A configurable threshold gates escalation: when outOfPlaceCount crosses it, warmup emits a prominent warning; below it, a quiet informational note
 files-to-touch:
@@ -25,7 +27,13 @@ feature: warmup-surface
 verify-command: npm test
 source-ask: After working multiple projects, CGR files end up in random places in the goals folder/subfolders — causing CGRs to be skipped or the next goal to get mixed up. Build a cleanup/startup workflow that runs on archkit call, auto-fixes placement when the scan detects too much out of place, and does a lightweight staleness check against chat/board for cross-project cruft. Decision: both tiers now; auto-fix inside warmup (moves reported, not silent); Tier 2 staleness stays advisory.
 lane: warmup-surface
+completed: 2026-07-19T20:54:20.345Z
+completion-notes: Wired reconcileGoalsLayout(apply:true) + detectStaleGoals into resolve_warmup: W016 reports moves (never silent), threshold-gated (cgr.reconcile.warnThreshold=3), W017 stale advisory (never auto-acted). Never-throw, ~23ms. mcp-server test covers both slices.
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-07-19
 ---
+
 
 
 # Wire auto-fix + advisory triage into resolve_warmup (moves reported, threshold-gated)
