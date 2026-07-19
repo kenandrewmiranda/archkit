@@ -7,6 +7,7 @@
       "count": 5,
       "ageDays": 7
     },
+    "reconcile": { "warnThreshold": 3 },
     "finalize": {
       "enabled": true,
       "configured": true,

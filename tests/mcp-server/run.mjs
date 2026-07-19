@@ -200,6 +200,49 @@ await log("archkit_resolve_warmup happy path", async () => {
   }
 });
 
+await log("archkit_resolve_warmup surfaces reconcile moves + stale advisory", async () => {
+  const tmp = makeFixture();
+  // A pending goal (status: planned → pending) written at the goals/ ROOT is
+  // MISPLACED — its canonical home is goals/queue/. warmup should auto-fix the
+  // placement (apply:true) and REPORT the move. The old `created:` date (with no
+  // board event / chat mention) also makes it read as stale-cruft to triage.
+  writeGoal(tmp, { slug: "drift-goal", title: "Drifted queue goal", status: "planned" });
+  try {
+    await withClient(tmp, async (client) => {
+      const result = await client.callTool({ name: "archkit_resolve_warmup", arguments: {} });
+      assert.equal(result.isError, undefined, `unexpected error: ${JSON.stringify(result)}`);
+      const data = JSON.parse(result.content[0].text);
+
+      // — Moved-report slice: the relocation is reported, never silent —
+      assert.ok(data.reconcile, "warmup should carry a reconcile slice");
+      assert.ok(Array.isArray(data.reconcile.moved), "reconcile.moved should be an array");
+      const move = data.reconcile.moved.find(m => m.slug === "drift-goal");
+      assert.ok(move, `expected drift-goal in reconcile.moved, got: ${JSON.stringify(data.reconcile.moved)}`);
+      assert.equal(move.status, "pending", "moved goal's normalized status should be pending");
+      assert.ok(String(move.to).includes("queue"), `expected move.to under queue/, got: ${move.to}`);
+      assert.equal(data.summary.goalsReconciled, data.reconcile.outOfPlaceCount);
+      assert.ok(data.checks.some(c => c.id === "W016"), "a W016 reconcile check should be present");
+
+      // — Stale advisory slice: surfaced as advice, never auto-acted —
+      assert.ok(Array.isArray(data.staleAdvisory), "warmup should carry a staleAdvisory array");
+      const advisory = data.staleAdvisory.find(s => s.slug === "drift-goal");
+      assert.ok(advisory, `expected drift-goal in staleAdvisory, got: ${JSON.stringify(data.staleAdvisory)}`);
+      assert.ok(Array.isArray(advisory.reasons) && advisory.reasons.length > 0, "advisory should carry reasons");
+      assert.ok(["hold", "dismiss", "keep"].includes(advisory.suggestion), "advisory carries a hold/dismiss/keep suggestion");
+      assert.equal(data.summary.staleAdvisories, data.staleAdvisory.length);
+      assert.ok(data.checks.some(c => c.id === "W017"), "a W017 stale-advisory check should be present");
+      assert.ok(data.actions.some(a => /ADVISORY/.test(a) && /cruft/.test(a)), "an advisory action should be surfaced");
+
+      // — Never-throw + auto-fix persisted the move to disk —
+      assert.equal(typeof data.pass, "boolean");
+      assert.ok(fs.existsSync(path.join(tmp, ".arch", "goals", "queue", "drift-goal.md")), "goal should be relocated into queue/ on disk");
+      assert.ok(!fs.existsSync(path.join(tmp, ".arch", "goals", "drift-goal.md")), "root copy should be removed after relocation");
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 await log("invalid_input on schema violation", async () => {
   const tmp = makeFixture();
   try {

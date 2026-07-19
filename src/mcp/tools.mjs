@@ -7,6 +7,7 @@
 import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 
 import { runReviewJson } from "../commands/review.mjs";
 import { runWarmupJson } from "../commands/resolve/warmup.mjs";
@@ -29,9 +30,122 @@ import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
 import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalStart, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGoalReconcile, runGraphAccept, runGoalHandoff, runGoalFission } from "../commands/goal.mjs";
 import { runWorklog } from "../commands/worklog.mjs";
-import { loadGoal, runFinalizeConfig } from "../lib/goals.mjs";
+import { loadGoal, runFinalizeConfig, reconcileGoalsLayout } from "../lib/goals.mjs";
+import { detectStaleGoals } from "../lib/goal-triage.mjs";
 import { sessionState, conductorPlan } from "../lib/board.mjs";
 import { archkitError } from "../lib/errors.mjs";
+
+// ── Warmup goal-hygiene augmentation (warmup-reconcile-surface) ──────────────
+// On top of runWarmupJson's structural checks, the warmup handler (a) auto-fixes
+// goal-tree placement drift via reconcileGoalsLayout(apply:true) and REPORTS what
+// moved (never a silent relocate), gated by a configurable escalation threshold,
+// and (b) surfaces detectStaleGoals as an ADVISORY (never auto-acted, never
+// mutating). Both are wrapped defensively — a reconcile/triage hiccup degrades to
+// a note so warmup NEVER throws.
+
+const DEFAULT_RECONCILE_WARN_THRESHOLD = 3;
+
+// Tolerant read of the escalation threshold (.arch/config.json →
+// cgr.reconcile.warnThreshold), mirroring readCgrConfig/readStalenessConfig: a
+// missing/invalid config falls back to the default and never throws.
+function readReconcileWarnThreshold(archDir) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(archDir, "config.json"), "utf8"));
+    const n = Number(cfg?.cgr?.reconcile?.warnThreshold);
+    if (Number.isFinite(n) && n >= 0) return n;
+  } catch { /* no/invalid config → default */ }
+  return DEFAULT_RECONCILE_WARN_THRESHOLD;
+}
+
+// Current git branch — drives the stale-triage branch-mismatch dimension. Read
+// the same tolerant way preflight resolves git: a non-repo / detached HEAD yields
+// null and the branch signal simply reads as absent (no false positives).
+function currentGitBranch(cwd) {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return out || null;
+  } catch { return null; }
+}
+
+// Fold the auto-fix report + advisory scan into the warmup result IN PLACE.
+// Everything here is best-effort and defensive so warmup stays never-throw.
+function surfaceGoalHygiene(archDir, cwd, result) {
+  result.checks = result.checks || [];
+  result.warnings = result.warnings || [];
+  result.actions = result.actions || [];
+  result.summary = result.summary || {};
+
+  // (A) Auto-fix goal-tree placement drift and REPORT what got relocated.
+  try {
+    const report = reconcileGoalsLayout(archDir, { apply: true });
+    const moved = report.moved || [];
+    const duplicates = report.duplicates || [];
+    const quarantined = report.quarantined || [];
+    const outOfPlace = report.outOfPlaceCount || 0;
+
+    result.reconcile = { moved, duplicates, quarantined, outOfPlaceCount: outOfPlace };
+    result.summary.goalsReconciled = outOfPlace;
+    result.summary.goalsQuarantined = quarantined.length;
+    result.summary.goalsDuplicatesResolved = duplicates.length;
+
+    const changed = outOfPlace > 0 || duplicates.length > 0 || quarantined.length > 0;
+    if (changed) {
+      const parts = [];
+      if (outOfPlace > 0) {
+        parts.push(`${outOfPlace} relocated (${moved.slice(0, 6).map(m => `${m.slug}→${m.status}`).join(", ")}${moved.length > 6 ? "…" : ""})`);
+      }
+      if (duplicates.length > 0) parts.push(`${duplicates.length} duplicate(s) resolved`);
+      if (quarantined.length > 0) parts.push(`${quarantined.length} quarantined`);
+      const detail = parts.join("; ");
+
+      const threshold = readReconcileWarnThreshold(archDir);
+      const prominent = outOfPlace >= threshold;
+      result.checks.push({
+        id: "W016",
+        check: "Goal-tree placement reconciled",
+        status: prominent ? "warn" : "pass",
+        detail,
+      });
+      if (prominent) {
+        // PROMINENT: escalate to warnings + a review action.
+        result.warnings.push(`⚠ Goal-tree drift: ${outOfPlace} goal(s) were out of place (threshold ${threshold}) and auto-relocated — ${detail}. High drift means the goal tree is churning; review .arch/goals/.`);
+        result.actions.push(`Review ${outOfPlace} auto-relocated goal(s): ${moved.slice(0, 8).map(m => m.slug).join(", ")}. Confirm each landed in the right state folder.`);
+      } else {
+        // QUIET: below threshold → an informational note, NOT a warning.
+        result.actions.push(`Goal-tree auto-fixed (${detail}) — informational, below the warn threshold (${threshold}).`);
+      }
+      // Quarantined junk is always worth naming — files parked out of the tree.
+      if (quarantined.length > 0) {
+        result.actions.push(`${quarantined.length} non-goal file(s) quarantined to .arch/goals/quarantine/: ${quarantined.slice(0, 5).map(q => q.file).join(", ")}. Recover or delete.`);
+      }
+    } else {
+      result.checks.push({ id: "W016", check: "Goal-tree placement", status: "pass", detail: "all goals correctly placed" });
+    }
+  } catch (err) {
+    result.reconcile = result.reconcile || { moved: [], duplicates: [], quarantined: [], outOfPlaceCount: 0 };
+    result.checks.push({ id: "W016", check: "Goal-tree reconcile", status: "warn", detail: `skipped — ${err?.message || "reconcile error"}` });
+  }
+
+  // (B) Advisory cross-project cruft scan — NEVER auto-acted, never mutating.
+  try {
+    const branch = currentGitBranch(cwd);
+    const stale = detectStaleGoals(archDir, { branch });
+    result.staleAdvisory = stale;
+    result.summary.staleAdvisories = stale.length;
+    if (stale.length > 0) {
+      const detail = stale.slice(0, 8).map(s => `${s.slug} (${s.suggestion})`).join(", ");
+      result.checks.push({ id: "W017", check: "Stale goal advisory", status: "warn", detail: `${stale.length} pending goal(s) look like other-project cruft` });
+      result.actions.push(`ADVISORY: ${stale.length} pending goal(s) look like other-project cruft — hold/dismiss/keep? ${detail}. NOT auto-acted; decide per goal (archkit_goal_hold / archkit_goal_dismiss / leave as-is).`);
+    }
+  } catch (err) {
+    result.staleAdvisory = result.staleAdvisory || [];
+    result.checks.push({ id: "W017", check: "Stale goal advisory", status: "warn", detail: `skipped — ${err?.message || "triage error"}` });
+  }
+
+  return result;
+}
 
 function findArchDir(cwd) {
   let dir = cwd;
@@ -85,7 +199,12 @@ export const tools = {
     }),
     handler: async ({ deep }) => {
       const cwd = process.cwd();
-      return runWarmupJson({ archDir: requireArchDir(cwd), deep });
+      const archDir = requireArchDir(cwd);
+      const result = await runWarmupJson({ archDir, deep });
+      // Fold in goal-tree auto-fix (reported, threshold-gated) + advisory cruft
+      // scan. Defensive: surfaceGoalHygiene never throws, so warmup stays
+      // never-throw even if reconcile/triage hits a snag.
+      return surfaceGoalHygiene(archDir, cwd, result);
     },
   },
 
