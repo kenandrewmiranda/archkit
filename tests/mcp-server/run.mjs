@@ -90,13 +90,16 @@ await log("initialize handshake succeeds", async () => {
   }
 });
 
-await log("tools/list returns all 42 tools", async () => {
+await log("tools/list returns all 47 tools", async () => {
   const tmp = makeFixture();
   try {
     await withClient(tmp, async (client) => {
       const { tools } = await client.listTools();
       const names = tools.map(t => t.name).sort();
       assert.deepEqual(names, [
+        "archkit_api_list",
+        "archkit_api_override",
+        "archkit_api_register",
         "archkit_audit_spec",
         "archkit_boundary_check",
         "archkit_boundary_propose",

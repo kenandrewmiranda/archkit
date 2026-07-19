@@ -183,6 +183,11 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_prd_check", {}],
         ["archkit_boundary_check", {}],
         ["archkit_boundary_propose", { source: "src/audit-web/*", target: "src/audit-db/*", why: "audit-test" }],
+        // API-doc gate: register a reference, override another surface, then list —
+        // exercises the clearance-recording + bucketed-report success envelopes.
+        ["archkit_api_register", { id: "stripe.charges.create", ref: "https://stripe.com/docs/api", kind: "doc" }],
+        ["archkit_api_override", { id: "legacy.internal.thing", reason: "audit-test: vendored, no public docs" }],
+        ["archkit_api_list", {}],
         ["archkit_goal_intake", { goals: [{ title: "audit goal", exitCriteria: ["done"], filesToTouch: ["src/features/auth/login.js"] }, { title: "audit goal two", exitCriteria: ["done"] }] }],
         ["archkit_goal_list", {}],
         ["archkit_session_state", {}],

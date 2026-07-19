@@ -24,6 +24,7 @@ import { runPrdCheckJson } from "../commands/prd.mjs";
 import { runInitJson } from "../commands/init-mcp.mjs";
 import { runInitGenerateJson } from "../commands/init-generate.mjs";
 import { runBoundaryCheckJson, runBoundaryProposeJson } from "../commands/boundary.mjs";
+import { runApiRegister, runApiOverride, runApiList } from "../commands/api.mjs";
 import { runDoctorJson } from "../commands/doctor.mjs";
 import { runSyncJson } from "../commands/sync.mjs";
 import { runHooksInstallJson } from "../commands/hooks.mjs";
@@ -375,6 +376,40 @@ export const tools = {
     handler: async ({ source, target, why }) => {
       const cwd = process.cwd();
       return runBoundaryProposeJson({ archDir: requireArchDir(cwd), source, target, why });
+    },
+  },
+
+  archkit_api_register: {
+    description: "Record a doc/SDK reference that CLEARS the API-doc hard gate for an API surface (status `referenced` in the manifest .arch/apis.json — the source of truth). The gate is a PreToolUse no-op that BLOCKS edits reaching an external/unknown API until that surface is vouched for: either REFERENCED here with a real doc URL / local file path / SDK package, or explicitly overridden (archkit_api_override). Delegates to src/lib/api-registry.mjs; a referenced entry only clears when it carries an actual `ref`, so a missing ref is a structured error, not a silently-uncleared entry. When to use: BEFORE writing code against an external API, once you have its docs/SDK in hand — register the reference so the gate lets the edit through.",
+    inputSchema: z.object({
+      id: z.string().min(1).describe("Stable API identifier being cleared, e.g. \"stripe.charges.create\" or \"aws.s3.putObject\"."),
+      ref: z.string().min(1).describe("The doc/SDK reference: a documentation URL, a local file path, or an SDK package name. Required — a referenced entry only clears the gate when it carries an actual reference. To proceed WITHOUT docs, use archkit_api_override instead."),
+      kind: z.enum(["doc", "sdk"]).optional().describe("How the API is vouched for: \"doc\" (documentation URL/path) or \"sdk\" (SDK package). Default \"doc\"."),
+    }),
+    handler: async ({ id, ref, kind }) => {
+      const cwd = process.cwd();
+      return runApiRegister({ archDir: requireArchDir(cwd), id, ref, kind });
+    },
+  },
+
+  archkit_api_override: {
+    description: "Record an EXPLICIT human override that clears the API-doc hard gate for an API surface WITHOUT a doc/SDK reference (status `override`, audit-stamped with the reason + timestamp in the manifest .arch/apis.json — the source of truth). The gate normally BLOCKS edits touching an external/unknown API until it is referenced (archkit_api_register) or overridden; this is the deliberate escape hatch for surfaces with no public docs. A non-empty `reason` is required — an override bypasses the doc requirement, so it must be justified. Delegates to src/lib/api-registry.mjs. When to use: when you must proceed against an API that has no doc/SDK to reference and the user has explicitly accepted that tradeoff.",
+    inputSchema: z.object({
+      id: z.string().min(1).describe("Stable API identifier to override, e.g. \"legacy.internal.thing\"."),
+      reason: z.string().min(1).describe("Justification for proceeding without docs — recorded verbatim in the manifest as the audit trail. Required."),
+    }),
+    handler: async ({ id, reason }) => {
+      const cwd = process.cwd();
+      return runApiOverride({ archDir: requireArchDir(cwd), id, reason });
+    },
+  },
+
+  archkit_api_list: {
+    description: "List every recorded API-doc clearance from the manifest (.arch/apis.json — the API-doc gate's SOURCE OF TRUTH), bucketed into referenced (doc/SDK vouched), overridden (explicit human override), and pending (recorded but not yet cleared — still BLOCKED). The API-doc hard gate blocks edits touching any external/unknown API until it appears as referenced or overridden here; pending entries stay gated. Read-only; delegates to src/lib/api-registry.mjs. When to use: to audit which API surfaces are cleared vs still gated before or during work.",
+    inputSchema: z.object({}),
+    handler: async () => {
+      const cwd = process.cwd();
+      return runApiList({ archDir: requireArchDir(cwd) });
     },
   },
 
