@@ -1231,6 +1231,56 @@ export function getActiveGoal(archDir) {
     || null;
 }
 
+// ── Status-line segment (statusline-archkit-context) ─────────────────────────
+//
+// The Claude Code status line is a plain shell subprocess — it CANNOT call MCP
+// tools — but it can shell out to `archkit statusline`, which reads .arch/ goal
+// state off disk and emits a compact heads-up-display segment: the active goal
+// slug plus how much pending work is queued behind it (e.g. the shape used in
+// the goal example, `⛏ fix-conductor-triage (3 queued)`).
+//
+// Contract (exit-criteria 2 & 3):
+//   • Returns null — the "show NOTHING" signal — when there is no archDir
+//     (outside an archkit project) OR no active/in-progress (or testing) goal.
+//     The CLI turns null into empty output so the segment silently disappears.
+//   • NEVER throws. A missing/malformed .arch/ is swallowed and treated as
+//     "nothing to show" so the status line can never crash or print garbage.
+//   • The queue count is the number of PENDING goals; it is omitted from the
+//     text when zero (`⛏ slug` with no "(0 queued)" noise).
+//   • A testing-state active goal uses a distinct glyph so "edits applied,
+//     verification pending" reads differently from live in-progress work.
+//
+// Returns { text, slug, status, queued, glyph } or null. `text` is plain (no
+// ANSI) — the status-line wrapper applies color so the segment matches the rest
+// of the layout; the CLI's --color flag wraps it for direct use.
+export function statuslineSegment(archDir, { glyph = "⛏", testingGlyph = "🧪" } = {}) {
+  if (!archDir) return null;
+  let goals;
+  try {
+    goals = listGoals(archDir);
+  } catch {
+    // Malformed/unreadable .arch/ — degrade to silence, never throw.
+    return null;
+  }
+  let active = null;
+  let queued = 0;
+  try {
+    active = goals.find((g) => statusOf(g) === STATUS_ACTIVE)
+      || goals.find((g) => statusOf(g) === STATUS_TESTING)
+      || null;
+    queued = goals.filter((g) => statusOf(g) === STATUS_PENDING).length;
+  } catch {
+    return null;
+  }
+  if (!active) return null;
+  const slug = String(active.slug || "").trim();
+  if (!slug) return null;
+  const status = statusOf(active);
+  const g = status === STATUS_TESTING ? testingGlyph : glyph;
+  const text = queued > 0 ? `${g} ${slug} (${queued} queued)` : `${g} ${slug}`;
+  return { text, slug, status, queued, glyph: g };
+}
+
 // ── Cross-CGR file-overlap detection (cgr-files-to-touch-conflict-detection) ──
 //
 // Every goal already declares files-to-touch, so archkit can mechanically warn
