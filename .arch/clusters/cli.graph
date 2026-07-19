@@ -13,3 +13,4 @@ DecisionCmd [S]   : src/commands/decisions.mjs — log/search ADRs in .arch/deci
 InitGenerate [U] : src/commands/init-generate.mjs — MCP runner that GENERATES the .arch/ scaffold from structured wizard answers via the shared scaffold-core | McpServer → THIS → Generators
 ExportCmd [S] : src/commands/export.mjs — compiles AGENTS.md (canonical orientation core) and derives the cursor/windsurf/copilot/aider editor exports FROM it | ArchkitBin → THIS → Compile
 StatsCmd [S] : src/commands/stats.mjs — .arch/ health dashboard (SYSTEM/INDEX/playbooks/graphs/apis coverage + score) and enforces the AGENTS.md orientation-core token ceiling | ArchkitBin → THIS → Compile
+Api [U] : src/commands/api.mjs — API-doc-gate clearance command handlers (register/override/list) that delegate to the api-registry lib | @mcp → THIS → @lib

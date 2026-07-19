@@ -1,0 +1,19 @@
+{
+  "slug": "api-doc-gate-hook",
+  "created": "2026-07-19",
+  "gaps": [
+    {
+      "kind": "unmapped-area",
+      "file": "src/hooks/pretooluse.mjs",
+      "suggestedCluster": "hooks"
+    },
+    {
+      "kind": "undocumented-file",
+      "file": "src/commands/install-hooks.mjs",
+      "cluster": "cli",
+      "node": "@cli",
+      "suggestedLine": "InstallHooks [U] : src/commands/install-hooks.mjs — <role — fill in> | <flow — fill in>"
+    }
+  ],
+  "note": "Files this goal touched that the node graph does not yet represent. For each undocumented-file: fill the suggestedLine's <role>/<flow> and append it to .arch/clusters/<cluster>.graph. For each unmapped-area: scaffold a new cluster + INDEX node. archkit does not auto-merge graph changes."
+}
