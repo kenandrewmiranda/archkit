@@ -8,6 +8,28 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mergeClaudeSettings, addSessionStartHook } from "../../src/lib/claude-settings.mjs";
 import { ARCHKIT_PROTOCOL_SKILL } from "../../src/data/skill-templates.mjs";
+import { writeGoal, startGoal, markTesting, markOnHold } from "../../src/lib/goals.mjs";
+
+// Run the SessionStart hook in an archkit project rooted at `dir`, return the
+// parsed additionalContext string.
+function runSessionStart(dir, source = "startup") {
+  const out = execFileSync("node", [SESSION_HOOK], {
+    cwd: dir,
+    input: JSON.stringify({ cwd: dir, hook_event_name: "SessionStart", source }),
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 5000,
+  });
+  return JSON.parse(out.toString("utf8")).hookSpecificOutput?.additionalContext || "";
+}
+
+function withArchProject(fn) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-sst-board-"));
+  const archDir = path.join(tmp, ".arch");
+  fs.mkdirSync(archDir, { recursive: true });
+  fs.writeFileSync(path.join(archDir, "SYSTEM.md"),
+    "# SYSTEM.md\n## Type: Internal\n## Pattern: layered\n## Rules\n- one\n## Naming\nFiles: kebab\n");
+  try { fn({ tmp, archDir }); } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.resolve(__dirname, "../../bin/archkit-claude-hook.mjs");
@@ -185,6 +207,62 @@ test("session-start hook emits additionalContext inside an archkit project", () 
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// ── SessionStart compact board snapshot (cgr-conductor-startup-board-awareness) ─
+
+test("session-start emits a compact board snapshot + conductor nudge for a mixed board", () => {
+  withArchProject(({ tmp, archDir }) => {
+    // Mixed board: ungrouped queue + a project track + verification debt →
+    // triage would surface a choice, so the snapshot must nudge to the conductor.
+    writeGoal(archDir, { slug: "q-1", title: "Q1", order: 0 });
+    writeGoal(archDir, { slug: "p-a1", title: "A1", order: 1, project: "alpha" });
+    writeGoal(archDir, { slug: "t-1", title: "T1", order: 2 });
+    startGoal(archDir, "t-1");
+    markTesting(archDir, "t-1");
+
+    const ctx = runSessionStart(tmp);
+    assert.ok(ctx.includes("[archkit CGR board]"), "snapshot line present");
+    assert.ok(/queue 1 \(next q-1\)/.test(ctx), "queue count + next slug");
+    assert.ok(/testing 1/.test(ctx), "testing count");
+    assert.ok(/projects \(alpha:1\)/.test(ctx), "project label:count");
+    assert.ok(/on-hold 0/.test(ctx), "on-hold count");
+    assert.ok(/Mixed board/.test(ctx), "mixed board nudge present");
+    assert.ok(ctx.includes("/mcp__archkit__conductor"), "nudges to the conductor to choose");
+    // Still carries the base in-project digest (not a replacement).
+    assert.ok(ctx.includes("archkit_resolve_warmup"), "base digest preserved");
+  });
+});
+
+test("session-start omits the board snapshot when no goals exist (greenfield stays clean)", () => {
+  withArchProject(({ tmp }) => {
+    const ctx = runSessionStart(tmp);
+    assert.ok(ctx.includes("archkit_resolve_warmup"), "base in-project digest still emitted");
+    assert.ok(!ctx.includes("[archkit CGR board]"), "no snapshot line when there are no goals");
+  });
+});
+
+test("session-start snapshot on a single-track queue omits the mixed-board nudge", () => {
+  withArchProject(({ tmp, archDir }) => {
+    writeGoal(archDir, { slug: "q-1", title: "Q1", order: 0 });
+    writeGoal(archDir, { slug: "q-2", title: "Q2", order: 1 });
+    const ctx = runSessionStart(tmp);
+    assert.ok(ctx.includes("[archkit CGR board]"), "snapshot present for a live queue");
+    assert.ok(/queue 2 \(next q-1\)/.test(ctx), "queue depth + next");
+    assert.ok(!/Mixed board/.test(ctx), "single obvious track → no choice nudge");
+  });
+});
+
+test("session-start snapshot surfaces only-on-hold work (parked board is not empty)", () => {
+  withArchProject(({ tmp, archDir }) => {
+    writeGoal(archDir, { slug: "h-1", title: "H1", order: 0 });
+    startGoal(archDir, "h-1");
+    markOnHold(archDir, "h-1");
+    const ctx = runSessionStart(tmp);
+    assert.ok(ctx.includes("[archkit CGR board]"), "parked-only board still shows a snapshot");
+    assert.ok(/on-hold 1/.test(ctx), "on-hold count surfaced");
+    assert.ok(/Mixed board/.test(ctx), "parked-only work routes to the conductor choice");
+  });
 });
 
 // ── Init --install-hooks Integration ─────────────────────────────────────────

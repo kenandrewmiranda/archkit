@@ -148,6 +148,17 @@ process.stdin.on("end", async () => {
   let additionalContext;
   if (archDir) {
     additionalContext = IN_PROJECT_CONTEXT;
+    // Compact board snapshot (cgr-conductor-startup-board-awareness): one line of
+    // queue/testing/projects/on-hold orientation whenever any goal is live, so the
+    // common single-goal session no longer opens blind. Fires on every source (not
+    // just clear/compact) and stays silent on greenfield/no-CGR boards. Distinct
+    // from the parallel-state rehydration below (that folds in-flight/merge/lease
+    // state) — the two never duplicate.
+    try {
+      const { boardSnapshot } = await importPath(path.resolve(__dirname, "..", "src", "lib", "board.mjs"));
+      const snapshot = boardSnapshot(archDir);
+      if (snapshot) additionalContext = `${additionalContext}\n\n${snapshot}`;
+    } catch { /* best-effort — keep the static digest */ }
     // Append a conductor-rehydration digest after a /clear or compaction.
     try {
       const rehydration = await buildRehydrationContext(archDir, event.source);

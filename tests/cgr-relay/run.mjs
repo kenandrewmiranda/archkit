@@ -23,6 +23,7 @@ import {
   nextEligibleGoal,
   completeGoal,
   markTesting,
+  markOnHold,
   loadGoal,
   parseGoal,
   bumpLoopBlock,
@@ -36,7 +37,12 @@ import {
   effortOf,
   stampDate,
 } from "../../src/lib/goals.mjs";
-import { prompts, relayHeader, doneTodayTally } from "../../src/mcp/prompts.mjs";
+import { prompts, relayHeader, doneTodayTally, relayTriageChoice } from "../../src/mcp/prompts.mjs";
+
+// Write cgr.triageMode into .arch/config.json (used by the triage gate).
+function setTriageMode(archDir, value) {
+  fs.writeFileSync(path.join(archDir, "config.json"), JSON.stringify({ cgr: { triageMode: value } }, null, 2));
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.resolve(__dirname, "../../bin/archkit-stop-hook.mjs");
@@ -292,6 +298,131 @@ await test("legacy date-only stamps degrade gracefully — no elapsed, no parse 
     assert.deepEqual(done.map((g) => g.slug), ["old"], "legacy date-only goal still counted today");
     // Consolidation over a date-only legacy goal must not throw.
     assert.doesNotThrow(() => consolidateGoals(archDir, { date: "2026-06-02" }));
+  });
+});
+
+console.log("\n  cgr-relay — conductor consumes the ambiguity-gated triage (ADR 0019)");
+
+await test("mixed board (queue + project) → conductor asks, starts NOTHING", async () => {
+  await withArchDir(async ({ dir, archDir }) => {
+    writeGoal(archDir, { slug: "q-1", title: "Q1", exitCriteria: ["x"] });                        // ungrouped
+    writeGoal(archDir, { slug: "p-a1", title: "A1", exitCriteria: ["x"], project: "alpha" });       // project
+    const prevCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const res = await prompts.conductor.handler();
+      const text = res.messages[0].content.text;
+      assert.match(text, /which track to advance/i, "surfaces the triage choice, not an auto-pick");
+      assert.match(text, /AskUserQuestion/, "drives AskUserQuestion");
+      assert.match(text, /Advance the queue/);
+      assert.match(text, /archkit_goal_start q-1/, "queue option maps to a concrete start action");
+      assert.match(text, /Project alpha/);
+      assert.match(text, /archkit_goal_start p-a1/, "project option maps to a concrete start action");
+      assert.match(text, /\/mcp__archkit__intake/, "plan-something-new path is offered");
+    } finally {
+      process.chdir(prevCwd);
+    }
+    assert.equal(getActiveGoal(archDir), null, "choice must NOT start any goal");
+  });
+});
+
+await test("relayTriageChoice renders every axis (queue / project / testing / on-hold / plan)", () => {
+  const msg = relayTriageChoice({
+    queue: ["q-1", "q-2"],
+    queueNext: "q-1",
+    projects: { alpha: ["p-a1"] },
+    projectNext: { alpha: "p-a1" },
+    testing: { count: 1, slugs: ["t-1"] },
+    onHold: { count: 1, slugs: ["h-1"] },
+    recommended: "q-1",
+  });
+  assert.match(msg, /archkit_goal_start q-1/, "queue → start");
+  assert.match(msg, /archkit_goal_start p-a1/, "project → start");
+  assert.match(msg, /Drain verification debt/, "testing axis present");
+  assert.match(msg, /archkit_goal_start t-1/, "testing → resume + verify");
+  assert.match(msg, /archkit_goal_complete/, "testing action names the completion step");
+  assert.match(msg, /Resume parked work/, "on-hold axis present");
+  assert.match(msg, /archkit_goal_start h-1/, "on-hold → start");
+  assert.match(msg, /\/mcp__archkit__intake/, "plan path present");
+  assert.match(msg, /default is: q-1/, "recommended auto-pick surfaced as the default");
+});
+
+await test("testing debt alongside pending work → choice offers a drain-verification action", async () => {
+  await withArchDir(async ({ dir, archDir }) => {
+    writeGoal(archDir, { slug: "q-1", title: "Q1", exitCriteria: ["x"] });
+    writeGoal(archDir, { slug: "t-1", title: "T1", exitCriteria: ["x"] });
+    startGoal(archDir, "t-1");
+    markTesting(archDir, "t-1"); // verification debt alongside the pending q-1
+    const prevCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const res = await prompts.conductor.handler();
+      const text = res.messages[0].content.text;
+      assert.match(text, /Drain verification debt/);
+      assert.match(text, /archkit_goal_start t-1/);
+    } finally {
+      process.chdir(prevCwd);
+    }
+    // A choice must not START the pending queue goal; q-1 stays pending. (t-1 is
+    // already in the testing drawer — the guard sees it, that's not an auto-start.)
+    assert.equal(statusOf(loadGoal(archDir, "q-1")), "pending", "pending goal not auto-started under a choice");
+  });
+});
+
+await test("only-on-hold board → choice (resume-or-plan), never a silent resume", async () => {
+  await withArchDir(async ({ dir, archDir }) => {
+    writeGoal(archDir, { slug: "h-1", title: "H1", exitCriteria: ["x"] });
+    startGoal(archDir, "h-1");
+    markOnHold(archDir, "h-1");
+    const prevCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const res = await prompts.conductor.handler();
+      const text = res.messages[0].content.text;
+      assert.match(text, /Resume parked work/);
+      assert.match(text, /archkit_goal_start h-1/);
+      assert.match(text, /\/mcp__archkit__intake/, "plan path offered instead of silently resuming");
+    } finally {
+      process.chdir(prevCwd);
+    }
+    assert.equal(getActiveGoal(archDir), null, "parked work is surfaced, not auto-resumed");
+  });
+});
+
+await test("triageMode=off preserves silent auto-pick byte-for-byte on a mixed board", async () => {
+  await withArchDir(async ({ dir, archDir }) => {
+    setTriageMode(archDir, "off");
+    writeGoal(archDir, { slug: "q-1", title: "Q1", exitCriteria: ["x"] });                    // ungrouped
+    writeGoal(archDir, { slug: "p-a1", title: "A1", exitCriteria: ["x"], project: "alpha" });  // project
+    const prevCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const res = await prompts.conductor.handler();
+      const text = res.messages[0].content.text;
+      // off collapses the mixed board to a pure auto-pick (whichever nextEligibleGoal
+      // returns) and injects its payload — no choice, exactly today's silent behavior.
+      assert.match(text, /\[archkit CGR relay\] Active goal: /, "off → auto-picks + injects payload, no choice");
+      assert.ok(!/which track to advance/i.test(text), "off must not surface a choice");
+    } finally {
+      process.chdir(prevCwd);
+    }
+    assert.equal(statusOf(getActiveGoal(archDir)), "in-progress", "off started a goal silently");
+  });
+});
+
+await test("empty board → conductor offers the plan path (intake), not a dead-end", async () => {
+  await withArchDir(async ({ dir, archDir }) => {
+    const prevCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const res = await prompts.conductor.handler();
+      const text = res.messages[0].content.text;
+      assert.match(text, /Nothing to advance/);
+      assert.match(text, /\/mcp__archkit__intake/, "empty case points at intake (plan path)");
+    } finally {
+      process.chdir(prevCwd);
+    }
+    assert.equal(getActiveGoal(archDir), null);
   });
 });
 
