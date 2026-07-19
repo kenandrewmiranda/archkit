@@ -26,7 +26,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // (ERR_UNSUPPORTED_ESM_URL_SCHEME otherwise); no-op-shaped on POSIX.
 const importPath = (p) => import(pathToFileURL(p).href);
 const LIB = path.resolve(__dirname, "..", "src", "lib");
+const HOOKS = path.resolve(__dirname, "..", "src", "hooks");
 const { isEditTool, evaluateProposedEdit, formatBlockReason } = await importPath(path.join(LIB, "pretooluse-eval.mjs"));
+// API-doc hard gate — a second, independent guardrail layered onto the same
+// PreToolUse hook: block edits that touch an uncleared external API surface.
+const { evaluateApiGate } = await importPath(path.join(HOOKS, "pretooluse.mjs"));
 
 function findArchDir(start) {
   let dir = start;
@@ -72,8 +76,6 @@ async function main() {
   if (!archDir) return allow();
 
   const projectRoot = path.dirname(archDir);
-  const boundariesPath = path.join(archDir, "BOUNDARIES.md");
-  if (!fs.existsSync(boundariesPath)) return allow(); // nothing to enforce
 
   const toolInput = event.tool_input || {};
   const filePath = toolInput.file_path;
@@ -84,12 +86,26 @@ async function main() {
   // Edits outside the project tree aren't ours to judge.
   if (fileRel.startsWith("..") || path.isAbsolute(fileRel)) return allow();
 
-  let boundariesContent = "";
-  try { boundariesContent = fs.readFileSync(boundariesPath, "utf8"); } catch { return allow(); }
-
   // Current on-disk content; a brand-new file (Write) reads as "".
   let currentContent = "";
   try { currentContent = fs.readFileSync(absFile, "utf8"); } catch { currentContent = ""; }
+
+  // ── API-doc hard gate ──────────────────────────────────────────────────────
+  // Runs first and INDEPENDENTLY of BOUNDARIES.md — an edit against an uncleared
+  // API is blocked even in a project with no boundary rules. Fails open.
+  try {
+    const apiReason = evaluateApiGate({ archDir, toolName, toolInput, fileRel, currentContent });
+    if (apiReason) return deny(apiReason);
+  } catch {
+    /* fail open — never block on a gate bug */
+  }
+
+  // ── Boundary (BAN-rule) gate ───────────────────────────────────────────────
+  const boundariesPath = path.join(archDir, "BOUNDARIES.md");
+  if (!fs.existsSync(boundariesPath)) return allow(); // no BAN rules to enforce
+
+  let boundariesContent = "";
+  try { boundariesContent = fs.readFileSync(boundariesPath, "utf8"); } catch { return allow(); }
 
   let result;
   try {
