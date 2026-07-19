@@ -344,7 +344,23 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
     if (isPlacedCorrectly(archDir, g)) continue;
     const canonical = canonicalDirFor(archDir, g.status, g.project);
     if (!canonical) continue; // status we don't own — left in place
+    // SECURITY: the destination filename is built from the frontmatter `slug`,
+    // which is attacker-influenced — a cross-project/hand-authored .md dropped
+    // into goals/ can carry `slug: ../../etc/x`. Left unchecked, `dest` escapes
+    // `canonical` and the write+delete below become an arbitrary file overwrite
+    // and source deletion — and warmup runs this with apply:true on every
+    // SessionStart. Refuse any slug that isn't a safe single path segment and
+    // park the file in quarantine/ instead of writing to a traversed path.
     const dest = path.join(canonical, `${g.slug}.md`);
+    const unsafeSlug =
+      g.slug !== path.basename(g.slug) ||
+      g.slug.includes("..") ||
+      !path.resolve(dest).startsWith(path.resolve(canonical) + path.sep);
+    if (unsafeSlug) {
+      report.quarantined.push({ file: rel(g.file), reason: "unsafe slug" });
+      if (apply) quarantineFile(archDir, g.file);
+      continue;
+    }
     report.moved.push({ slug: g.slug, from: rel(g.file), to: rel(dest), status: g.status });
     if (apply) {
       try {

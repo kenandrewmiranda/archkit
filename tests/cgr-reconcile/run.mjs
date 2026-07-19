@@ -173,6 +173,20 @@ test("a .md with no frontmatter is quarantined, not treated as a goal", () => {
   });
 });
 
+test("SECURITY: a goal whose slug escapes its folder (path traversal) is quarantined, never written outside archDir", () => {
+  withArchDir(({ dir, archDir }) => {
+    // A cross-project .md carrying a hostile slug. If honored, dest would resolve
+    // to `<dir>/pwned.md` — outside .arch/ — and the source would be deleted.
+    plant(archDir, "evil.md", { slug: "../../../pwned", status: "pending" });
+    const escaped = path.join(dir, "pwned.md");
+    const report = reconcileGoalsLayout(archDir, { apply: true });
+    assert.ok(!fs.existsSync(escaped), "no file written outside archDir (traversal blocked)");
+    assert.ok(!report.moved.some((m) => m.from.endsWith("evil.md")), "not reported as a move");
+    assert.ok(report.quarantined.some((q) => q.reason === "unsafe slug"), "reported as unsafe slug");
+    assert.ok(exists(quarantineDir(archDir), "evil.md"), "source parked in quarantine/ by basename");
+  });
+});
+
 test("a .md with frontmatter but no status field is quarantined", () => {
   withArchDir(({ archDir }) => {
     const f = path.join(goalsDir(archDir), "half.md");
