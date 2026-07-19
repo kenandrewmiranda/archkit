@@ -111,8 +111,15 @@ The plugin includes:
 ### Install — npm (Cursor, Continue, CI, or Claude Code without plugins)
 
 ```bash
+# From GitHub (recommended — always the latest release):
+npm install -g github:kenandrewmiranda/archkit
+# …or pin a tag:  npm install -g github:kenandrewmiranda/archkit#v1.17.0
+
+# From the npm registry (currently pinned at 1.15.0 — see note):
 npm install -g @kenandrewmiranda/archkit
 ```
+
+> **Install from GitHub for the latest version.** npm registry publishing is paused on an unresolved account-side hold, so the registry sits at **1.15.0** while GitHub tracks the current release. archkit is pure ESM with no build step, so `npm i -g github:kenandrewmiranda/archkit` installs the `archkit` CLI and all hook bins directly from the repo. (Claude Code **plugin** users are unaffected — the plugin already installs from GitHub.)
 
 > The npm package is scoped (`@kenandrewmiranda/archkit`) because the bare name `archkit` collides with an existing package — but it still installs the `archkit` CLI command.
 

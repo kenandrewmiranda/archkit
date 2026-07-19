@@ -1,8 +1,27 @@
 name: Release
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTO-PUBLISH DISABLED (2026-07-19). The npm registry has an unresolved
+# account/package-side 403 hold on @kenandrewmiranda/archkit — 5 consecutive
+# failed release runs, 2026-06-24 → 2026-07-17, every auth path (pure OIDC,
+# token+provenance, token-only) returns an identical `403 Forbidden - PUT`.
+# It is NOT the workflow/config; resolution is npm-support only.
+#
+# So tagging must not keep triggering doomed publishes. Distribution meanwhile
+# is straight from GitHub (no npm needed):
+#   • Claude Code plugin:  /plugin marketplace add kenandrewmiranda/archkit
+#   • npm-from-git:        npm i -g github:kenandrewmiranda/archkit
+#
+# RE-ENABLE once npm clears the hold: uncomment the `push: tags` trigger below
+# and push a vX.Y.Z tag. The publish job itself is unchanged and correct — no
+# other edits needed. (You can also run it manually now via workflow_dispatch,
+# which will still 403 until the hold lifts.)
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:   # manual-only while the npm 403 hold is unresolved
+  # push:
+  #   tags: ['v*']     # ← re-enable this once npm support lifts the hold
 
 permissions:
   contents: read
