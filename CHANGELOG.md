@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — goals-layout reconcile + `archkit_goal_reconcile`
+
+Treats the goals folder as a **derived cache** of each goal's `status` frontmatter (the source of truth for placement) and keeps the two in sync automatically. Additive and safe — placement fixes are always reported, and the cross-project staleness check never mutates.
+
+### Added — placement reconcile at warmup (ADR)
+
+- **`archkit resolve warmup` reconciles goal placement.** On warmup the goals folder is scanned and each CGR file is auto-fixed into the folder its `status` frontmatter dictates (e.g. a `status: on-hold` goal sitting in `queue/` is moved to the on-hold folder). The folder is a **derived cache**; `status` is authoritative. Moves are **reported, not silent** — warmup surfaces what it relocated so nothing shifts under you unnoticed.
+- **New `archkit_goal_reconcile` MCP tool.** Runs the same reconcile on demand as a **dry-run** (preview the moves) or **apply** (perform them), so you can reconcile placement outside the warmup path.
+- **Tier-2 staleness triage is advisory-only.** A lightweight check compares the goals folder against chat/board state to flag cross-project cruft. It **reports and never mutates** — staleness is a signal for a human, not an automatic move.
+- **Path-traversal hardened.** The reconcile destination derived from a goal's slug is validated so a crafted slug can't escape the goals folder.
+
 ## v1.17.0 — 2026-07-19 — ambiguity-gated conductor triage + status-line segment
 
 Two operator-facing upgrades to the CGR relay, plus a distribution change while npm publishing is paused. Supersedes the never-published 1.16.0 (its unified-relay work is included).

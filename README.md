@@ -49,7 +49,7 @@ archkit solves this by compiling your architecture into structured files the age
 ## Highlights
 
 - **Clear Goal Run (CGR)** *(v1.7+)* — decompose a sprawling ask into discrete, one-per-fresh-context goals, then advance the queue with a single keystroke. A goal-aware Stop hook keeps the agent on the current goal until its exit-criteria are met. [See below](#clear-goal-run-cgr).
-- **Full MCP server** — **31 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **5 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **Full MCP server** — **32 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **5 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
 - **CGR test gate + deferred-goal proposals** *(v1.9)* — every goal carries an auto-detected `verify-command`, and `archkit_goal_complete` refuses to finish a goal whose tests are red. Follow-up work spotted mid-goal is captured as a **proposed** goal (`archkit_goal_defer` + Stop-hook auto-drafting) and reviewed later instead of lost. [See below](#the-test-gate-v19).
 - **Continuous-guardrail hooks** *(v1.6+)* — SessionStart, UserPromptSubmit, PostToolUse, and a goal-aware Stop hook fire every turn so archkit stays in working memory even on long sessions. Self-installing via `archkit_install_hooks` or the plugin.
 - **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
@@ -104,7 +104,7 @@ Then restart Claude Code (or run `/plugin`) so the MCP server, four guardrail ho
 
 The plugin includes:
 
-- **MCP server** — all 31 `archkit_*` tools, the 5 CGR relay prompts, and `@archkit:` resources
+- **MCP server** — all 32 `archkit_*` tools, the 5 CGR relay prompts, and `@archkit:` resources
 - **Four guardrail hooks** — SessionStart, UserPromptSubmit, PostToolUse, and the goal-aware Stop hook (wired automatically; no `archkit_install_hooks` step needed)
 - **`/archkit-init` wizard** + bundled archetype skeletons — nine archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data) plus a generic fallback
 
@@ -185,7 +185,7 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 }
 ```
 
-### Available tools (31)
+### Available tools (32)
 
 **Resolve & scaffold**
 - `archkit_init` — greenfield setup; returns the wizard inline
@@ -220,6 +220,7 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 - `archkit_goal_consolidate` — fold completed goals into a dated digest, archiving raw CGRs verbatim
 - `archkit_goal_defer` — stash a follow-up you spotted mid-session as a **proposed** goal (out of scope now, reviewed later)
 - `archkit_goal_promote` / `archkit_goal_dismiss` — promote selected proposals into planned goals, or reject them
+- `archkit_goal_reconcile` — reconcile goal **placement** against `status` frontmatter (the folder is a derived cache); dry-run to preview or apply to fix. Warmup runs this automatically and reports the moves
 
 **Setup**
 - `archkit_install_hooks` — detect + install the four guardrail hooks into `.claude/settings.json`
@@ -302,6 +303,8 @@ A goal moves through a small, explicit set of states (the `status:` field in the
 **Scan ordering.** `/mcp__archkit__conductor` resumes an in-progress goal first, then prefers **pending** work until the testing backlog crosses a configurable threshold (`.arch/config.json` → `cgr.backlogThreshold`, default 5 items / 7 days), at which point it switches to **draining testing** before the verification debt grows unbounded. On-hold goals are offered last.
 
 **Consolidation.** At queue-drain (after `archkit_goal_complete`) and session-end (the Stop hook) — or on demand via `archkit_goal_consolidate` — terminal goals are folded into a dated per-day **digest** (`.arch/goals/done/digest/<date>.md`) and each raw CGR is preserved verbatim under `.arch/goals/done/archive/<slug>.md` so full context stays recoverable. Digests are discoverable through `archkit_goal_list`.
+
+**Placement reconcile.** Because `status:` is the source of truth, the goal **folder is just a derived cache**. `archkit resolve warmup` reconciles the two on startup — it scans the goals folder and auto-fixes any CGR sitting in the wrong place (a `status: on-hold` goal stranded in `queue/`, say) into the folder its status dictates, and **reports every move** rather than shuffling files silently. Run the same pass on demand with `archkit_goal_reconcile` (dry-run to preview, apply to fix). A separate lightweight staleness check compares the folder against chat/board state to flag cross-project cruft, but it stays **advisory-only** — it reports, never moves.
 
 ### The test gate (v1.9)
 
