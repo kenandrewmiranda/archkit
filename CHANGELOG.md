@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.17.0 — 2026-07-19 — ambiguity-gated conductor triage + status-line segment
+
+Two operator-facing upgrades to the CGR relay, plus a distribution change while npm publishing is paused. Supersedes the never-published 1.16.0 (its unified-relay work is included).
+
+### Added — ambiguity-gated conductor triage (ADR 0019)
+
+- **The conductor stops mindlessly picking the next queue number.** New `triageNextGoal` generalizes goal selection across every board-ambiguity axis — ungrouped queue, project tracks, testing backlog, on-hold work — returning `single` (one obvious thing → auto-pick, the frictionless loop unchanged), `choice` (mixed board → ask which axis to advance), `none` (nothing eligible → offer the intake/plan path), or `resume` (an in-progress goal pre-empts). On `choice` the relay defers `startGoal` and drives an `AskUserQuestion` over the board slices instead of guessing.
+- **`cgr.triageMode` knob** (`ambiguity` default · `always` · `off`), resolved tolerantly from `.arch/config.json`; `off` restores byte-for-byte silent auto-pick.
+- **SessionStart board snapshot** — a compact one-line `queue N (next <slug>) · testing N · projects (label:count …) · on-hold N` now surfaces at session start for the common single-goal case (previously the board only rehydrated for live parallel state). Omitted cleanly when no goals exist; on a mixed board it nudges toward `/clear` + `/mcp__archkit__conductor`.
+
+### Added — `archkit statusline` CLI
+
+- **CGR heads-up display in the Claude Code status line.** New `archkit statusline` subcommand emits a compact segment (e.g. `⛏ <active-goal> (N queued)`) by reading `.arch/` on disk — the status line is a plain shell subprocess and can't speak MCP. Silent outside an archkit project or when no goal is active; degrades gracefully on absent/malformed `.arch/`. Add the documented snippet to your status-line command to enable.
+
+### Changed — distribution paused on npm
+
+- **Install from GitHub.** npm-registry publishing is on an unresolved account-side hold (403), so `release.yml` auto-publish is disabled and the registry is pinned at 1.15.0. archkit is pure ESM with no build step: `npm i -g github:kenandrewmiranda/archkit` (or `#v1.17.0`). Claude Code plugin users are unaffected — the plugin already installs from GitHub.
+
 ## v1.16.0 — 2026-06-27 — unified relay + auto-finalization
 
 Collapses the CGR relay to a **three-command workflow**: `/mcp__archkit__intake` → `/clear` → `/mcp__archkit__conductor`. Previously the loop needed both `/goal_next` (single goal) and `/conductor` (parallel lanes); now `conductor` is the single advance command and picks the mode automatically. Plus a configurable finalization goal that auto-appends release chores to every batch.
