@@ -1,8 +1,18 @@
 # Changelog
 
-## Unreleased — goals-layout reconcile + `archkit_goal_reconcile`
+## Unreleased — API-doc hard gate + goals-layout reconcile
 
-Treats the goals folder as a **derived cache** of each goal's `status` frontmatter (the source of truth for placement) and keeps the two in sync automatically. Additive and safe — placement fixes are always reported, and the cross-project staleness check never mutates.
+Two independent, additive bodies of work. An **API-doc hard gate** stops any edit against an undocumented external API before it lands, and a **goals-layout reconcile** treats the goals folder as a derived cache of each goal's `status` frontmatter and keeps the two in sync automatically. Both are safe: the gate is a no-op when disabled and fails open, and placement fixes are always reported.
+
+### Added — API-doc hard gate (ADR 0022)
+
+Enforces archkit's rule that **if an API is involved, a real doc or SDK must be referenced before you code against it** — at the keystroke, not caught later in review.
+
+- **PreToolUse hard gate.** On an `Edit`/`Write`/`MultiEdit` the gate runs **before** the edit lands and returns `permissionDecision: 'deny'` (nothing is written) when any involved API is **uncleared**. It rides archkit's already-installed PreToolUse guardrail bin (one hook per event), runs before the boundary gate, and **fails open** so a gate bug never bricks edits.
+- **Detect → clearance.** A heuristic **API-involvement detector** (`src/lib/api-detect.mjs`) scans the post-edit content; each detected API is checked against the **clearance registry** (`src/lib/api-registry.mjs`), backed by a per-project `.arch/apis.json` manifest that is the single source of truth for what's cleared. Any one uncleared API blocks the whole edit, and the deny message names each offender and prints both unblock commands verbatim.
+- **Doc-or-override are the only clearances.** An API clears one of two ways — a registered real doc/SDK reference (`archkit_api_register <id> --doc <ref>`) or an explicit human override with a reason (`archkit_api_override <id> --reason`). Unknown/pending stays blocked.
+- **New MCP tools** — `archkit_api_register` (clear an API with a doc/SDK reference), `archkit_api_override` (explicit human override + reason), `archkit_api_list` (show manifest clearance status).
+- **No-op when disabled + source-only.** When `apiGate.enabled` is `false` the gate is a complete no-op. Only code source files are gated (extension allowlist); docs, `.arch/**`, config, and lockfiles are never blocked. `apiGate` defaults **enabled** — projects with the PreToolUse hook installed begin enforcing on upgrade (per-project opt-out is a one-flag change).
 
 ### Added — placement reconcile at warmup (ADR)
 

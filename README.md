@@ -49,7 +49,8 @@ archkit solves this by compiling your architecture into structured files the age
 ## Highlights
 
 - **Clear Goal Run (CGR)** *(v1.7+)* — decompose a sprawling ask into discrete, one-per-fresh-context goals, then advance the queue with a single keystroke. A goal-aware Stop hook keeps the agent on the current goal until its exit-criteria are met. [See below](#clear-goal-run-cgr).
-- **Full MCP server** — **32 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **5 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **Full MCP server** — **35 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **5 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **API-doc hard gate** *(ADR 0022)* — if an edit touches an external API that has no referenced doc/SDK, a PreToolUse gate **denies the edit before it lands** and tells you how to clear it (register a doc or override with a reason). No coding starts against a guessed API surface. No-op when disabled; docs and spec are never blocked. [See below](#api-doc-gate-adr-0022).
 - **CGR test gate + deferred-goal proposals** *(v1.9)* — every goal carries an auto-detected `verify-command`, and `archkit_goal_complete` refuses to finish a goal whose tests are red. Follow-up work spotted mid-goal is captured as a **proposed** goal (`archkit_goal_defer` + Stop-hook auto-drafting) and reviewed later instead of lost. [See below](#the-test-gate-v19).
 - **Continuous-guardrail hooks** *(v1.6+)* — SessionStart, UserPromptSubmit, PostToolUse, and a goal-aware Stop hook fire every turn so archkit stays in working memory even on long sessions. Self-installing via `archkit_install_hooks` or the plugin.
 - **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
@@ -104,7 +105,7 @@ Then restart Claude Code (or run `/plugin`) so the MCP server, four guardrail ho
 
 The plugin includes:
 
-- **MCP server** — all 32 `archkit_*` tools, the 5 CGR relay prompts, and `@archkit:` resources
+- **MCP server** — all 35 `archkit_*` tools, the 5 CGR relay prompts, and `@archkit:` resources
 - **Four guardrail hooks** — SessionStart, UserPromptSubmit, PostToolUse, and the goal-aware Stop hook (wired automatically; no `archkit_install_hooks` step needed)
 - **`/archkit-init` wizard** + bundled archetype skeletons — nine archetypes (saas, internal, content, ecommerce, ai, mobile, realtime, data) plus a generic fallback
 
@@ -185,7 +186,7 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 }
 ```
 
-### Available tools (32)
+### Available tools (35)
 
 **Resolve & scaffold**
 - `archkit_init` — greenfield setup; returns the wizard inline
@@ -221,6 +222,11 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 - `archkit_goal_defer` — stash a follow-up you spotted mid-session as a **proposed** goal (out of scope now, reviewed later)
 - `archkit_goal_promote` / `archkit_goal_dismiss` — promote selected proposals into planned goals, or reject them
 - `archkit_goal_reconcile` — reconcile goal **placement** against `status` frontmatter (the folder is a derived cache); dry-run to preview or apply to fix. Warmup runs this automatically and reports the moves
+
+**API-doc gate**
+- `archkit_api_register` — clear an API by registering a real doc/SDK reference (unblocks edits that touch it)
+- `archkit_api_override` — explicit human override with a reason (clears an API without a doc)
+- `archkit_api_list` — show the `.arch/apis.json` manifest and each API's clearance status
 
 **Setup**
 - `archkit_install_hooks` — detect + install the four guardrail hooks into `.claude/settings.json`
@@ -305,6 +311,14 @@ A goal moves through a small, explicit set of states (the `status:` field in the
 **Consolidation.** At queue-drain (after `archkit_goal_complete`) and session-end (the Stop hook) — or on demand via `archkit_goal_consolidate` — terminal goals are folded into a dated per-day **digest** (`.arch/goals/done/digest/<date>.md`) and each raw CGR is preserved verbatim under `.arch/goals/done/archive/<slug>.md` so full context stays recoverable. Digests are discoverable through `archkit_goal_list`.
 
 **Placement reconcile.** Because `status:` is the source of truth, the goal **folder is just a derived cache**. `archkit resolve warmup` reconciles the two on startup — it scans the goals folder and auto-fixes any CGR sitting in the wrong place (a `status: on-hold` goal stranded in `queue/`, say) into the folder its status dictates, and **reports every move** rather than shuffling files silently. Run the same pass on demand with `archkit_goal_reconcile` (dry-run to preview, apply to fix). A separate lightweight staleness check compares the folder against chat/board state to flag cross-project cruft, but it stays **advisory-only** — it reports, never moves.
+
+### API-doc gate (ADR 0022)
+
+archkit's rule is that **if an API is involved, a real doc or SDK must be referenced before you code against it** — otherwise the work proceeds against a guessed API surface and the wrong mental model gets baked in. A post-hoc review flag is too late. The gate enforces this at the moment of the edit:
+
+- **Hard gate at PreToolUse.** On an `Edit`/`Write`/`MultiEdit`, a heuristic detector scans the post-edit content for API involvement and checks each detected API against the clearance manifest (`.arch/apis.json`). If **any** involved API is uncleared, the edit is **denied before it lands** — nothing is written — and the deny message names each offender and prints the exact unblock commands.
+- **Two ways to clear an API.** Register a real doc/SDK reference — `archkit_api_register <id> --doc <ref>` — or, when there genuinely is no doc, take an explicit human override with a reason — `archkit_api_override <id> --reason "<why>"`. Inspect the manifest anytime with `archkit_api_list`. Unknown/pending stays blocked.
+- **Safe by construction.** The gate is a **complete no-op** when `apiGate.enabled` is `false`, only gates code source files (docs, `.arch/**`, config, and lockfiles are never blocked), and **fails open** — a bug in the gate never bricks your edits. It defaults on, so projects with the PreToolUse hook installed begin enforcing on upgrade; opt out per project with one flag.
 
 ### The test gate (v1.9)
 
