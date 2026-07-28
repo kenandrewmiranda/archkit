@@ -36,9 +36,14 @@ jobs:
           # (https://docs.npmjs.com/trusted-publishers/).
           node-version: 22
           cache: npm
-          # Points npm at the public registry so the OIDC exchange targets it.
-          # No NODE_AUTH_TOKEN is set — auth comes from the OIDC token instead.
-          registry-url: 'https://registry.npmjs.org'
+          # NO registry-url ON PURPOSE. Setting it makes setup-node write an
+          # .npmrc containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
+          # and inject a literal `XXXXX-XXXXX-XXXXX-XXXXX` placeholder when no
+          # token is supplied. npm then authenticates with that junk token and
+          # never performs the OIDC exchange — which is what produced the
+          # long-running `403 Forbidden - PUT`. Trusted Publishing requires that
+          # no _authToken be configured at all. registry.npmjs.org is already
+          # the default registry, so nothing is lost by omitting this.
       # Node 22 ships npm 10.x; OIDC trusted publishing needs >= 11.5.1, so upgrade.
       - run: npm install -g npm@latest
       - run: npm ci
