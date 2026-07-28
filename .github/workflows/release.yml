@@ -57,6 +57,20 @@ jobs:
           fi
       - run: npm run check:versions
       - run: npm test
+      # TEMP DIAGNOSTIC — remove once publishing is confirmed green.
+      - name: Diagnose Trusted Publishing preconditions
+        run: |
+          echo "npm version : $(npm --version)   (need >= 11.5.1)"
+          echo "node version: $(node --version)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}${ACTIONS_ID_TOKEN_REQUEST_URL:-NO}"
+          echo "NODE_AUTH_TOKEN set: ${NODE_AUTH_TOKEN:+yes}${NODE_AUTH_TOKEN:-no}"
+          echo "--- npm config registry ---"
+          npm config get registry
+          echo "--- .npmrc files npm can see ---"
+          for f in "$NPM_CONFIG_USERCONFIG" ./.npmrc "$HOME/.npmrc"; do
+            [ -n "$f" ] && [ -f "$f" ] && { echo "== $f =="; sed -E 's/(_authToken=).*/\1<REDACTED>/' "$f"; }
+          done
+          echo "--- end ---"
       # Trusted Publishing: npm authenticates via the workflow's OIDC identity.
       # Provenance is generated automatically under OIDC, so `--provenance` is
       # not passed explicitly (it was a suspect during the 403 debugging and is
