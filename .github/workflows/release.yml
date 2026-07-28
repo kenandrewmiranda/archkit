@@ -1,27 +1,25 @@
 name: Release
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AUTO-PUBLISH DISABLED (2026-07-19). The npm registry has an unresolved
-# account/package-side 403 hold on @kenandrewmiranda/archkit — 5 consecutive
-# failed release runs, 2026-06-24 → 2026-07-17, every auth path (pure OIDC,
-# token+provenance, token-only) returns an identical `403 Forbidden - PUT`.
-# It is NOT the workflow/config; resolution is npm-support only.
+# Publishes via npm Trusted Publishing (OIDC) — no NPM_TOKEN involved.
 #
-# So tagging must not keep triggering doomed publishes. Distribution meanwhile
-# is straight from GitHub (no npm needed):
-#   • Claude Code plugin:  /plugin marketplace add kenandrewmiranda/archkit
-#   • npm-from-git:        npm i -g github:kenandrewmiranda/archkit
+# History: releases 403'd on PUT from 2026-06-24 → 2026-07-17 and were assumed
+# to be an account-side hold. They were not. The account has always held
+# read-write on the package; the actual causes were (a) no trusted publisher
+# configured for this repo/workflow, which fails pure OIDC, and (b) 2FA set to
+# `auth-and-writes`, which rejects the 2FA-bypassing NPM_TOKEN on direct
+# publish. A trusted publisher was registered on 2026-07-27, which resolves
+# both — OIDC satisfies 2FA without a token.
 #
-# RE-ENABLE once npm clears the hold: uncomment the `push: tags` trigger below
-# and push a vX.Y.Z tag. The publish job itself is unchanged and correct — no
-# other edits needed. (You can also run it manually now via workflow_dispatch,
-# which will still 403 until the hold lifts.)
+# The trusted publisher on npmjs.com is bound to this repo AND this workflow
+# filename (release.yml). Renaming this file breaks publishing until the
+# publisher config is updated to match.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  workflow_dispatch:   # manual-only while the npm 403 hold is unresolved
-  # push:
-  #   tags: ['v*']     # ← re-enable this once npm support lifts the hold
+  workflow_dispatch:   # manual re-run; dispatch against the vX.Y.Z tag, not main
+  push:
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -38,10 +36,8 @@ jobs:
           # (https://docs.npmjs.com/trusted-publishers/).
           node-version: 22
           cache: npm
-          # Token auth: registry-url writes an .npmrc wiring `_authToken=${NODE_AUTH_TOKEN}`
-          # so `npm publish` authenticates with the NPM_TOKEN secret. (Pure OIDC Trusted
-          # Publishing 403'd account-side from 2026-06-24 onward — see release history; this
-          # is the token-based fallback while that hold is unresolved.)
+          # Points npm at the public registry so the OIDC exchange targets it.
+          # No NODE_AUTH_TOKEN is set — auth comes from the OIDC token instead.
           registry-url: 'https://registry.npmjs.org'
       # Node 22 ships npm 10.x; OIDC trusted publishing needs >= 11.5.1, so upgrade.
       - run: npm install -g npm@latest
@@ -56,15 +52,8 @@ jobs:
           fi
       - run: npm run check:versions
       - run: npm test
-      # Auth via the NPM_TOKEN secret (NODE_AUTH_TOKEN). Provenance retained
-      # (id-token: write + public repo).
-      #
-      # KNOWN BLOCKER (2026-06-24 → 2026-07-17, unresolved): the registry 403s on
-      # PUT regardless of auth path. Confirmed all three 403 identically — pure
-      # OIDC, token+provenance, and token without provenance — so it is neither the
-      # token nor provenance nor OIDC config. The token authenticates (403 Forbidden,
-      # not 401), so it is an account/package-side hold. Resolution is npm-support
-      # only; once cleared, just re-tag vX.Y.Z to publish — no workflow change needed.
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted Publishing: npm authenticates via the workflow's OIDC identity.
+      # Provenance is generated automatically under OIDC, so `--provenance` is
+      # not passed explicitly (it was a suspect during the 403 debugging and is
+      # redundant here).
+      - run: npm publish --access public
