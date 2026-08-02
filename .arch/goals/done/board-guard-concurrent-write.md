@@ -1,7 +1,7 @@
 ---
 slug: board-guard-concurrent-write
 title: Stop the .arch/ board-immutability guard from blaming an innocent suite for a concurrent agent write
-status: pending
+status: completed
 created: 2026-08-02
 order: 15
 project: lane-integration
@@ -21,9 +21,21 @@ owns:
   - tests/stop-hook/*
 feature: board-guard
 verify-command: npm test
-source-ask: file all three, then dispatch finalize-version-bump with corrected owns — the three findings from the lane-integration dispatch pass: (1) Stop-hook guard is session-scoped but goal ownership is subagent-scoped, so every conductor pass gets told to work criteria belonging to a worker in another worktree; (2) the new .arch/ board-immutability guard false-positives on concurrent worker MCP writes and blames an innocent suite; (3) ten cwd-less spawns remain in test suites neither lane owned, plus migrate-playbooks resolves the archkit bin off process.cwd().
+source-ask: "file all three, then dispatch finalize-version-bump with corrected owns — the three findings from the lane-integration dispatch pass: (1) Stop-hook guard is session-scoped but goal ownership is subagent-scoped, so every conductor pass gets told to work criteria belonging to a worker in another worktree; (2) the new .arch/ board-immutability guard false-positives on concurrent worker MCP writes and blames an innocent suite; (3) ten cwd-less spawns remain in test suites neither lane owned, plus migrate-playbooks resolves the archkit bin off process.cwd()."
 lane: board-guard
+started: 2026-08-02T23:35:52.233Z
+on-hold-since: 2026-08-02
+handoff: .arch/board/handoff/board-guard-concurrent-write.md
+completed: 2026-08-02T23:49:53.597Z
+completion-notes: "Worker lane board-guard. Replaced hash-only attribution with source-level write interception (scripts/arch-write-guard.cjs preloaded via NODE_OPTIONS, env re-injected into spawned children): writes into the live .arch/ are refused with EACCES and audited, so a surviving delta is external by construction. Fails closed when a suite has no boot line. ARCHKIT_TEST_ALLOW_ARCH_MUTATION removed. tests/stop-hook sibling assertion now a recursive sha256 fingerprint, with a test proving a nested-only change is invisible to the old top-level readdir. Merged ac35682; npm test 77/77 green."
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-02
 ---
+
+
+
+
 
 
 # Stop the .arch/ board-immutability guard from blaming an innocent suite for a concurrent agent write

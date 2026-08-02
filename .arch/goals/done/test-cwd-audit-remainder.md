@@ -1,7 +1,7 @@
 ---
 slug: test-cwd-audit-remainder
 title: Give an explicit cwd to the ten remaining cwd-less spawns outside the stop-hook suite
-status: pending
+status: completed
 created: 2026-08-02
 order: 16
 project: lane-integration
@@ -31,11 +31,24 @@ owns:
   - tests/pretooluse-hook/*
   - tests/userpromptsubmit-hook/*
   - tests/migrate-playbooks/*
+  - tests/spawn-cwd-audit/*
 feature: test-cwd-audit
 verify-command: npm test
-source-ask: file all three, then dispatch finalize-version-bump with corrected owns — the three findings from the lane-integration dispatch pass: (1) Stop-hook guard is session-scoped but goal ownership is subagent-scoped, so every conductor pass gets told to work criteria belonging to a worker in another worktree; (2) the new .arch/ board-immutability guard false-positives on concurrent worker MCP writes and blames an innocent suite; (3) ten cwd-less spawns remain in test suites neither lane owned, plus migrate-playbooks resolves the archkit bin off process.cwd().
+source-ask: "file all three, then dispatch finalize-version-bump with corrected owns — the three findings from the lane-integration dispatch pass: (1) Stop-hook guard is session-scoped but goal ownership is subagent-scoped, so every conductor pass gets told to work criteria belonging to a worker in another worktree; (2) the new .arch/ board-immutability guard false-positives on concurrent worker MCP writes and blames an innocent suite; (3) ten cwd-less spawns remain in test suites neither lane owned, plus migrate-playbooks resolves the archkit bin off process.cwd()."
 lane: test-cwd-audit
+started: 2026-08-02T23:36:11.714Z
+on-hold-since: 2026-08-02
+handoff: .arch/board/handoff/test-cwd-audit-remainder.md
+completed: 2026-08-02T23:45:49.314Z
+completion-notes: Worker lane test-cwd-audit. 11 cwd-less spawns given explicit cwd across api-gate, cgr-board, claude-hook, cli-dispatch, posttooluse-hook, pretooluse-hook, userpromptsubmit-hook; migrate-playbooks resolves the archkit bin from __dirname. New tests/spawn-cwd-audit suite scans every tests/*.mjs repo-wide with rule-based exemptions (no name allowlist), scan floors and negative fixtures. Criterion 3 proved by direct runs of all 9 suites with .arch/ hash 19e8ede2e8ec6d7e identical before and after each. Merged at 95b4630; npm test 77/77 green, exit 0.
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-02
 ---
+
+
+
+
 
 
 # Give an explicit cwd to the ten remaining cwd-less spawns outside the stop-hook suite

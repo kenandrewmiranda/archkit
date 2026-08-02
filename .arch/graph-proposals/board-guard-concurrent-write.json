@@ -1,0 +1,12 @@
+{
+  "slug": "board-guard-concurrent-write",
+  "created": "2026-08-02",
+  "gaps": [
+    {
+      "kind": "unmapped-area",
+      "file": "scripts/test.mjs",
+      "suggestedCluster": "test.mjs"
+    }
+  ],
+  "note": "Files this goal touched that the node graph does not yet represent. For each undocumented-file: fill the suggestedLine's <role>/<flow> and append it to .arch/clusters/<cluster>.graph. For each unmapped-area: scaffold a new cluster + INDEX node. archkit does not auto-merge graph changes."
+}
