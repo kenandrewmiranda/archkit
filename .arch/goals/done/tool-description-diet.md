@@ -1,7 +1,7 @@
 ---
 slug: tool-description-diet
 title: Cut the oversized MCP tool descriptions down to the same contract
-status: pending
+status: completed
 created: 2026-08-02
 order: 11
 project: lane-integration
@@ -24,7 +24,19 @@ feature: output-contract
 verify-command: npm test
 source-ask: Append the three intake defects found while queuing the lane-integration batch, plus terse-output work. Defects — (1) exit criteria containing a colon-space are re-emitted as unindented list items after the exit-criteria block, corrupting goal frontmatter and rendering phantom duplicate criteria in payloads; (2) the auto-appended finalize barrier does not inherit the batch's `project`, so its payload instructs a different branch than the work it documents; (3) payload "Read first" paths point at .arch/goals/<slug>.md while files are written to .arch/goals/queue/<project>/<slug>.md. Output work — make MCP tool output terse and high-level using graph notation and a small symbol vocabulary instead of prose paragraphs, to cut agent-context tokens and make the feedback legible to end users. Color via markdown emphasis and symbols, NOT ANSI (ANSI does not render in MCP tool results). Scope is MCP output only, not the CLI.
 lane: lane-frontmatter-colon-escaping
+started: 2026-08-02T22:43:18.321Z
+on-hold-since: 2026-08-02
+handoff: .arch/board/handoff/tool-description-diet.md
+completed: 2026-08-02T22:59:02.710Z
+completion-notes: Worker lane lane-frontmatter-colon-escaping. 49 tool descriptions rewritten to a lead-sentence + Trigger contract; 50,581 -> 24,326 bytes (52% cut), independently re-measured by the conductor. Detail moved to new docs/mcp-tool-surface.md. New tests/mcp-tool-descriptions suite enforces a 800b per-description ceiling (high-water 796b) and a 25,290b total budget. Reference pair archkit_conductor / archkit_session_state now cross-reference. Merged to feat/lane-integration at 0656e9a; npm test 76/76 green.
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-02
 ---
+
+
+
+
 
 
 # Cut the oversized MCP tool descriptions down to the same contract
