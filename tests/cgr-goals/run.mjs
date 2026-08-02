@@ -583,6 +583,51 @@ test("project is absent on goals that don't set it (legacy untouched)", () => {
   });
 });
 
+// ── Read-first path (payload-goal-path) ──────────────────────────────────────
+//
+// The payload's very first instructed action is `Read <goal file>`, in a fresh
+// context that has no other way to find it. The path used to be reconstructed as
+// `.arch/goals/<slug>.md`, which is wrong for every goal in queue/ — so it must
+// be the path loadGoal actually resolved, for EVERY canonical location.
+
+// The path on the payload's "Read first:" line.
+function readFirstPath(archDir, slug) {
+  const lines = renderPayload(archDir, slug).payload.split("\n");
+  const i = lines.indexOf("Read first:");
+  assert.ok(i >= 0, "payload has a Read-first block");
+  return lines[i + 1].replace(/^- /, "");
+}
+
+test("payload Read-first path resolves to a real file (project-scoped + ungrouped)", () => {
+  withArchDir(({ dir, archDir }) => {
+    writeGoal(archDir, { slug: "p-goal", title: "Projected", project: "lane-integration" });
+    writeGoal(archDir, { slug: "q-goal", title: "Ungrouped" });
+
+    const projPath = readFirstPath(archDir, "p-goal");
+    assert.equal(projPath, ".arch/goals/queue/lane-integration/p-goal.md", "project subfolder path");
+    assert.ok(fs.existsSync(path.join(dir, projPath)), `project goal path must exist: ${projPath}`);
+
+    const queuePath = readFirstPath(archDir, "q-goal");
+    assert.equal(queuePath, ".arch/goals/queue/q-goal.md", "queue root path");
+    assert.ok(fs.existsSync(path.join(dir, queuePath)), `queue goal path must exist: ${queuePath}`);
+  });
+});
+
+test("payload Read-first path follows the goal through start → testing", () => {
+  withArchDir(({ dir, archDir }) => {
+    writeGoal(archDir, { slug: "moves", title: "Moves" });
+    startGoal(archDir, "moves"); // → goals/ root (live)
+    const live = readFirstPath(archDir, "moves");
+    assert.equal(live, ".arch/goals/moves.md", "live goals sit at the goals root");
+    assert.ok(fs.existsSync(path.join(dir, live)), `live goal path must exist: ${live}`);
+
+    markTesting(archDir, "moves"); // → goals/testing/
+    const testing = readFirstPath(archDir, "moves");
+    assert.equal(testing, ".arch/goals/testing/moves.md", "testing goals sit under testing/");
+    assert.ok(fs.existsSync(path.join(dir, testing)), `testing goal path must exist: ${testing}`);
+  });
+});
+
 test("renderPayload injects a branch-prework block for a project goal", () => {
   withArchDir(({ archDir }) => {
     writeGoal(archDir, { slug: "feat-a", title: "Feat A", project: "Search Revamp" });

@@ -26,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createArchReader, loadGraphCluster } from "./parsers.mjs";
 import { archkitError } from "./errors.mjs";
+import { toPosixPath } from "./shared.mjs";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
 // Copy-paste ceiling: the `archkit goal payload` / `/goal` fallback path pastes
@@ -997,6 +998,20 @@ export function acceptGraphProposal(archDir, slug, { file, line } = {}) {
 // Render a tight, copy-pasteable payload for the user to paste after `/goal`
 // in a fresh /clear'ed session. Stays under PAYLOAD_BUDGET — the full goal
 // context lives on disk; the payload just points to it.
+// A goal file's path as the agent will type it: relative to the PROJECT ROOT
+// (the parent of .arch/), forward-slashed so a Windows path is still a valid
+// Read argument. Falls back to the legacy root-level shape only if the path
+// can't be expressed relative to the project (never in practice — every goal
+// path is built from archDir).
+export function goalRelPath(archDir, filepath, slug) {
+  try {
+    const root = path.dirname(path.resolve(archDir));
+    const rel = toPosixPath(path.relative(root, path.resolve(filepath)));
+    if (rel && !rel.startsWith("..")) return rel;
+  } catch {}
+  return `${toPosixPath(path.join(path.basename(archDir), "goals"))}/${slug}.md`;
+}
+
 export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
@@ -1011,7 +1026,12 @@ export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   lines.push(`Title: ${m.title || slug}`);
   lines.push("");
   lines.push(`Read first:`);
-  lines.push(`- .arch/goals/${slug}.md`);
+  // The goal's REAL on-disk path (payload-goal-path). A goal lives in one of four
+  // canonical places — queue/, queue/<project>/, goals/ root (live), testing/ —
+  // so a reconstructed `.arch/goals/<slug>.md` guess was wrong for every queued
+  // goal, and this is the FIRST action a fresh worker takes with no other way to
+  // find its own goal file. Derived from the path loadGoal actually resolved.
+  lines.push(`- ${goalRelPath(archDir, goal.filepath, slug)}`);
   for (const r of required) lines.push(`- ${r}`);
   lines.push("");
   lines.push(`Then run: archkit resolve warmup`);
