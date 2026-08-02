@@ -39,9 +39,9 @@ import { runHooksInstallJson } from "../commands/hooks.mjs";
 import { runDecisionsSearchJson } from "../commands/decisions.mjs";
 import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalStart, runGoalAbandon, runGoalVerify, runGoalDefer, runGoalPromote, runGoalDismiss, runGoalTesting, runGoalHold, runGoalConsolidate, runGoalReconcile, runGraphAccept, runGoalHandoff, runGoalFission } from "../commands/goal.mjs";
 import { runWorklog } from "../commands/worklog.mjs";
-import { loadGoal, runFinalizeConfig, reconcileGoalsLayout } from "../lib/goals.mjs";
+import { loadGoal, runFinalizeConfig, reconcileGoalsLayout, dispatchGoal, laneOf } from "../lib/goals.mjs";
 import { detectStaleGoals } from "../lib/goal-triage.mjs";
-import { sessionState, conductorPlan, recordMerge, recordConflict } from "../lib/board.mjs";
+import { sessionState, conductorPlan, recordMerge, recordConflict, claimFrontier } from "../lib/board.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
 // ── Warmup goal-hygiene augmentation (warmup-reconcile-surface) ──────────────
@@ -699,13 +699,33 @@ export const tools = {
   },
 
   archkit_goal_start: {
-    description: "Mark a SPECIFIC goal in-progress by slug and return its payload, recording the branch guidance -- the batch's shared cgr-queue-<date> for an ungrouped goal, feat/<project> for a project goal (ADR 0012). archkit emits guidance only; it never runs git. Trigger: the conductor surfaced a queue-vs-project routing CHOICE and the user picked a track, or you deliberately want an out-of-order goal. For the normal one-keystroke advance the user runs /mcp__archkit__conductor.",
+    description: "Mark a SPECIFIC goal in-progress by slug and return its payload, recording the branch guidance -- the batch's shared cgr-queue-<date> for an ungrouped goal, feat/<project> for a project goal (ADR 0012). archkit emits guidance only; it never runs git. Pass `worker` to claim it as `dispatched` instead (ADR 0027): the lease is held and the goal stays in_flight, but the Stop-hook guard is released HERE because a subagent does the work. Trigger: the conductor surfaced a queue-vs-project routing CHOICE and the user picked a track, you are dispatching a lane, or you deliberately want an out-of-order goal. For the normal one-keystroke advance the user runs /mcp__archkit__conductor.",
     inputSchema: z.object({
       slug: z.string().min(1).describe("Goal slug to start (mark in-progress). Typically the 'next' slug for the track the user chose in the conductor routing prompt."),
+      worker: z.string().optional().describe("Worker subagent id this claim is made ON BEHALF OF. Supplying it dispatches instead of starting: status becomes `dispatched`, a lease ({worker, expires} from cgr.leaseTtlHours) is stamped, a `claimed` board event is appended so the goal shows in archkit_session_state.in_flight with its lane/worker/lease, and the Stop-hook relay guard is released in THIS session — the conductor must wait for the worker, not work the criteria itself. The goal is NOT offered by frontier/nextEligibleGoal while dispatched, and an abandoned dispatch is reclaimed on lease-TTL expiry exactly like an orphaned in-progress goal. Omit for a normal same-session start."),
     }),
-    handler: async ({ slug }) => {
+    handler: async ({ slug, worker }) => {
       const cwd = process.cwd();
-      return runGoalStart({ archDir: requireArchDir(cwd), slug });
+      const archDir = requireArchDir(cwd);
+      if (!worker || !String(worker).trim()) return runGoalStart({ archDir, slug });
+      // Dispatch path (ADR 0027). runGoalStart renders the payload + validates the
+      // slug (unknown_goal), then startGoal marks it in-progress; dispatchGoal
+      // immediately re-files it as `dispatched`, and claimFrontier stamps the
+      // board's `claimed` event so the fold shows it in_flight with lane/worker/
+      // lease. dispatchGoal preserves an existing lease, so claiming first or
+      // second yields the same TTL.
+      const started = runGoalStart({ archDir, slug });
+      const goal = loadGoal(archDir, slug);
+      const claim = claimFrontier(archDir, { slug, worker: String(worker).trim(), lane: laneOf(goal) });
+      const dispatched = dispatchGoal(archDir, slug, { worker: String(worker).trim() });
+      return {
+        ...started,
+        status: dispatched.status,
+        worker: dispatched.worker,
+        lane: claim.lane,
+        lease: dispatched.lease,
+        nextStep: `Goal "${slug}" is DISPATCHED to ${dispatched.worker} (lane ${claim.lane}) and holds a lease until ${dispatched.lease?.expires}. Hand the payload to that worker. Do NOT work its exit-criteria in this session — the Stop-hook guard is released here on purpose. When the worker returns, review its handoff and close the goal from the owning session.`,
+      };
     },
   },
 
@@ -780,7 +800,7 @@ export const tools = {
   },
 
   archkit_goal_hold: {
-    description: "Park a real queued goal as `on-hold` -- deliberately set aside but resumable (ADR 0003). Unlike `testing` this RELEASES the Stop-hook guard so the session can end, and the goal is not auto-selected until nothing live is left; the file stays in .arch/goals/ because status, not folder, is the source of truth. Resume with /clear then /mcp__archkit__conductor. Trigger: blocked on an external decision or reprioritized. Criteria all met -> archkit_goal_complete; verification pending -> archkit_goal_testing; dropping it for good -> archkit_goal_abandon; stashing a NEW follow-up idea -> archkit_goal_defer.",
+    description: "Park a real queued goal as `on-hold` -- deliberately set aside but resumable (ADR 0003). Unlike `testing` this RELEASES the Stop-hook guard so the session can end, and the goal is not auto-selected until nothing live is left; the file stays in .arch/goals/ because status, not folder, is the source of truth. Resume with /clear then /mcp__archkit__conductor. Trigger: blocked on an external decision or reprioritized. Criteria all met -> archkit_goal_complete; verification pending -> archkit_goal_testing; dropping it for good -> archkit_goal_abandon; stashing a NEW follow-up idea -> archkit_goal_defer; still being worked, just by a SUBAGENT -> archkit_goal_start with `worker` (dispatched keeps the lease; on-hold drops it).",
     inputSchema: z.object({
       slug: z.string().min(1).describe("Goal slug to park as on-hold (deliberately set aside, resumable)."),
     }),

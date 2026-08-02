@@ -10,7 +10,7 @@
 // Storage layout (cgr-queue-folder-layout — symmetric queue·testing·done map):
 //   .arch/goals/queue/<slug>.md            — pending (queued) goals
 //   .arch/goals/queue/<project>/<slug>.md  — pending goals grouped by feature set
-//   .arch/goals/<slug>.md                  — in-progress / on-hold (live, root)
+//   .arch/goals/<slug>.md                  — in-progress / dispatched / on-hold (live, root)
 //   .arch/goals/testing/<slug>.md          — edits applied, verification pending
 //   .arch/goals/done/<slug>.md             — completed goals (kept for history)
 //
@@ -171,9 +171,9 @@ export function quarantineDir(archDir) {
 // read each file's status, and re-file it into the folder that status dictates.
 //
 // Canonical folder per (normalized) status:
-//   pending                 → queue/  (or queue/<project>/ when project-tagged)
-//   in-progress | on-hold   → goals/ root   (live work; status distinguishes them)
-//   testing                 → testing/
+//   pending                             → queue/  (or queue/<project>/ when project-tagged)
+//   in-progress | dispatched | on-hold  → goals/ root (live work; status distinguishes them)
+//   testing                             → testing/
 //   completed | abandoned   → done/   (a copy already under done/archive/ counts as placed)
 // Any other/unknown-but-present status is left where it is (conservative — only
 // the states we own are re-filed). A file with NO status is not a goal → quarantined.
@@ -197,6 +197,7 @@ function canonicalDirFor(archDir, status, project) {
     case STATUS_PENDING:
       return project ? path.join(queueDir(archDir), slugify(project)) : queueDir(archDir);
     case STATUS_ACTIVE:
+    case STATUS_DISPATCHED:
     case STATUS_ON_HOLD:
       return goalsDir(archDir);
     case STATUS_TESTING:
@@ -1239,10 +1240,21 @@ export const STATUS_TESTING = "testing";
 // stop, so the Stop hook lets the session end. It lives in goals/ root (status
 // is the source of truth, not a folder) and is resumed via startGoal.
 export const STATUS_ON_HOLD = "on-hold";
+// Claimed ON BEHALF OF another session (ADR 0027). Under CGR 2.0 the conductor
+// dispatches one worker subagent per lane; the claim is made in the CONDUCTOR's
+// session but the work happens in the WORKER's. `dispatched` names exactly that
+// split: the goal is live, leased, and in_flight — but the Stop-hook relay guard
+// is scoped to the session that would have to do the work, so a dispatched goal
+// releases it. Distinct from `on-hold` (parked, lease dropped, no one working it)
+// and from `in-progress` (the calling session IS the working session). Lives in
+// goals/ root like in-progress; the LEASE, not the status, is what a TTL expiry
+// reclaims, so an orphaned dispatch is reclaimed exactly as in-progress is.
+export const STATUS_DISPATCHED = "dispatched";
 // States that keep the relay guard engaged — the goal is live work the Stop
 // hook must not let the session walk away from. `testing` is guarded precisely
 // because it is NOT done; `on-hold` is deliberately EXCLUDED (parking releases
-// the guard).
+// the guard) and so is `dispatched` (the working session is a subagent, so
+// guarding the calling session would tell it to duplicate a worker's edits).
 const GUARDED_STATUSES = [STATUS_ACTIVE, STATUS_TESTING];
 
 export function isGoalDone(archDir, slug) {
@@ -1534,11 +1546,33 @@ export function forkSuccessor(archDir, slug, { successorSlug, unmet, handoff } =
 // `testing` (verification pending) — both keep the Stop-hook relay engaged. In
 // fresh-context relay there should be at most one; prefer an in-progress goal,
 // then a testing goal, by listGoals order.
+//
+// `dispatched` is NOT guarded (ADR 0027): the claim was made on behalf of a
+// worker subagent, so the calling session has nothing to work — guarding it
+// would tell the conductor to duplicate a worker's edits in the wrong tree.
 export function getActiveGoal(archDir) {
   const goals = listGoals(archDir);
   return goals.find((g) => statusOf(g) === STATUS_ACTIVE)
     || goals.find((g) => statusOf(g) === STATUS_TESTING)
     || null;
+}
+
+// Every goal currently DISPATCHED to a worker subagent (ADR 0027), each with the
+// worker it was dispatched to and its outstanding lease. The Stop hook reads this
+// to explain WHY it isn't guarding: the lanes are live, just not in this session.
+// Tolerant — an unreadable/malformed .arch/ yields [] rather than throwing.
+export function dispatchedGoals(archDir) {
+  let goals;
+  try { goals = listGoals(archDir); } catch { return []; }
+  return goals
+    .filter((g) => statusOf(g) === STATUS_DISPATCHED)
+    .map((g) => ({
+      slug: g.slug,
+      lane: laneOf(g),
+      worker: String(g?.meta?.["dispatched-to"] || "").trim() || leaseOf(g)?.worker || null,
+      lease: leaseOf(g),
+      since: g?.meta?.["dispatched-since"] || null,
+    }));
 }
 
 // ── Status-line segment (statusline-archkit-context) ─────────────────────────
@@ -1597,10 +1631,11 @@ export function statuslineSegment(archDir, { glyph = "⛏", testingGlyph = "🧪
 // when a goal would edit a file another LIVE goal is also editing — the reliable
 // backbone for parallel work. "Live" = in-progress OR testing (the set the Stop
 // hook guards): a goal can only collide with yours while it's actually being
-// worked; pending/on-hold/completed/abandoned goals can't. This is the same set
-// as GUARDED_STATUSES by definition, kept as its own constant so the conflict
-// scope is self-documenting and won't drift if the guard set ever diverges.
-const LIVE_STATUSES = [STATUS_ACTIVE, STATUS_TESTING];
+// worked; pending/on-hold/completed/abandoned goals can't. The guard set and the
+// conflict set HAVE now diverged (this constant existed for exactly that reason):
+// `dispatched` is live — a worker subagent is editing its files right now — but
+// it is NOT guarded in the dispatching session (ADR 0027).
+const LIVE_STATUSES = [STATUS_ACTIVE, STATUS_DISPATCHED, STATUS_TESTING];
 
 // A goal's declared files-to-touch, normalized for overlap comparison (strip a
 // leading ./, trim, drop blanks, dedupe). Tolerant of a missing/scalar/empty
@@ -1969,7 +2004,7 @@ export function readChatBoard(archDir, { limit = 20 } = {}) {
 // If the goal was sitting in goals/testing/ (resumed for verification), it is
 // relocated back to goals/ root so an in-progress goal never lingers in the
 // testing drawer — status frontmatter and folder stay consistent.
-export function startGoal(archDir, slug) {
+export function startGoal(archDir, slug, { reclaim = false } = {}) {
   // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
   // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
   // the root path, migration would move it, and the relocate-write below would
@@ -1978,7 +2013,18 @@ export function startGoal(archDir, slug) {
   ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
-  goal.meta.status = STATUS_ACTIVE;
+  // A DISPATCHED goal keeps its state (ADR 0027). The worker subagent it was
+  // dispatched to calls goal_start from its own session, which only CONFIRMS it
+  // is working the goal — the working session still isn't the guarded foreground
+  // one, so flipping to in-progress here would re-trap the conductor on work it
+  // must not do. `reclaim` is the explicit escape: the conductor taking the goal
+  // back after a failed or expired dispatch.
+  const dispatched = statusOf(goal) === STATUS_DISPATCHED && !reclaim;
+  goal.meta.status = dispatched ? STATUS_DISPATCHED : STATUS_ACTIVE;
+  if (reclaim) {
+    delete goal.meta["dispatched-since"];
+    delete goal.meta["dispatched-to"];
+  }
   if (!goal.meta.started) goal.meta.started = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
@@ -1994,7 +2040,58 @@ export function startGoal(archDir, slug) {
   // renderPayload reads this AFTER (the relay renders before starting), so the
   // first queue goal sees "create -c" and every later one sees "switch".
   if (!String(goal.meta.project || "").trim()) ensureQueueBranch(archDir);
-  return { slug, status: STATUS_ACTIVE };
+  return { slug, status: goal.meta.status };
+}
+
+// The CGR 2.0 "dispatch" transition (ADR 0027): claim a goal ON BEHALF OF a
+// worker subagent that will work it in another session/worktree. Unlike startGoal
+// this does NOT engage the Stop-hook relay guard in the calling session — the
+// caller is the conductor, and the only correct action for it is to wait — but it
+// is emphatically not a park: the goal stays LIVE and keeps a LEASE, so it still
+// counts for file-conflict detection, bucket drain, and (with the companion
+// `claimed` board event) session_state.in_flight.
+//
+// Stamps `dispatched-since`, `dispatched-to` (the worker), and a `lease`
+// ({worker, expires}) minted from cgr.leaseTtlHours — unless the goal already
+// carries one, in which case the existing claim is preserved verbatim so a
+// conductor-side claimFrontier and this transition can be composed in either
+// order without one clobbering the other's expiry. TTL reclaim keys off that
+// lease, exactly as it does for an orphaned in-progress goal.
+//
+// Like on-hold, the file lives in goals/ root (status, not folder, is the source
+// of truth) and the turn-cap counter is cleared. Idempotent.
+export function dispatchGoal(archDir, slug, { worker = null, ttlHours, now = new Date() } = {}) {
+  ensureGoalsLayout(archDir);
+  const goal = loadGoal(archDir, slug);
+  if (!goal) throw new Error(`unknown goal: ${slug}`);
+  const workerId = String(worker || "").trim() || null;
+  goal.meta.status = STATUS_DISPATCHED;
+  const at = now instanceof Date ? now : new Date(now);
+  if (!goal.meta["dispatched-since"]) goal.meta["dispatched-since"] = at.toISOString();
+  if (workerId) goal.meta["dispatched-to"] = workerId;
+  // Hold the lease. An existing claim wins so we never shorten or extend someone
+  // else's TTL; otherwise mint one from the configured (or supplied) window.
+  let lease = leaseOf(goal);
+  if (!lease) {
+    const ttl = Number.isFinite(Number(ttlHours)) && Number(ttlHours) > 0
+      ? Number(ttlHours)
+      : leaseTtlHours(archDir);
+    lease = {
+      worker: workerId,
+      expires: new Date(at.getTime() + ttl * 3600 * 1000).toISOString(),
+    };
+    goal.meta.lease = JSON.stringify(lease);
+  }
+  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+  const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
+  fs.writeFileSync(targetPath, out);
+  if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
+    fs.rmSync(goal.filepath, { force: true });
+  }
+  // Dispatching releases the guard in THIS session — drop any turn-cap counter.
+  const state = readLoopState(archDir);
+  if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
+  return { slug, status: STATUS_DISPATCHED, worker: workerId, lease, filepath: targetPath };
 }
 
 // The relay "verification" transition: move an active goal into `testing` —
@@ -2497,12 +2594,15 @@ export function nextEligibleGoal(archDir) {
     return !deps.some((d) => !isGoalDone(archDir, d));
   };
 
-  // Eligible = not done, not parked (on-hold), and deps satisfied. `on-hold`
-  // goals are deliberately set aside, so they are NOT auto-selected ahead of
-  // real pending/testing work — they only surface as a last-resort resume below.
+  // Eligible = not done, not parked (on-hold), not dispatched, and deps
+  // satisfied. `on-hold` goals are deliberately set aside, so they are NOT
+  // auto-selected ahead of real pending/testing work — they only surface as a
+  // last-resort resume below. `dispatched` goals are already claimed by a worker
+  // subagent under a live lease (ADR 0027), so offering one would hand the same
+  // work to two sessions; they are excluded outright, not deferred.
   const eligible = goals.filter((g) => {
     const s = statusOf(g);
-    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD) return false;
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_DISPATCHED) return false;
     return depsSatisfied(g);
   });
   const testing = eligible.filter((g) => statusOf(g) === STATUS_TESTING);
@@ -2557,11 +2657,11 @@ export function routeNextGoal(archDir) {
     const deps = ensureArray(g.meta["depends-on"]);
     return !deps.some((d) => !isGoalDone(archDir, d));
   };
-  // Eligible = not done, not parked, deps satisfied — the same gate
-  // nextEligibleGoal applies before its threshold ordering.
+  // Eligible = not done, not parked, not dispatched, deps satisfied — the same
+  // gate nextEligibleGoal applies before its threshold ordering.
   const eligible = preferContinuations(goals.filter((g) => {
     const s = statusOf(g);
-    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD) return false;
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_DISPATCHED) return false;
     return depsSatisfied(g);
   }));
   const projectOf = (g) => String(g?.meta?.project || "").trim();
@@ -2668,11 +2768,12 @@ export function triageNextGoal(archDir) {
     const deps = ensureArray(g.meta["depends-on"]);
     return !deps.some((d) => !isGoalDone(archDir, d));
   };
-  // Eligible = not done, not parked (on-hold), deps satisfied — the same gate
-  // nextEligibleGoal / routeNextGoal apply. Continuations float to the front.
+  // Eligible = not done, not parked (on-hold), not dispatched to a worker,
+  // deps satisfied — the same gate nextEligibleGoal / routeNextGoal apply.
+  // Continuations float to the front.
   const eligible = preferContinuations(goals.filter((g) => {
     const s = statusOf(g);
-    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_ACTIVE) return false;
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_ACTIVE || s === STATUS_DISPATCHED) return false;
     return depsSatisfied(g);
   }));
   const projectOf = (g) => String(g?.meta?.project || "").trim();
@@ -2828,11 +2929,12 @@ export function clearQueueBranchIfDrained(archDir) {
 // (instruct-not-act, ADR 0010) — the agent presents the choice and the user runs
 // the commands on 'merge'.
 //
-// "Live" for drain purposes = pending | in-progress | testing (the states that
-// represent unfinished work). on-hold (deliberately parked), completed, and
-// abandoned do NOT keep a bucket alive — a bucket holding only parked/terminal
-// goals counts as drained.
-const DRAIN_LIVE_STATUSES = [STATUS_PENDING, STATUS_ACTIVE, STATUS_TESTING];
+// "Live" for drain purposes = pending | in-progress | dispatched | testing (the
+// states that represent unfinished work — a goal dispatched to a worker subagent
+// is unfinished work someone is actively doing, ADR 0027). on-hold (deliberately
+// parked), completed, and abandoned do NOT keep a bucket alive — a bucket holding
+// only parked/terminal goals counts as drained.
+const DRAIN_LIVE_STATUSES = [STATUS_PENDING, STATUS_ACTIVE, STATUS_DISPATCHED, STATUS_TESTING];
 
 // PURE: does completing `slug` drain the last live goal of its bucket? `goals` is
 // the full live goal set (as from listGoals, INCLUDING the goal being completed,
