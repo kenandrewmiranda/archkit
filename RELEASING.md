@@ -16,7 +16,7 @@ On npmjs.com, under the package's **Settings → Trusted Publisher**, register a
 
 ### Two traps that will silently break publishing
 
-1. **The publisher is bound to the workflow *filename*, not its display name.** The workflow's `name:` is `Release`, but the field npm wants is `release.yml`. Configuring it as `Release` — or renaming `release.yml` — breaks publishing until the publisher config is updated to match. This exact mismatch caused a month of failed releases.
+1. **The publisher is bound to the workflow *filename*, not its display name.** The workflow's `name:` is `Release`, but the field npm wants is `release.yml`. Configuring it as `Release` — or renaming `release.yml` — breaks publishing until the publisher config is updated to match. This exact mismatch has bitten this repo before.
 2. **Never add `registry-url` to the `actions/setup-node` step.** It makes setup-node write an `.npmrc` with `//registry.npmjs.org/:_authToken=…`, injecting a literal placeholder token when no token is supplied. npm then authenticates with that junk token and never performs the OIDC exchange, and the registry answers with a misleading `403 Forbidden - PUT` / `ENEEDAUTH`. Trusted Publishing requires that *no* `_authToken` be configured at all, and `registry.npmjs.org` is already the default registry.
 
 Trusted Publishing also requires **Node >= 22.14.0 and npm >= 11.5.1**. The workflow pins `node-version: 22` and then runs `npm install -g npm@latest`, because Node 22 ships npm 10.x.
