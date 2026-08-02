@@ -314,6 +314,11 @@ await testAsync("parallel appends from N processes produce N*M intact lines", as
 
   await Promise.all(Array.from({ length: N }, (_, w) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", worker], {
+      // The worker addresses the board through ARCH_DIR, but an inherited cwd
+      // is still archkit's own checkout when this suite is run directly. Root
+      // the child in the temp project that owns `arch` so nothing it does can
+      // resolve back to the live board.
+      cwd: path.dirname(arch),
       env: { ...process.env, BOARD_URL, ARCH_DIR: arch, COUNT: String(M), WID: `w${w}` },
       stdio: ["ignore", "ignore", "inherit"],
     });

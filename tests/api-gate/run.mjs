@@ -180,8 +180,18 @@ function withProject({ config, boundaries } = {}, fn) {
   }
 }
 
+// The event carries `cwd`, but so must the child process: a spawn without an
+// explicit `cwd` inherits the runner's, so a hook that falls back to
+// `process.cwd()` (malformed/empty stdin) would resolve archkit's OWN live
+// .arch/. Pass the temp project both ways. Never spawn the hook without one.
 function runHook(event) {
-  return spawnSync(process.execPath, [HOOK], { input: JSON.stringify(event), encoding: "utf8", timeout: 8000 });
+  if (!event?.cwd) throw new Error("runHook requires event.cwd (never inherit the repo root)");
+  return spawnSync(process.execPath, [HOOK], {
+    cwd: event.cwd,
+    input: JSON.stringify(event),
+    encoding: "utf8",
+    timeout: 8000,
+  });
 }
 
 function decisionOf(stdout) {

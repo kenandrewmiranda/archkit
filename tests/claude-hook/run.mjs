@@ -22,6 +22,12 @@ function runSessionStart(dir, source = "startup") {
   return JSON.parse(out.toString("utf8")).hookSpecificOutput?.additionalContext || "";
 }
 
+// A bare temp dir with no .arch/ — for runs that must find no archkit project.
+function withTempDir(fn) {
+  const tmp = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "archkit-claude-hook-"));
+  try { fn(tmp); } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
+
 function withArchProject(fn) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-sst-board-"));
   const archDir = path.join(tmp, ".arch");
@@ -109,17 +115,27 @@ test("mergeClaudeSettings does not duplicate same archkit hook", () => {
 
 // ── Hook Binary ───────────────────────────────────────────────────────────────
 
+// The PreToolUse hook resolves .arch/ by walking up from its own cwd. A spawn
+// with no explicit `cwd` inherits the runner's — run directly from the repo
+// root that is archkit's OWN board. Both of these runs are about the hook
+// finding NOTHING, so give them an empty temp project to find nothing in.
 test("hook exits 0 silently for unknown paths", () => {
-  execFileSync("node", [HOOK, "/some/random/path/file.txt"], {
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: 5000,
+  withTempDir((dir) => {
+    execFileSync("node", [HOOK, "/some/random/path/file.txt"], {
+      cwd: dir,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
   });
 });
 
 test("hook exits 0 silently when no path arg given", () => {
-  execFileSync("node", [HOOK], {
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: 5000,
+  withTempDir((dir) => {
+    execFileSync("node", [HOOK], {
+      cwd: dir,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
   });
 });
 
