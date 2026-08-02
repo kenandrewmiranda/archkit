@@ -308,8 +308,15 @@ export const prompts = {
         // branch from a stale base, so a naive sequential merge can revert what an
         // earlier merge in this same drain landed) and its path-extract fallback.
         `5. ${renderConvergencePlan(plan.convergence).join("\n")}`,
+        // Step 6 is the INTEGRATION DEBT ledger (ADR 0024): merges already
+        // recorded WITHOUT a green verify. A merge with no recorded outcome is
+        // debt, not a green branch — surfacing it stops a later pass from
+        // silently assuming the mainline is green.
+        plan.unverifiedMerges.length
+          ? `6. INTEGRATION DEBT — ${plan.unverifiedMerges.length} CGR${plan.unverifiedMerges.length === 1 ? " has" : "s have"} merged WITHOUT a green verify. Re-run the verify on ${plan.convergence.branch} and re-record with archkit_board_merged:\n${plan.unverifiedMerges.map((m) => `   • ${m.slug} (lane ${m.lane}): ${m.status}${m.command ? ` — ${m.command}` : ""} [${m.reason}]`).join("\n")}`
+          : `6. INTEGRATION DEBT: none — every merge recorded so far carries a green verify.`,
         ``,
-        `Read archkit_conductor / archkit_session_state for the structured plan. archkit emits the plan; YOU spawn workers, review, and run the git rebases/merges — archkit never runs git itself.`,
+        `Read archkit_conductor / archkit_session_state for the structured plan. archkit emits the plan; YOU spawn workers, review, run the git rebases/merges, and run the verify command — archkit never runs git or your tests; it records the result you report via archkit_board_merged.`,
       );
       return textMessage(lines.join("\n"));
     },

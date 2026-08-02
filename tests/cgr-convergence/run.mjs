@@ -82,7 +82,11 @@ test("EC1: the ordered queue collapses to ONE integration point per lane", () =>
   assert.equal(plan.groups.length, 2, "3 CGRs on 2 lanes → 2 integration points, not 3 merges");
   assert.deepEqual(plan.groups.map((g) => g.lane), ["board", "goals"]);
   assert.deepEqual(plan.groups[0].slugs, ["board-a", "board-b"], "lane members stay in queue order");
-  assert.deepEqual(plan.counts, { groups: 2, lanes: 2, cgrs: 3, crossLaneEdges: 0 });
+  assert.deepEqual(plan.counts, {
+    groups: 2, lanes: 2, cgrs: 3, crossLaneEdges: 0,
+    // No verify-command on these CGRs and no project command injected (ADR 0024).
+    verifiableGroups: 0, unverifiableGroups: 2,
+  });
 });
 
 test("EC1: a laneless queue still yields a single 'default' integration point", () => {

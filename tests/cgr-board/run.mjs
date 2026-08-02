@@ -5,7 +5,7 @@
 //   - appendEvent / readEvents round-trip + unknown-type rejection + torn-line tolerance
 //   - foldEvents is PURE/deterministic (same events → identical fold)
 //   - sessionState is deterministic (same inputs + same `now` → identical board)
-//   - the seven derived slices: lanes, frontier, blocked, in_flight, merge_queue,
+//   - the derived slices: lanes, frontier, blocked, in_flight, merge_queue, merged,
 //     conflicts, leases_expired — driven by events folded over CGR frontmatter
 //   - the board is purely DERIVED — no separate mutable board file is created
 //   - extended CGR frontmatter round-trips (lane/owns/depends_on/exclusive/
@@ -154,7 +154,7 @@ test("sessionState is deterministic for fixed inputs + now", () => {
   const s2 = sessionState(arch, { now });
   assert.deepEqual(s1, s2);
   assert.deepEqual(Object.keys(s1).sort(),
-    ["blocked", "conflicts", "frontier", "handoffs", "in_flight", "lanes", "leases_expired", "merge_queue"]);
+    ["blocked", "conflicts", "frontier", "handoffs", "in_flight", "lanes", "leases_expired", "merge_queue", "merged"]);
 });
 
 // ── derived slices ───────────────────────────────────────────────────────────

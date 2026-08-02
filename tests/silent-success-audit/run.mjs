@@ -202,6 +202,9 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         ["archkit_goal_testing", { slug: "audit-goal" }],
         ["archkit_goal_verify", { slug: "audit-goal" }],
         ["archkit_goal_complete", { slug: "audit-goal" }],
+        // The completed CGR's integration point lands: record it WITH its
+        // post-integration verification outcome (merge-verify-command, ADR 0024).
+        ["archkit_board_merged", { slugs: ["audit-goal"], lane: "default", branch: "main", verifyCommand: "npm test", verifySource: "project", passed: true }],
         // Fission on the now-completed goal exercises the error envelope (it's no
         // longer live) — the happy split path is covered in tests/cgr-fission/.
         ["archkit_goal_fission", { slug: "audit-goal", criteriaMet: [true] }],

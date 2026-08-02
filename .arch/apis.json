@@ -1,0 +1,34 @@
+[
+  {
+    "id": "zod",
+    "kind": "sdk",
+    "ref": "zod (https://zod.dev) — already a direct dependency; used for every MCP tool inputSchema in src/mcp/tools.mjs",
+    "reason": "",
+    "addedAt": "2026-08-02T18:13:15.687Z",
+    "status": "referenced"
+  },
+  {
+    "id": "github.com",
+    "kind": "override",
+    "ref": null,
+    "reason": "Not an API surface — github.com appears only inside prose (tool descriptions / comments) in src/mcp/tools.mjs. No HTTP client, no request is made against it.",
+    "addedAt": "2026-08-02T18:13:16.941Z",
+    "status": "override"
+  },
+  {
+    "id": "@modelcontextprotocol/sdk",
+    "kind": "sdk",
+    "ref": "@modelcontextprotocol/sdk (https://modelcontextprotocol.io/docs) — direct dependency; Client/StdioClientTransport used by the MCP test harnesses",
+    "reason": "",
+    "addedAt": "2026-08-02T18:15:41.976Z",
+    "status": "referenced"
+  },
+  {
+    "id": "stripe.com",
+    "kind": "override",
+    "ref": null,
+    "reason": "Not an API surface — stripe.com appears only as fixture data (a fake doc URL in the silent-success-audit test fixture). No Stripe call is made.",
+    "addedAt": "2026-08-02T18:15:42.687Z",
+    "status": "override"
+  }
+]

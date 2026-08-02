@@ -33,7 +33,7 @@ import { runGoalIntake, runGoalList, runGoalComplete, runGoalPayload, runGoalSta
 import { runWorklog } from "../commands/worklog.mjs";
 import { loadGoal, runFinalizeConfig, reconcileGoalsLayout } from "../lib/goals.mjs";
 import { detectStaleGoals } from "../lib/goal-triage.mjs";
-import { sessionState, conductorPlan } from "../lib/board.mjs";
+import { sessionState, conductorPlan, recordMerge } from "../lib/board.mjs";
 import { archkitError } from "../lib/errors.mjs";
 
 // ── Warmup goal-hygiene augmentation (warmup-reconcile-surface) ──────────────
@@ -497,7 +497,7 @@ export const tools = {
   },
 
   archkit_session_state: {
-    description: "CGR 2.0 conductor view — return the FOLDED board for parallel-lane orchestration (board-state-manager, ADR 0014). The board is purely DERIVED: it is reconstituted on every call by folding the append-only event log at .arch/board/events.ndjson (events: claimed, completed, fissioned, merged, conflict, lease-expired) and scanning the CGR record files — there is NO mutable board file, so it survives /clear and auto-compaction and can never drift from its inputs. Returns the seven-slice projection { lanes, frontier, blocked, in_flight, merge_queue, conflicts, leases_expired }: `lanes` groups every live CGR by its parallel track; `frontier` is the pending CGRs whose depends_on are all met and that aren't already claimed (the workable set a fresh worker should pull from); `blocked` is live CGRs with an unmet dependency (each with its blockedOn list); `in_flight` is CGRs claimed but not yet completed (lane/worker/lease); `merge_queue` is CGRs completed but not yet merged (full|partial); `conflicts` is file-overlap among live CGRs plus conflict events; `leases_expired` is in-flight claims whose lease TTL elapsed (reclaim as orphans). When to use: at conductor session start (after /clear or compaction) to rehydrate what remains in flight, and before dispatching a worker to pick the next frontier CGR or reclaim an expired lease. Read-only — folds, never writes.",
+    description: "CGR 2.0 conductor view — return the FOLDED board for parallel-lane orchestration (board-state-manager, ADR 0014). The board is purely DERIVED: it is reconstituted on every call by folding the append-only event log at .arch/board/events.ndjson (events: claimed, completed, fissioned, merged, conflict, lease-expired) and scanning the CGR record files — there is NO mutable board file, so it survives /clear and auto-compaction and can never drift from its inputs. Returns the projection { lanes, frontier, blocked, in_flight, merge_queue, merged, conflicts, leases_expired }: `lanes` groups every live CGR by its parallel track; `frontier` is the pending CGRs whose depends_on are all met and that aren't already claimed (the workable set a fresh worker should pull from); `blocked` is live CGRs with an unmet dependency (each with its blockedOn list); `in_flight` is CGRs claimed but not yet completed (lane/worker/lease); `merge_queue` is CGRs completed but not yet merged (full|partial); `merged` is CGRs whose integration LANDED, each carrying the recorded post-integration verification outcome (verifyStatus green|red|unverified + the command, ADR 0024) — an event with no payload folds to unverified, never to assumed-green; `conflicts` is file-overlap among live CGRs plus conflict events; `leases_expired` is in-flight claims whose lease TTL elapsed (reclaim as orphans). When to use: at conductor session start (after /clear or compaction) to rehydrate what remains in flight, and before dispatching a worker to pick the next frontier CGR or reclaim an expired lease. Read-only — folds, never writes.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -509,6 +509,8 @@ export const tools = {
         blocked: board.blocked.length,
         in_flight: board.in_flight.length,
         merge_queue: board.merge_queue.length,
+        merged: board.merged.length,
+        unverified_merges: board.merged.filter((m) => m.verifyStatus !== "green").length,
         conflicts: board.conflicts.length,
         leases_expired: board.leases_expired.length,
       };
@@ -520,30 +522,90 @@ export const tools = {
         out.boardNote = "Board empty — no folded events in .arch/board/events.ndjson and no live CGRs. The board is purely derived from those inputs.";
         out.nextStep = "No CGRs in flight. Run archkit_goal_intake (or /mcp__archkit__intake) to queue work; workers append claimed/completed events that this board folds.";
       } else {
-        out.nextStep = `Board: ${counts.frontier} frontier, ${counts.in_flight} in-flight, ${counts.merge_queue} to merge, ${counts.blocked} blocked, ${counts.leases_expired} expired leases.`;
+        const debt = counts.unverified_merges ? `, ${counts.unverified_merges} merged UNVERIFIED` : "";
+        out.nextStep = `Board: ${counts.frontier} frontier, ${counts.in_flight} in-flight, ${counts.merge_queue} to merge${debt}, ${counts.blocked} blocked, ${counts.leases_expired} expired leases.`;
       }
       return out;
     },
   },
 
   archkit_conductor: {
-    description: "CGR 2.0 CONDUCTOR LOOP — the orchestration plan for one foreground (conductor) session pass (conductor-loop-hooks, ADR 0013). After /clear or compaction the foreground session ORCHESTRATES rather than codes: it reads this plan and runs the loop — (1) claim the next frontier CGR(s) under a lease (archkit advances the board; the lease TTL is cgr.leaseTtlHours, default 24h), (2) spawn ONE worker subagent per claimable LANE in an isolated git worktree (lanes have disjoint file-ownership, so they run in parallel; `barriers` are exclusive cross-cutting CGRs that run SOLO), (3) collect each worker's HANDOFF return, (4) DEEP-REVIEW ONLY the `exceptions` (partial completions, non-green verification, low ownership-accuracy, cross-lane conflicts) — rubber-stamp the `clean` set, (5) drain `mergeOrder` as a SEQUENTIAL merge queue, dependency-ordered, verifying after EACH merge. Read-only — folds the board, never writes (claim/reclaim/merge are the agent's explicit follow-up actions; archkit emits the plan, the agent acts). Returns { claimableLanes, barriers, inFlight, mergeOrder, exceptions, clean, conflicts, leasesExpired, blocked, counts, nextStep }. DISTINCT from archkit_session_state (the raw seven-slice board): conductor LAYERS the loop view on top — lane-grouped claimable work, the dependency-ordered merge queue, and the exceptions-to-review filter. When to use: at conductor session start to plan a dispatch pass, and after collecting worker handoffs to decide merges.",
+    description: "CGR 2.0 CONDUCTOR LOOP — the orchestration plan for one foreground (conductor) session pass (conductor-loop-hooks, ADR 0013). After /clear or compaction the foreground session ORCHESTRATES rather than codes: it reads this plan and runs the loop — (1) claim the next frontier CGR(s) under a lease (archkit advances the board; the lease TTL is cgr.leaseTtlHours, default 24h), (2) spawn ONE worker subagent per claimable LANE in an isolated git worktree (lanes have disjoint file-ownership, so they run in parallel; `barriers` are exclusive cross-cutting CGRs that run SOLO), (3) collect each worker's HANDOFF return, (4) DEEP-REVIEW ONLY the `exceptions` (partial completions, non-green verification, low ownership-accuracy, cross-lane conflicts) — rubber-stamp the `clean` set, (5) drain `convergence` as one integration point per LANE — rebase onto the branch tip, merge, then run the CONCRETE verify command the plan resolved for that lane (its CGR's verify-command, else the project test command, else none — ADR 0024) and RECORD the result with archkit_board_merged, (6) clear `unverifiedMerges` — CGRs that merged WITHOUT a green recorded verify, i.e. integration debt a later pass inherited. Read-only — folds the board, never writes (claim/reclaim/merge/verify are the agent's explicit follow-up actions; archkit emits the plan, the agent acts). Returns { claimableLanes, barriers, inFlight, mergeOrder, convergence, merged, unverifiedMerges, exceptions, clean, conflicts, leasesExpired, blocked, counts, nextStep }. DISTINCT from archkit_session_state (the raw seven-slice board): conductor LAYERS the loop view on top — lane-grouped claimable work, the dependency-ordered merge queue, and the exceptions-to-review filter. When to use: at conductor session start to plan a dispatch pass, and after collecting worker handoffs to decide merges.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
       const archDir = requireArchDir(cwd);
       const plan = conductorPlan(archDir);
       const c = plan.counts;
-      const idle = c.frontier === 0 && c.in_flight === 0 && c.merge_queue === 0 && c.leases_expired === 0;
+      // Integration debt keeps the conductor NON-idle: a merge with no green
+      // recorded verify is inherited work, not silence to be read as green.
+      const idle = c.frontier === 0 && c.in_flight === 0 && c.merge_queue === 0
+        && c.leases_expired === 0 && c.unverified_merges === 0;
       const out = { ...plan };
+      const debt = c.unverified_merges > 0
+        ? `, ${c.unverified_merges} UNVERIFIED merge${c.unverified_merges === 1 ? "" : "s"} to re-verify`
+        : "";
+      if (!c.unverified_merges) {
+        out.unverifiedMergesNote = c.merged
+          ? `No integration debt — all ${c.merged} recorded merge(s) carry a green verify outcome.`
+          : "No merges recorded yet — integration debt is derived from `merged` events, which archkit_board_merged appends after each integration point lands.";
+      }
       if (idle) {
-        out.conductorNote = "Conductor idle — no frontier to claim, nothing in flight, empty merge queue. The plan is purely derived from the board (.arch/board/events.ndjson + CGR files).";
+        out.conductorNote = "Conductor idle — no frontier to claim, nothing in flight, empty merge queue, no unverified merges. The plan is purely derived from the board (.arch/board/events.ndjson + CGR files).";
         out.nextStep = "Nothing to orchestrate. Run archkit_goal_intake to queue work, or /mcp__archkit__conductor to start a goal — workers append claimed/completed events this plan folds.";
       } else {
         const review = c.exceptions > 0 ? `, deep-review ${c.exceptions} exception${c.exceptions === 1 ? "" : "s"}` : "";
         const reclaim = c.leases_expired > 0 ? `, reclaim ${c.leases_expired} orphan lease${c.leases_expired === 1 ? "" : "s"}` : "";
-        out.nextStep = `Loop: claim ${c.claimableLanes} lane${c.claimableLanes === 1 ? "" : "s"}${c.barriers ? ` + ${c.barriers} barrier${c.barriers === 1 ? "" : "s"}` : ""}, ${c.in_flight} in flight, merge ${c.merge_queue} in dep order${review}${reclaim}. Spawn one worktree-isolated worker per claimable lane; merge sequentially with verify-after-each.`;
+        const bar = c.barriers ? ` + ${c.barriers} barrier${c.barriers === 1 ? "" : "s"}` : "";
+        out.nextStep = `Loop: claim ${c.claimableLanes} lane${c.claimableLanes === 1 ? "" : "s"}${bar}, ${c.in_flight} in flight, merge ${c.merge_queue} in dep order${review}${reclaim}${debt}. Verify after EACH integration point, then record it with archkit_board_merged.`;
       }
+      return out;
+    },
+  },
+
+  archkit_board_merged: {
+    description: "CGR 2.0 — RECORD an integration point landing, with its post-integration VERIFICATION outcome (merge-verify-command, ADR 0024). Appends one `merged` board event per CGR carrying { command, status, passed } so the folded board can distinguish a VERIFIED integration from an assumed-green one. Call this after EACH integration point in the conductor's convergence drain (step 5 of /mcp__archkit__conductor): rebase the lane onto the branch tip, merge it, run the verify command the plan emitted for that lane (its CGR's verify-command, else the project test command), then record the result here. archkit runs no git and no tests — it records what YOU report. The status is DERIVED, never taken on trust: no verifyCommand -> `unverified` (reason no-verify-command); verifyCommand + passed:true -> `green`; + passed:false -> `red` (reason verify-failed); a command with no passed value -> `unverified` (reason verify-not-run). Anything not green surfaces in archkit_conductor's `unverifiedMerges` as integration debt a later pass must clear — so recording an unverifiable merge is CORRECT and better than not recording it. Returns { slugs, lane, branch, verification, events, unverifiedMerges, nextStep }.",
+    inputSchema: z.object({
+      slugs: z.array(z.string().min(1)).optional().describe("The CGR slugs that landed in THIS integration point (a lane's group from the convergence plan). One `merged` event is appended per slug, all sharing the same verification outcome."),
+      slug: z.string().min(1).optional().describe("Single-CGR shorthand for `slugs`. Pass one or the other."),
+      lane: z.string().optional().describe("The lane whose integration point landed. Defaults to each CGR's declared lane."),
+      branch: z.string().optional().describe("The integration branch it landed on (cgr.integrationBranch, default main)."),
+      verifyCommand: z.string().optional().describe("The verify command actually run AFTER the merge, on the integration branch. Omit ONLY when none resolved — the merge is then recorded as unverified integration debt, never as green."),
+      verifySource: z.enum(["cgr", "project", "mixed", "none"]).optional().describe("Where the command came from: the CGR's own verify-command, the project test command, a union of both across the lane, or none."),
+      passed: z.boolean().optional().describe("Did the verify command PASS on the integration branch? Omitting it with a command records `unverified` (verify-not-run) — the honest state, not a green assumption."),
+      exitCode: z.number().optional().describe("Exit code of the verify run, when known."),
+      worker: z.string().optional().describe("Worker/agent that performed the integration, when known."),
+      note: z.string().optional().describe("Free-form note carried on the verification payload (e.g. which criteria the run covered)."),
+    }),
+    handler: async ({ slugs, slug, lane, branch, verifyCommand, verifySource, passed, exitCode, worker, note }) => {
+      const cwd = process.cwd();
+      const archDir = requireArchDir(cwd);
+      const list = [...(slugs || []), ...(slug ? [slug] : [])];
+      if (list.length === 0) {
+        throw archkitError("missing_slug", "archkit_board_merged requires slugs (or slug)", {
+          suggestion: "Pass the CGR slugs that landed in this integration point — archkit_conductor's convergence.groups[].slugs is exactly that list.",
+        });
+      }
+      const res = recordMerge(archDir, {
+        slugs: list, lane, branch, worker, verifyCommand, verifySource, passed, exitCode, note,
+      });
+      const plan = conductorPlan(archDir);
+      const out = {
+        slugs: res.slugs,
+        lane: lane || null,
+        branch: branch || null,
+        verification: res.verification,
+        events: res.merged.length,
+        unverifiedMerges: plan.unverifiedMerges,
+        mergeQueueRemaining: plan.counts.merge_queue,
+      };
+      if (!plan.unverifiedMerges.length) {
+        out.unverifiedMergesNote = "No integration debt — every recorded merge carries a green verify outcome.";
+      }
+      const v = res.verification;
+      out.nextStep = v.status === "green"
+        ? `Recorded ${res.slugs.length} merged CGR(s) VERIFIED green via \`${v.command}\`. ${plan.counts.merge_queue} left in the merge queue — converge the next lane onto the tip.`
+        : `Recorded ${res.slugs.length} merged CGR(s) as ${v.status} (${v.reason}) — integration debt. Re-run the verify on the branch and re-record with archkit_board_merged.`;
       return out;
     },
   },
