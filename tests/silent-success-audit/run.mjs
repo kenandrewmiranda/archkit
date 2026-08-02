@@ -205,6 +205,9 @@ await log("audit: every registered tool returns nextStep + silent-success notes"
         // The completed CGR's integration point lands: record it WITH its
         // post-integration verification outcome (merge-verify-command, ADR 0024).
         ["archkit_board_merged", { slugs: ["audit-goal"], lane: "default", branch: "main", verifyCommand: "npm test", verifySource: "project", passed: true }],
+        // Tier 3 of the hybrid conflict strategy (ADR 0013): a genuine collision
+        // is recorded AND escalated to a merge-reconcile CGR.
+        ["archkit_board_conflict", { slugs: ["audit-goal", "audit-goal-two"], files: ["src/features/auth/login.js"], lane: "default" }],
         // Fission on the now-completed goal exercises the error envelope (it's no
         // longer live) — the happy split path is covered in tests/cgr-fission/.
         ["archkit_goal_fission", { slug: "audit-goal", criteriaMet: [true] }],

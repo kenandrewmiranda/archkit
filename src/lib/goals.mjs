@@ -2819,11 +2819,60 @@ export function bucketBranch(archDir, { bucket, project } = {}) {
   return readQueueBranch(archDir) || queueBranchName();
 }
 
+// ── How a drained bucket LANDS (pr-based-landing) ────────────────────────────
+//
+// The terminal step of a CGR batch used to be a DIRECT merge to mainline
+// (`git switch main && git merge <branch>`). But a project with CI has a
+// `pull_request` trigger, and its own release docs promise "open a PR, merge to
+// main (CI runs on the PR)" — so the direct merge bypassed the very gate the
+// project documents. Landing is now CI-AWARE: with a CI provider configured
+// (.arch/config.json → cgr.finalize.ciCd) the guidance is push + open-a-PR +
+// WAIT for the required checks; with no provider it stays the direct merge, so
+// CI-less projects are unaffected.
+//
+// archkit still runs no git (instruct-not-act, ADR 0010) — only the EMITTED
+// string and its config gating change.
+
+export const LANDING_DIRECT = "direct-merge";
+export const LANDING_PR = "pull-request";
+
+// Does this cgr.finalize.ciCd value name an actual CI provider? "none"/""/absent
+// mean no CI; anything else (github-actions, custom, a provider name) means the
+// merge is gated by checks the PR runs.
+export function hasCiProvider(ciCd) {
+  const s = String(ciCd == null ? "" : ciCd).trim().toLowerCase();
+  return Boolean(s) && s !== "none" && s !== "false";
+}
+
+// The landing STRATEGY for a bucket, resolved from the finalize config. Split out
+// from the guidance string so callers can branch on the decision without parsing
+// prose. Tolerant — an unreadable config resolves to the direct merge.
+export function bucketLandingStrategy(archDir) {
+  let ciCd = "none";
+  try { ciCd = readFinalizeConfig(archDir).ciCd; } catch { ciCd = "none"; }
+  const ci = hasCiProvider(ciCd);
+  return { strategy: ci ? LANDING_PR : LANDING_DIRECT, ciCd: ciCd || "none", ci };
+}
+
 // Git guidance to LAND a drained bucket's branch into mainline. archkit only
 // EMITS this string — it never runs git (instruct-not-act, ADR 0010). Withheld
 // entirely on the archive-only path.
-export function bucketMergeGuidance({ branch, mainline }) {
-  return `git switch ${mainline} && git merge ${branch}`;
+//
+// With no `ciCd` (or ciCd "none") this is the historical direct merge, byte for
+// byte. With a CI provider it becomes push + open-a-PR, and the trailing shell
+// comment carries the WAIT instruction so the whole thing stays one copy-pasteable
+// line even when a caller relays only this string.
+export function bucketMergeGuidance({ branch, mainline, ciCd } = {}) {
+  if (!hasCiProvider(ciCd)) return `git switch ${mainline} && git merge ${branch}`;
+  const provider = String(ciCd).trim();
+  const wait =
+    `WAIT for the required ${provider} checks to pass on the PR before merging it — ` +
+    `do NOT merge to ${mainline} locally, the PR IS the gate`;
+  // GitHub Actions implies the gh CLI can open the PR; any other provider gets
+  // the push plus an instruction to open the PR however that provider does it.
+  return provider.toLowerCase() === "github-actions"
+    ? `git push -u origin ${branch} && gh pr create --base ${mainline} --head ${branch}  # then ${wait}`
+    : `git push -u origin ${branch}  # then open a PR from ${branch} into ${mainline}, and ${wait}`;
 }
 
 // Compose the end-of-bucket merge-or-archive choice for a completing goal, or
@@ -2837,13 +2886,19 @@ export function bucketCompletion(archDir, goals, slug) {
   if (!drain || !drain.drained) return null;
   const branch = bucketBranch(archDir, drain);
   const { mainline, source: mainlineSource } = detectMainline(archDir);
+  // CI-aware landing (pr-based-landing): a project with a CI provider lands
+  // through a PR so the pull_request-triggered checks actually gate the merge;
+  // one without keeps the direct merge.
+  const landing = bucketLandingStrategy(archDir);
   return {
     bucket: drain.bucket,          // 'project' | 'queue'
     project: drain.project,        // <slug> | null
     branch,
     mainline,
     mainlineSource,                // 'config' | 'detected' | 'default'
-    mergeGuidance: bucketMergeGuidance({ branch, mainline }),
+    landing: landing.strategy,     // 'pull-request' | 'direct-merge'
+    ciCd: landing.ciCd,            // the resolved cgr.finalize.ciCd
+    mergeGuidance: bucketMergeGuidance({ branch, mainline, ciCd: landing.ciCd }),
   };
 }
 

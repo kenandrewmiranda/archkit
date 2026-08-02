@@ -24,9 +24,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import {
   listGoals,
   loadGoal,
+  writeGoal,
+  nextOrderBase,
   statusOf,
   isGoalDone,
   laneOf,
@@ -1123,6 +1126,268 @@ export function recordMerge(archDir, {
   return { slugs: list, verification, merged };
 }
 
+// ── Tier 3: ESCALATE a genuine conflict to a merge-reconcile CGR (ADR 0013) ──
+//
+// ADR 0013's conflict strategy is a three-tier HYBRID, in order:
+//   1. pre-partition by ownership (pessimistic)  — partitionLanes, goals.mjs
+//   2. worktree-isolate                          — the conductor's dispatch unit
+//   3. escalate to a reconcile goal              — THIS block
+// Tiers 1+2 shipped; tier 3 did not, so a cross-lane collision could only ever
+// become an `exception` string for manual conductor review and the documented
+// escalation path dead-ended. Escalation MINTS a real CGR so the resolution gets
+// a fresh worker context, a dependency edge, and a place on the board.
+//
+// NAMING (the load-bearing disambiguation): archkit uses "reconcile" in TWO
+// unrelated senses and they must never be confusable in a fresh context —
+//   MERGE-sense   (HERE, ADR 0013 tier 3): resolve conflicting file CONTENT
+//                 produced by two CGRs that collided. Minted CGRs are always
+//                 prefixed `merge-reconcile-` and tagged feature `merge-reconcile`,
+//                 so the sense is greppable from the slug alone.
+//   PLACEMENT-sense (archkit_goal_reconcile / reconcileGoalsLayout, ADR 0020/0021):
+//                 move goal FILES into the folder their status dictates. Touches
+//                 no file content and no git.
+// Branch-level convergence is a third, separately named thing (ADR 0023).
+//
+// archkit still runs no git: escalation writes a CGR record, nothing else. The
+// worker the conductor dispatches for that CGR does the actual resolution.
+
+export const MERGE_RECONCILE_PREFIX = "merge-reconcile-";
+export const MERGE_RECONCILE_FEATURE = "merge-reconcile";
+
+// The deterministic slug for the reconcile CGR of a given conflict. Derived
+// PURELY from the sorted conflicting slugs, which is what makes minting
+// idempotent: folding the same conflict twice resolves to the same slug, and the
+// second mint sees the CGR already on disk. Long slug pairs are truncated with a
+// stable hash suffix so the derivation stays collision-free and filename-safe.
+export function reconcileSlugFor(slugs) {
+  const parts = uniqSorted(slugs);
+  if (parts.length === 0) return null;
+  const base = `${MERGE_RECONCILE_PREFIX}${parts.join("-")}`;
+  if (base.length <= 80) return base;
+  const h = crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 8);
+  return `${base.slice(0, 71)}-${h}`;
+}
+
+// Normalize a conflict's file list into concrete claim patterns. The derived
+// file-overlap slice reports an intersection of two DIFFERENT patterns as
+// "a∩b" (see fileOverlapConflicts); a reconcile CGR needs both sides as real
+// claims, so those are split back out. Event-sourced conflicts carry plain paths
+// and pass through untouched.
+export function conflictClaimFiles(files) {
+  return uniqSorted((files || []).flatMap((f) => String(f).split("∩")));
+}
+
+// Build (PURELY) the reconcile CGR record for one conflict. It is:
+//   - dependsOn every conflicting slug — so the board's frontier withholds it
+//     until the work it must reconcile has actually completed, and
+//   - exclusive — so partitionLanes pulls it out as a SOLO BARRIER stage rather
+//     than running it beside the lanes whose output it is merging.
+// The body carries the conflicting slugs and files verbatim, so a fresh worker
+// context can resolve the conflict without re-deriving it from the board.
+export function buildReconcileGoal({
+  slugs = [], files = [], lanes = [], source = "event", at = null, order, note = "",
+} = {}) {
+  const conflicting = uniqSorted(slugs);
+  if (conflicting.length === 0) return null;
+  const slug = reconcileSlugFor(conflicting);
+  const claims = conflictClaimFiles(files);
+  const laneList = uniqSorted(lanes);
+
+  const pretty = conflicting.join(" ↔ ");
+  const exitCriteria = [
+    `Each conflicting file has ONE reconciled version that preserves the intent of every colliding CGR (${conflicting.join(", ")})`,
+    `No conflict markers or duplicated/reverted hunks remain in the conflicting files`,
+    `The reconciled result is VERIFIED green by the project verify command — conflict-free is not the same as correct`,
+  ];
+
+  const body = [
+    `# Reconcile merge conflict: ${pretty}`,
+    ``,
+    `## Why`,
+    `Tier 3 of ADR 0013's hybrid conflict strategy (pre-partition → worktree-isolate →`,
+    `ESCALATE). Ownership pre-partitioning and worktree isolation did not keep these`,
+    `CGRs apart, so the collision is genuine and needs its own context to resolve.`,
+    ``,
+    `MERGE-sense reconcile — conflicting file CONTENT. This is NOT archkit_goal_reconcile`,
+    `(goal-FILE placement, ADR 0020/0021), which only moves goal files between`,
+    `.arch/goals/ folders and never touches content or git.`,
+    ``,
+    `## Conflicting CGRs`,
+    ...conflicting.map((s) => `- ${s}`),
+    ``,
+    `## Conflicting files`,
+    ...(claims.length ? claims.map((f) => `- ${f}`) : [`- (none recorded — inspect the colliding CGRs' owns/files-to-touch)`]),
+    ``,
+    `## Conflict provenance`,
+    `- source: ${source}`,
+    `- lanes: ${laneList.length ? laneList.join(", ") : "(unrecorded)"}`,
+    `- detected: ${at || "(unrecorded)"}`,
+    ...(note ? [`- note: ${note}`] : []),
+    ``,
+    `## Exit criteria`,
+    ...exitCriteria.map((c) => `- [ ] ${c}`),
+    ``,
+    `## How to resolve`,
+    `Read each conflicting CGR's landed change for the files above, then author ONE`,
+    `version that satisfies both. Do not pick a side by default — a revert of the`,
+    `other CGR's intent is a failed reconcile, not a resolved one.`,
+  ].join("\n");
+
+  return {
+    slug,
+    title: `Reconcile merge conflict: ${pretty}`,
+    exitCriteria,
+    dependsOn: conflicting,
+    // Solo barrier: it merges other lanes' output, so it must not run beside them.
+    exclusive: true,
+    feature: MERGE_RECONCILE_FEATURE,
+    owns: claims,
+    filesToTouch: claims,
+    ...(order !== undefined ? { order } : {}),
+    why:
+      `Escalated by archkit (ADR 0013 tier 3) — ${conflicting.join(" and ")} collided on ` +
+      `${claims.length ? claims.join(", ") : "shared files"}. MERGE-sense reconcile (file CONTENT), ` +
+      `NOT archkit_goal_reconcile (goal-file placement, ADR 0020/0021).`,
+    body,
+    sourceAsk: `cross-lane conflict between ${conflicting.join(" and ")}`,
+  };
+}
+
+// Mint the reconcile CGR for ONE conflict, IDEMPOTENTLY. The slug is derived
+// deterministically from the conflicting slugs, so a second call (or a second
+// fold of the same conflict event) sees the CGR already live or already done and
+// returns minted:false instead of writing a duplicate. Writes exactly one goal
+// file; appends nothing and runs nothing.
+export function escalateConflict(archDir, {
+  slugs = [], files = [], lanes = [], source = "event", at = null, note = "", order,
+} = {}) {
+  const conflicting = uniqSorted(slugs);
+  if (conflicting.length === 0) throw new Error("escalateConflict requires the conflicting slugs");
+  const slug = reconcileSlugFor(conflicting);
+
+  // Idempotency: live copy, or one already archived in done/.
+  let existing = null;
+  try { existing = loadGoal(archDir, slug); } catch { existing = null; }
+  if (existing) {
+    return { slug, minted: false, reason: "already-queued", conflictSlugs: conflicting, goal: null, path: null };
+  }
+  if (isGoalDone(archDir, slug)) {
+    return { slug, minted: false, reason: "already-resolved", conflictSlugs: conflicting, goal: null, path: null };
+  }
+
+  let resolvedOrder = order;
+  if (resolvedOrder === undefined) {
+    try { resolvedOrder = nextOrderBase(archDir); } catch { resolvedOrder = undefined; }
+  }
+  const goal = buildReconcileGoal({ slugs: conflicting, files, lanes, source, at, note, order: resolvedOrder });
+  const written = writeGoal(archDir, goal);
+  return {
+    slug,
+    minted: true,
+    reason: "minted",
+    conflictSlugs: conflicting,
+    files: goal.owns,
+    exclusive: true,
+    dependsOn: goal.dependsOn,
+    goal,
+    path: written.filepath,
+  };
+}
+
+// Is a board conflict ESCALATABLE to tier 3?
+//   event-sourced      — always. Someone REPORTED a real collision; that is the
+//                        genuine merge conflict ADR 0013 escalates.
+//   derived cross-lane — only with includeDerived. A file-overlap among live CGRs
+//                        is a PREDICTION, and predictions are what tiers 1+2 exist
+//                        to handle; auto-minting for every predicted overlap would
+//                        bury the board in reconcile CGRs for conflicts that never
+//                        happen. Surfaced as a candidate, minted only on request.
+//   derived same-lane  — never. Same lane = sequential in one worker context.
+export function isEscalatableConflict(conflict, { includeDerived = false } = {}) {
+  const c = conflict || {};
+  if (!Array.isArray(c.slugs) || c.slugs.length < 2) return false;
+  if (c.source === "event") return true;
+  if (includeDerived !== true || c.crossLane !== true) return false;
+  // A reconcile CGR OWNS the files it was minted to reconcile, so it necessarily
+  // overlaps the CGRs it depends on. Escalating that predicted overlap would mint
+  // a reconcile CGR for the reconcile CGR, forever. Genuine (event) collisions
+  // involving one still escalate — only the prediction is suppressed.
+  return !c.slugs.some((s) => String(s).startsWith(MERGE_RECONCILE_PREFIX));
+}
+
+// READ-ONLY escalation view: for every escalatable conflict on the board, the
+// reconcile slug it maps to and whether that CGR already exists. This is what
+// lets conductorPlan surface "this collision has not been escalated yet" without
+// writing anything.
+export function conflictEscalations(archDir, { board, now = new Date().toISOString(), includeDerived = false } = {}) {
+  const state = board || sessionState(archDir, { now });
+  const out = [];
+  for (const c of state.conflicts || []) {
+    if (!isEscalatableConflict(c, { includeDerived })) continue;
+    const slugs = uniqSorted(c.slugs);
+    const slug = reconcileSlugFor(slugs);
+    let live = null;
+    try { live = loadGoal(archDir, slug); } catch { live = null; }
+    const done = live ? false : isGoalDone(archDir, slug);
+    out.push({
+      reconcileSlug: slug,
+      slugs,
+      files: conflictClaimFiles(c.files),
+      source: c.source || "event",
+      crossLane: c.crossLane ?? null,
+      at: c.at || null,
+      escalated: Boolean(live) || done,
+      status: live ? statusOf(live) : done ? "completed" : null,
+    });
+  }
+  out.sort((a, b) => (a.reconcileSlug < b.reconcileSlug ? -1 : a.reconcileSlug > b.reconcileSlug ? 1 : 0));
+  return out;
+}
+
+// Sweep the board and mint a reconcile CGR for every escalatable conflict that
+// does not have one yet. Idempotent end-to-end: re-running over an already
+// escalated board mints nothing. Returns { minted, skipped, escalations }.
+export function escalateConflicts(archDir, { board, now = new Date().toISOString(), includeDerived = false } = {}) {
+  const escalations = conflictEscalations(archDir, { board, now, includeDerived });
+  const minted = [];
+  const skipped = [];
+  for (const e of escalations) {
+    if (e.escalated) { skipped.push({ ...e, reason: "already-escalated" }); continue; }
+    const res = escalateConflict(archDir, {
+      slugs: e.slugs, files: e.files, source: e.source, at: e.at || now,
+    });
+    if (res.minted) minted.push(res); else skipped.push({ ...e, reason: res.reason });
+  }
+  return { minted, skipped, escalations };
+}
+
+// The WRITE entry the conductor calls when a real collision surfaces: append the
+// `conflict` event (the durable record — the fold is the source of truth) and, by
+// default, escalate it to a merge-reconcile CGR. The event append is intentionally
+// NOT deduped (the log is append-only by contract, ADR 0014); the MINT is what's
+// idempotent, so folding the same conflict twice still yields ONE reconcile CGR.
+export function recordConflict(archDir, {
+  slugs = [], slug, files = [], lane = null, lanes = [], note = "",
+  escalate = true, now = new Date().toISOString(),
+} = {}) {
+  const list = uniqSorted([...(Array.isArray(slugs) ? slugs : []), ...(slug ? [slug] : [])]);
+  if (list.length < 2) {
+    throw new Error("recordConflict requires at least two conflicting slugs");
+  }
+  const fileList = uniqSorted(files);
+  const laneList = uniqSorted([...(Array.isArray(lanes) ? lanes : []), ...(lane ? [lane] : [])]);
+  const event = appendEvent(archDir, {
+    type: "conflict", slugs: list, files: fileList,
+    ...(laneList.length ? { lanes: laneList } : {}),
+    ...(note ? { note } : {}),
+    at: now,
+  });
+  const reconcile = escalate
+    ? escalateConflict(archDir, { slugs: list, files: fileList, lanes: laneList, source: "event", at: now, note })
+    : null;
+  return { slugs: list, files: fileList, lanes: laneList, event, reconcile };
+}
+
 // The deep-review EXCEPTIONS (exit-criterion 1: "deep-review only exceptions").
 // A lean conductor rubber-stamps the clean returns and spends attention only on
 // what's risky. An item is an exception when ANY of:
@@ -1189,6 +1454,16 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
   const convergence = laneConvergence(archDir, { now, board, mergeOrder });
   const review = conductorExceptions(board, { ownershipFloor });
 
+  // Tier 3 escalation status (ADR 0013): which conflicts already have a
+  // merge-reconcile CGR and which are still dead-ending as a bare exception
+  // string. READ-ONLY here — minting is an explicit write step
+  // (archkit_board_conflict / escalateConflicts), never a side effect of planning.
+  // includeDerived stays FALSE: a predicted file-overlap is what tiers 1+2 exist
+  // to handle, and it already surfaces in `conflicts`/`exceptions`. Only a
+  // REPORTED (event) collision counts as an unescalated tier-3 dead-end here.
+  const escalations = conflictEscalations(archDir, { board, now, includeDerived: false });
+  const pendingEscalations = escalations.filter((e) => !e.escalated);
+
   // Claimable = frontier CGRs not already in-flight, grouped by lane. Exclusive
   // ones are solo barriers (their own dispatch unit).
   const claimableLanes = {};
@@ -1227,6 +1502,7 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
     blocked: board.blocked.length,
     exceptions: review.exceptions.length,
     leases_expired: board.leases_expired.length,
+    escalations_pending: pendingEscalations.length,
   };
 
   return {
@@ -1242,6 +1518,8 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
     exceptions: review.exceptions,
     clean: review.clean,
     conflicts: review.conflicts,
+    conflictEscalations: escalations,
+    pendingEscalations,
     leasesExpired: board.leases_expired,
     blocked: board.blocked,
     counts,
