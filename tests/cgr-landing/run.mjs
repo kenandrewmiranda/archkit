@@ -178,14 +178,19 @@ test("EC4: a real drained bucket emits guidance only — no branch is created or
 
 // ── The tool description documents the CI-aware landing ──────────────────────
 
-test("archkit_goal_complete's description documents both landing branches", () => {
+// The two landing branches themselves are asserted above against the EMITTED
+// mergeGuidance (the string the agent actually relays), which is the load-bearing
+// contract. The tool description no longer restates those git commands verbatim:
+// tool-description-diet moved that prose to ADR 0025 / docs/mcp-tool-surface.md,
+// leaving the description to ROUTE the reader. This asserts the routing survives.
+test("archkit_goal_complete's description routes the reader to the landing choice", () => {
   const d = tools.archkit_goal_complete.description;
-  assert.match(d, /CI-AWARE/);
-  assert.match(d, /pull-request/);
-  assert.match(d, /direct-merge/);
-  assert.match(d, /cgr\.finalize\.ciCd/, "it names the config key that gates it");
-  assert.match(d, /gh pr create/, "it shows the PR path");
-  assert.match(d, /git switch <mainline> && git merge <branch>/, "and keeps the no-CI path documented");
+  assert.match(d, /bucketCompletion/, "it names the field that carries the choice");
+  assert.match(d, /AskUserQuestion/, "it says to present the choice to the user");
+  assert.match(d, /mergeGuidance/, "it names the emitted guidance");
+  assert.match(d, /VERBATIM/, "and says to relay it unedited");
+  assert.match(d, /never runs git/, "it keeps the instruct-not-act framing");
+  assert.match(d, /ADR 0025/, "and points at the decision that holds the detail");
 });
 
 console.log("");

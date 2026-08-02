@@ -148,7 +148,11 @@ await log("tools/list returns all 49 tools", async () => {
         "archkit_worklog",
       ]);
       const review = tools.find(t => t.name === "archkit_review");
-      assert.ok(review.description.includes("When to use"), "description should include 'When to use' prose");
+      // Descriptions must still say WHEN to reach for the tool. The wording moved
+      // from "When to use:" to the shorter "Trigger:" in tool-description-diet;
+      // either satisfies the contract (docs/mcp-tool-surface.md).
+      assert.ok(/Trigger:|When to use/.test(review.description),
+        "description should say when to use the tool");
     });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
