@@ -1,0 +1,16 @@
+{
+  "hash": "f8a9b2b65b58",
+  "title": "Compute conductor claimableLanes from ownership disjointness, not lane grouping alone",
+  "why": "archkit_conductor emitted three lanes as concurrently claimable, but pr-based-landing (lane-lane-reconcile-stage) owns src/lib/goals.mjs — the same file all three goals in lane-frontmatter-colon-escaping own. Dispatching the emitted plan verbatim would have put two parallel worktree workers on the same file and guaranteed a clobber. The conductor already computes the file-overlap conflict set; claimableLanes should be filtered by it rather than leaving the human to catch it.",
+  "exitCriteria": [
+    "claimableLanes excludes any lane whose frontier CGRs have owned-path overlap with another lane already in the claimable set, so the emitted set is safe to dispatch verbatim in parallel",
+    "The excluded lane is still surfaced (e.g. a deferredLanes or blockedByOverlap slice) with the overlapping paths and the lane it collides with, so the conductor knows why it was held and when it frees up",
+    "Per-CGR granularity is preserved: a lane is not withheld wholesale when only some of its frontier CGRs overlap — the non-overlapping ones stay claimable",
+    "The coarse tests/ path does not by itself withhold a lane, since nearly every CGR declares it; overlap detection distinguishes a shared directory from a shared file",
+    "A test asserts that two lanes owning the same src file are never both emitted as claimable in one pass"
+  ],
+  "contextExcerpt": "Lane-integration dispatch pass, 2026-08-02. The conductor's own conflicts[] array already listed {finalize-project-inheritance, pr-based-landing} and {payload-goal-path, pr-based-landing} on src/lib/goals.mjs with crossLane:true, yet both lanes were still emitted as claimable in the same pass.",
+  "patternName": null,
+  "source": "goal-defer",
+  "createdAt": "2026-08-02T17:51:37.156Z"
+}
