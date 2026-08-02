@@ -450,11 +450,12 @@ export const tools = {
   },
 
   archkit_finalize_config: {
-    description: "Read or set .arch/config.json -> cgr.finalize, the per-project policy for the wrap-up goal archkit_goal_intake auto-appends to every batch: changelog, docs, commit, plus opt-in push / release / deploy-to-dev (ADR 0018). Call with no fields (or show:true) to read; enabled:false turns the feature off. Defaults: changelog/docs/commit ON, outward-facing steps OFF. Trigger: intake returned `finalize.setup` -- present the steps with AskUserQuestion (which steps, github-actions vs custom CI, deploy command) and save the answers here, which stamps configured:true so intake stops nudging.",
+    description: "Read or set .arch/config.json -> cgr.finalize, the per-project policy for the wrap-up goal archkit_goal_intake auto-appends to every batch: changelog, docs, commit, plus opt-in version-bump / push / release / deploy-to-dev (ADR 0018). Call with no fields (or show:true) to read; enabled:false turns the feature off. Defaults: changelog/docs/commit ON, the rest OFF. Trigger: intake returned `finalize.setup` -- present the steps with AskUserQuestion (which steps, github-actions vs custom CI, deploy command) and save the answers here, which stamps configured:true so intake stops nudging.",
     inputSchema: z.object({
       show: z.boolean().optional().describe("Read-only: return the current resolved finalize config without writing."),
       enabled: z.boolean().optional().describe("Master switch. false disables the whole feature (no finalize goal appended at intake)."),
       steps: z.object({
+        version: z.boolean().optional().describe("Bump the release version in every file the project's version check covers, then re-run that check. Ordered before changelog/commit so both describe the version being cut (off by default)."),
         changelog: z.boolean().optional().describe("Update the changelog."),
         docs: z.boolean().optional().describe("Update documentation (README / docs/)."),
         commit: z.boolean().optional().describe("Finalize commits with notes/comments + the project's commit trailer."),

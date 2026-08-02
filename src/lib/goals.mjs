@@ -2162,9 +2162,10 @@ export function leaseTtlHours(archDir) {
 // ── CGR finalization (cgr.finalize) ──────────────────────────────────────────
 // A configurable wrap-up goal auto-appended to every intake batch so a sprawling
 // ask always ends with the release chores done in a fresh, focused context:
-// update the changelog, refresh docs, finalize commits with notes, push, set up a
-// release, deploy to development. Each step is opt-in/out per project. The
-// outward-facing steps (push / release / deployDev) default OFF so they are a
+// bump the release version, update the changelog, refresh docs, finalize commits
+// with notes, push, set up a release, deploy to development. Each step is
+// opt-in/out per project. The outward-facing steps (version / push / release /
+// deployDev) default OFF so they are a
 // deliberate choice, never a surprise the agent takes on its own. Persisted under
 // .arch/config.json → cgr.finalize so the one-time setup isn't re-asked.
 //
@@ -2172,6 +2173,12 @@ export function leaseTtlHours(archDir) {
 // the finalize goal carries the steps as exit-criteria; the agent executes the
 // local ones (changelog/docs/commit) and instructs the user for push/release/deploy.
 export const FINALIZE_STEPS = [
+  // `version` is FIRST on purpose: the changelog entry and the commit message both
+  // describe the version being cut, so the bump has to land before either of them
+  // runs. Default OFF like the other outward-facing steps — cutting a version is a
+  // deliberate act, never something the wrap-up does on its own.
+  { key: "version", label: "Bump the release version", default: false,
+    criterion: "Release version bumped in every file the project's version check covers" },
   { key: "changelog", label: "Update the changelog", default: true,
     criterion: "CHANGELOG updated with an entry covering this batch's changes" },
   { key: "docs", label: "Update documentation", default: true,
@@ -2278,15 +2285,94 @@ function inheritedBatchProject(archDir, batchSlugs) {
   return only;
 }
 
+// ── Version-sync detection (the `version` finalize step) ─────────────────────
+// A release only publishes when the git tag matches the version in the project's
+// manifests, and most projects enforce that with their own check script. The
+// finalize goal therefore must name the ACTUAL files that check compares rather
+// than guess one manifest: archkit reads the project's version-check script and
+// the manifests that exist on disk, so the criteria say "bump these two files and
+// re-run this command" instead of "bump the version somehow".
+//
+// Detection is best-effort and never throws — with nothing detected the step still
+// carries its generic criterion, which is strictly better than no step at all.
+const VERSION_FILE_CANDIDATES = [
+  "package.json",
+  ".claude-plugin/plugin.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "composer.json",
+  "manifest.json",
+  "VERSION",
+  "version.txt",
+];
+
+// The package.json script that verifies version consistency ("check:versions",
+// "version:sync", …). Must mention a version AND an act of checking, so ordinary
+// scripts like `version` (npm's own lifecycle hook) don't get mistaken for one.
+function versionCheckScript(pkg) {
+  const scripts = pkg && typeof pkg.scripts === "object" && pkg.scripts ? pkg.scripts : {};
+  const name = Object.keys(scripts).find((n) => /version/i.test(n) && /check|sync|verify/i.test(n));
+  return name ? { name, script: String(scripts[name] || ""), command: `npm run ${name}` } : null;
+}
+
+// The manifest paths a check script actually reads — pulled from the script file
+// the npm script invokes. This is what makes the criteria match the project's own
+// definition of "in sync" rather than archkit's guess.
+function versionFilesReferencedBy(root, script) {
+  const m = /([\w./-]+\.(?:mjs|cjs|js|ts|sh|py))\b/.exec(String(script || ""));
+  if (!m) return [];
+  let src = "";
+  try { src = fs.readFileSync(path.join(root, m[1]), "utf8"); } catch { return []; }
+  const out = [];
+  for (const lit of src.match(/["'`][^"'`\n]+\.(?:json|toml|txt|ya?ml)["'`]/g) || []) {
+    const p = lit.slice(1, -1);
+    if (!out.includes(p) && fs.existsSync(path.join(root, p))) out.push(p);
+  }
+  return out;
+}
+
+// { command, files, version } for the project owning archDir. Exported so the
+// finalize criteria and tests read the same detection.
+export function detectVersionSync(archDir) {
+  const root = path.dirname(archDir);
+  let pkg = null;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")); } catch { pkg = null; }
+  const check = versionCheckScript(pkg);
+  const files = [];
+  for (const p of VERSION_FILE_CANDIDATES) if (fs.existsSync(path.join(root, p))) files.push(p);
+  for (const p of versionFilesReferencedBy(root, check?.script)) if (!files.includes(p)) files.push(p);
+  return {
+    command: check ? check.command : "",
+    files,
+    version: pkg && typeof pkg.version === "string" ? pkg.version : "",
+  };
+}
+
+// The `version` step expands to TWO criteria: bump every covered file, then re-run
+// the check — the re-run is the part that catches a half-done bump before the
+// commit step freezes it into history.
+function versionExitCriteria(archDir, base) {
+  const { command, files, version } = detectVersionSync(archDir);
+  const where = files.length ? `: ${files.join(", ")}` : "";
+  const cur = version ? ` (currently ${version})` : "";
+  const cmd = command ? ` (\`${command}\`)` : "";
+  return [
+    `${base}${where}${cur}`,
+    `Version sync re-verified${cmd} and green BEFORE the commit step`,
+  ];
+}
+
 export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk = "" } = {}) {
   const cfg = readFinalizeConfig(archDir);
   if (!cfg.enabled) return null;
   const enabled = FINALIZE_STEPS.filter((s) => cfg.steps[s.key]);
   if (enabled.length === 0) return null;
   const outward = cfg.steps.push || cfg.steps.release || cfg.steps.deployDev;
-  const exitCriteria = enabled.map((s) => {
-    if (s.key === "deployDev" && cfg.deployCommand) return `${s.criterion} (\`${cfg.deployCommand}\`)`;
-    return s.criterion;
+  // flatMap: most steps are one criterion, but `version` expands to bump + re-check.
+  const exitCriteria = enabled.flatMap((s) => {
+    if (s.key === "deployDev" && cfg.deployCommand) return [`${s.criterion} (\`${cfg.deployCommand}\`)`];
+    if (s.key === "version") return versionExitCriteria(archDir, s.criterion);
+    return [s.criterion];
   });
   const ciCdNote = cfg.ciCd && cfg.ciCd !== "none" ? ` CI/CD: ${cfg.ciCd}.` : "";
   const why =
@@ -2305,7 +2391,10 @@ export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk =
     ...(project ? { project } : {}),
     exclusive: true,
     feature: "finalize",
-    owns: ["CHANGELOG.md", "CHANGELOG", "README.md", "docs/**"],
+    // The version step edits the project's manifests, so the barrier must own them
+    // too — otherwise it writes files no lane declared.
+    owns: ["CHANGELOG.md", "CHANGELOG", "README.md", "docs/**",
+      ...(cfg.steps.version ? detectVersionSync(archDir).files : [])],
     order,
     why,
     sourceAsk,
