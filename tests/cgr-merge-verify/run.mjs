@@ -349,8 +349,10 @@ await testAsync("EC3: the conductor prompt renders the integration-debt ledger",
   assert.match(text, /INTEGRATION DEBT/, "the debt ledger is a step of the loop, not a footnote");
   assert.match(text, /relay-cgr \(lane relay\): unverified/);
   assert.match(text, /archkit_board_merged/, "the prompt names the tool that clears the debt");
-  // Step 5 still emits a CONCRETE command for the lane still awaiting integration.
-  assert.match(text, /3\. VERIFY \(from project\): npm test/);
+  // Step 5 still emits a CONCRETE command for the lane still awaiting
+  // integration — now in the terse graph form (ADR 0026): the resolved command
+  // plus its source, hoisted into the per-point template when every point shares it.
+  assert.match(text, /✓`npm test`\(project\)/);
 });
 
 await testAsync("EC3: with no debt the prompt says so rather than staying silent", async () => {

@@ -322,12 +322,15 @@ await testAsync("EC4: the conductor prompt's step 5 emits the lane-grouped plan,
     text = msg.messages[0].content.text;
   } finally { process.chdir(cwd); }
 
-  assert.match(text, /5\. CONVERGE \+ MERGE/, "step 5 is the convergence stage");
-  assert.match(text, /integration points \(one per lane\)/);
-  assert.match(text, /lane board: board-cgr/);
-  assert.match(text, /lane relay: relay-cgr/);
-  assert.match(text, /PRECONDITION \(rebase-onto-tip\)/, "the rebase precondition is in the prompt");
-  assert.match(text, /FALLBACK \(path-extract\)/, "the path-extract fallback is in the prompt");
+  // The prompt renders through the shared graph contract (ADR 0026), so step 5
+  // is the same convergence plan in terse form: a substitution template for the
+  // per-point commands plus one leaf per integration point.
+  assert.match(text, /^5 .* CONVERGE \+ MERGE/m, "step 5 is the convergence stage");
+  assert.match(text, /2 points \(1\/lane\)/, "one integration point per lane");
+  assert.match(text, /1\) board: board-cgr/);
+  assert.match(text, /2\) relay: relay-cgr/);
+  assert.match(text, /git -C W fetch && git -C W rebase main/, "the rebase-onto-tip precondition is in the prompt");
+  assert.match(text, /git checkout W -- <owns>/, "the path-extract fallback is in the prompt");
   assert.ok(!/MERGE the queue SEQUENTIALLY in this dependency order: /.test(text),
     "the old flat slug list is gone");
 });

@@ -19,7 +19,11 @@
 
 import fs from "node:fs";
 import { findArchDir } from "../lib/shared.mjs";
-import { conductorPlan, renderConvergencePlan } from "../lib/board.mjs";
+import { conductorPlan } from "../lib/board.mjs";
+// The MCP output contract (ADR 0026): every prompt below renders through the
+// shared graph/symbol vocabulary in format.mjs — never hand-rolled prose, never
+// ANSI. `conductorGraph` is the whole orchestration pass in graph form.
+import { SYM, GLYPH, LEGEND, conductorGraph, stats, tree, strong } from "../lib/format.mjs";
 import {
   getActiveGoal,
   triageNextGoal,
@@ -59,7 +63,7 @@ export function doneTodayTally(archDir, today) {
   try { done = goalsCompletedOn(archDir, today); } catch { done = []; }
   if (!done.length) return "";
   const names = done.map((g) => clampLine(g.title || g.slug)).join(", ");
-  return `✓ Done today (${done.length}): ${names}`;
+  return `${SYM.ok} Done today (${done.length}): ${names}`;
 }
 
 // Prepended to an injected goal payload so the agent treats this as a relay
@@ -76,7 +80,7 @@ export function relayHeader(slug, status = "in-progress", { tallyLine = "", wind
   if (tallyLine) lines.push(tallyLine, ``);
   lines.push(
     `[archkit CGR relay] Active goal: ${slug}${inTesting ? " (TESTING — edits applied, verification pending)" : ""}`,
-    `Work ONLY this goal to its exit-criteria. Do not start other goals in this context.`,
+    `${SYM.action} Work ONLY this goal to its exit-criteria. Do not start other goals in this context.`,
   );
   // Attention-gradient wind-down policy (ADR 0015): the tail of the context window
   // is for handoff authoring, not for accepting more work. Surface the threshold so
@@ -84,18 +88,18 @@ export function relayHeader(slug, status = "in-progress", { tallyLine = "", wind
   // your fill; it emits the policy, you act on it).
   if (!inTesting && windDownThreshold != null) {
     lines.push(
-      `Wind-down policy: once your context fill reaches ~${windDownThreshold}, STOP accepting new goals and author your handoff with archkit_goal_handoff ${slug} (done+evidence, decisions, remaining, continuation-notes) — the degraded tail is for writing down, not novel work.`,
+      `${SYM.attention} Wind-down policy: once your context fill reaches ~${windDownThreshold}, STOP accepting new goals and author your handoff with archkit_goal_handoff ${slug} (done+evidence, decisions, remaining, continuation-notes) — the degraded tail is for writing down, not novel work.`,
     );
   }
   if (inTesting) {
     lines.push(
-      `This goal is in the verification window: its edits already landed. Re-run the verify-command and confirm every exit-criterion is green, then call archkit_goal_complete ${slug} (it re-runs the gate and refuses on red). It is NOT done until verified.`,
-      `First, restate in ONE sentence what was already built and what still needs verifying — then verify it.`,
+      `${SYM.attention} This goal is in the verification window: its edits already landed. Re-run the verify-command and confirm every exit-criterion is green, then call archkit_goal_complete ${slug} (it re-runs the gate and refuses on red). It is NOT done until verified.`,
+      `${SYM.action} First, restate in ONE sentence what was already built and what still needs verifying — then verify it.`,
     );
   } else {
     lines.push(
-      `When ALL exit-criteria are met, call archkit_goal_complete ${slug} — that releases the Stop-hook guard and advances the queue. If edits are applied but you want a later session to verify, park it with archkit_goal_testing ${slug}; to deliberately set it aside, archkit_goal_hold ${slug}.`,
-      `First, restate this goal in ONE sentence (what you're about to build and its done-condition) — then start.`,
+      `${SYM.ok} When ALL exit-criteria are met, call archkit_goal_complete ${slug} — that releases the Stop-hook guard and advances the queue. If edits are applied but you want a later session to verify, park it with archkit_goal_testing ${slug}; to deliberately set it aside, archkit_goal_hold ${slug}.`,
+      `${SYM.action} First, restate this goal in ONE sentence (what you're about to build and its done-condition) — then start.`,
     );
   }
   lines.push(``, `────────────────────────────────────────`, ``);
@@ -127,31 +131,31 @@ export function relayTriageChoice(triage) {
   ];
   if (queue.length) {
     lines.push(
-      `  • Advance the queue — ${queue.length} ungrouped goal${queue.length === 1 ? "" : "s"} (shared branch cgr-queue-<date>), next: ${triage.queueNext}`,
-      `      → archkit_goal_start ${triage.queueNext}`,
+      `  ${SYM.action} Advance the queue — ${queue.length} ungrouped goal${queue.length === 1 ? "" : "s"} (shared branch cgr-queue-<date>), next: ${triage.queueNext}`,
+      `      ${GLYPH.flow} archkit_goal_start ${triage.queueNext}`,
     );
   }
   for (const [proj, slugs] of projectEntries) {
     lines.push(
-      `  • Project ${proj} — ${slugs.length} goal${slugs.length === 1 ? "" : "s"} (branch feat/${proj}), next: ${triage.projectNext[proj]}`,
-      `      → archkit_goal_start ${triage.projectNext[proj]}`,
+      `  ${SYM.action} Project ${proj} — ${slugs.length} goal${slugs.length === 1 ? "" : "s"} (branch feat/${proj}), next: ${triage.projectNext[proj]}`,
+      `      ${GLYPH.flow} archkit_goal_start ${triage.projectNext[proj]}`,
     );
   }
   if (testing.count) {
     lines.push(
-      `  • Drain verification debt — ${testing.count} goal${testing.count === 1 ? "" : "s"} in testing (${testing.slugs.join(", ")})`,
-      `      → archkit_goal_start ${testing.slugs[0]}, re-run its verify-command, then archkit_goal_complete`,
+      `  ${SYM.attention} Drain verification debt — ${testing.count} goal${testing.count === 1 ? "" : "s"} in testing (${testing.slugs.join(", ")})`,
+      `      ${GLYPH.flow} archkit_goal_start ${testing.slugs[0]}, re-run its verify-command, then archkit_goal_complete`,
     );
   }
   if (onHold.count) {
     lines.push(
-      `  • Resume parked work — ${onHold.count} on-hold goal${onHold.count === 1 ? "" : "s"} (${onHold.slugs.join(", ")})`,
-      `      → archkit_goal_start ${onHold.slugs[0]}`,
+      `  ${SYM.attention} Resume parked work — ${onHold.count} on-hold goal${onHold.count === 1 ? "" : "s"} (${onHold.slugs.join(", ")})`,
+      `      ${GLYPH.flow} archkit_goal_start ${onHold.slugs[0]}`,
     );
   }
   lines.push(
-    `  • Plan something new — none of the above; decompose a fresh ask`,
-    `      → run /mcp__archkit__intake (archkit_goal_intake) to split a new request into goals`,
+    `  ${SYM.action} Plan something new — none of the above; decompose a fresh ask`,
+    `      ${GLYPH.flow} run /mcp__archkit__intake (archkit_goal_intake) to split a new request into goals`,
     ``,
     `If they just want to keep moving, the frictionless default is: ${triage.recommended || "(none)"}.`,
     `Call exactly ONE archkit_goal_start after they pick — it marks the goal in-progress, injects its payload, and records the branch. Nothing is started until they choose.`,
@@ -247,8 +251,8 @@ export const prompts = {
       lines.push(
         `Present these to the user with the AskUserQuestion tool as a MULTI-SELECT (multiSelect: true) — one option per proposal (label by title), so they can pick any subset; the tool also lets them pick all or none.`,
         `Then act on their choice:`,
-        `  • promote the chosen ones: archkit_goal_promote with hashes:[...] (or all:true if they picked everything)`,
-        `  • dismiss the rest if they explicitly reject them: archkit_goal_dismiss with hashes:[...]`,
+        `  ${SYM.action} promote the chosen ones: archkit_goal_promote with hashes:[...] (or all:true if they picked everything)`,
+        `  ${SYM.error} dismiss the rest if they explicitly reject them: archkit_goal_dismiss with hashes:[...]`,
         `Leave anything they neither promote nor dismiss as pending. After promoting, tell them to /clear then /mcp__archkit__conductor to start the first new goal.`
       );
       return textMessage(lines.join("\n"));
@@ -276,49 +280,19 @@ export const prompts = {
         const single = singleGoalRelayMessage(archDir);
         if (single) return textMessage(single);
         return textMessage([
-          `[archkit CGR] Nothing to advance — no eligible goal, no parallel lanes, empty merge queue.`,
+          `[archkit CGR] ${SYM.ok} Nothing to advance — no eligible goal, no parallel lanes, empty merge queue.`,
           `The board is purely derived from .arch/board/events.ndjson + the CGR files.`,
-          `Decompose a new ask with /mcp__archkit__intake (archkit_goal_intake), then /clear and run /mcp__archkit__conductor.`,
+          `${SYM.action} Decompose a new ask with /mcp__archkit__intake (archkit_goal_intake), then /clear and run /mcp__archkit__conductor.`,
         ].join("\n"));
       }
-      const lines = [
-        `[archkit CGR conductor] Orchestration pass — you are the CONDUCTOR, not a worker. Do NOT code in this context; dispatch and integrate.`,
-        ``,
-        `Board: ${c.frontier} frontier (${c.claimableLanes} claimable lane${c.claimableLanes === 1 ? "" : "s"}${c.barriers ? ` + ${c.barriers} barrier${c.barriers === 1 ? "" : "s"}` : ""}), ${c.in_flight} in flight, ${c.merge_queue} to merge, ${c.blocked} blocked, ${c.exceptions} exception${c.exceptions === 1 ? "" : "s"}, ${c.leases_expired} expired lease${c.leases_expired === 1 ? "" : "s"}.`,
-        ``,
-        `Run the loop:`,
-        `1. RECLAIM ${c.leases_expired} orphan lease${c.leases_expired === 1 ? "" : "s"}${c.leases_expired ? ` (${plan.leasesExpired.map((l) => l.slug).join(", ")})` : ""} — their TTL elapsed; they're free to re-claim.`,
-      ];
-      const laneList = Object.entries(plan.claimableLanes);
-      if (laneList.length) {
-        lines.push(`2. CLAIM + DISPATCH — spawn ONE worker subagent per claimable lane, each in an isolated git worktree (lanes have disjoint ownership → run them in parallel):`);
-        for (const [lane, slugs] of laneList) lines.push(`   • lane ${lane}: ${slugs.join(" → ")}`);
-      } else {
-        lines.push(`2. CLAIM + DISPATCH — no claimable lanes right now.`);
-      }
-      if (plan.barriers.length) lines.push(`   • BARRIERS (run SOLO, everything before merges first): ${plan.barriers.join(", ")}`);
-      lines.push(
-        `3. COLLECT each worker's handoff return (archkit_goal_handoff authored at wind-down).`,
-        plan.exceptions.length
-          ? `4. DEEP-REVIEW ONLY these exceptions — rubber-stamp the rest:\n${plan.exceptions.map((e) => `   • ${e.slug}: ${e.reasons.join(", ")}`).join("\n")}`
-          : `4. DEEP-REVIEW: no exceptions — the returns are clean, rubber-stamp them.`,
-        // Step 5 is the LANE CONVERGENCE stage (ADR 0023), not a flat slug list:
-        // the dependency-ordered queue grouped into one integration point per
-        // lane, each carrying its rebase-onto-tip precondition (worker worktrees
-        // branch from a stale base, so a naive sequential merge can revert what an
-        // earlier merge in this same drain landed) and its path-extract fallback.
-        `5. ${renderConvergencePlan(plan.convergence).join("\n")}`,
-        // Step 6 is the INTEGRATION DEBT ledger (ADR 0024): merges already
-        // recorded WITHOUT a green verify. A merge with no recorded outcome is
-        // debt, not a green branch — surfacing it stops a later pass from
-        // silently assuming the mainline is green.
-        plan.unverifiedMerges.length
-          ? `6. INTEGRATION DEBT — ${plan.unverifiedMerges.length} CGR${plan.unverifiedMerges.length === 1 ? " has" : "s have"} merged WITHOUT a green verify. Re-run the verify on ${plan.convergence.branch} and re-record with archkit_board_merged:\n${plan.unverifiedMerges.map((m) => `   • ${m.slug} (lane ${m.lane}): ${m.status}${m.command ? ` — ${m.command}` : ""} [${m.reason}]`).join("\n")}`
-          : `6. INTEGRATION DEBT: none — every merge recorded so far carries a green verify.`,
-        ``,
-        `Read archkit_conductor / archkit_session_state for the structured plan. archkit emits the plan; YOU spawn workers, review, run the git rebases/merges, and run the verify command — archkit never runs git or your tests; it records the result you report via archkit_board_merged.`,
-      );
-      return textMessage(lines.join("\n"));
+      // The ENTIRE orchestration pass is rendered by the shared graph renderer
+      // (ADR 0026). Step 1 reclaim, step 2 the lane tree + barriers, step 3
+      // handoff collection, step 4 the deep-review exception list, step 5 the
+      // LANE CONVERGENCE stage (ADR 0023 — rebase-onto-tip precondition +
+      // path-extract fallback, emitted once as a substitution template rather
+      // than repeated per lane), step 6 the INTEGRATION DEBT ledger (ADR 0024).
+      // prompts.mjs contributes no prose of its own: one contract, one renderer.
+      return textMessage(conductorGraph(plan).join("\n"));
     },
   },
 
@@ -347,28 +321,38 @@ export const prompts = {
         ? fs.readdirSync(aDir).filter((f) => f.endsWith(".md")).length
         : 0;
       const digests = listDigests(archDir);
-      const fmt = (gs) => gs.length ? " (" + gs.map((g) => g.slug).join(", ") + ")" : "";
+      // Same output contract as the conductor (ADR 0026): a stat strip, then the
+      // buckets as a tree with the severity vocabulary — no numbered prose.
+      const slugs = (gs) => gs.map((g) => g.slug).join(" ");
       const lines = [
-        `archkit CGR queue (lifecycle: pending → in-progress → testing → completed; side states on-hold, abandoned):`,
-        active
-          ? `  in-progress: ${active.slug} — ${active.meta.title || ""}`
-          : `  in-progress: none`,
-        `  testing:     ${testing.length}${fmt(testing)}`,
-        `  pending:     ${pending.length}${fmt(pending)}`,
-        `  on-hold:     ${onHold.length}${fmt(onHold)}`,
-        `  completed:   ${done.length} un-consolidated${archived ? ` + ${archived} archived` : ""}${digests.length ? ` (${digests.length} digest day${digests.length === 1 ? "" : "s"})` : ""}`,
-        ``,
+        `[archkit CGR queue] pending ${GLYPH.flow} in-progress ${GLYPH.flow} testing ${GLYPH.flow} completed (side: on-hold, abandoned)`,
+        LEGEND,
+        stats([
+          ["testing", testing.length, "attention"],
+          ["pending", pending.length],
+          ["on-hold", onHold.length, "attention"],
+          ["done", done.length, "ok"],
+        ]),
+        ...tree([
+          active
+            ? `${SYM.action} in-progress ${strong(active.slug)}${active.meta.title ? ` — ${active.meta.title}` : ""}`
+            : `${SYM.ok} in-progress: none`,
+          testing.length ? `${SYM.attention} testing: ${slugs(testing)}` : null,
+          pending.length ? `${SYM.action} pending: ${slugs(pending)}` : null,
+          onHold.length ? `${SYM.attention} on-hold: ${slugs(onHold)}` : null,
+          `${SYM.ok} done: ${done.length} un-consolidated${archived ? ` + ${archived} archived` : ""}${digests.length ? ` + ${digests.length} digest day${digests.length === 1 ? "" : "s"}` : ""}`,
+        ]),
       ];
       if (active) {
-        lines.push(`Resume with /mcp__archkit__goal_resume, or finish it then /clear + /mcp__archkit__conductor.`);
+        lines.push(`${SYM.action} resume: /mcp__archkit__goal_resume — or finish it, then /clear + /mcp__archkit__conductor.`);
       } else if (testing.length) {
-        lines.push(`${testing.length} goal(s) await verification. Run /clear + /mcp__archkit__conductor to drain the testing backlog (verify green, then archkit_goal_complete).`);
+        lines.push(`${SYM.attention} ${testing.length} goal(s) await verification: /clear + /mcp__archkit__conductor to drain the testing backlog (verify green, then archkit_goal_complete).`);
       } else if (pending.length) {
-        lines.push(`Start with /clear + /mcp__archkit__conductor.`);
+        lines.push(`${SYM.action} start: /clear + /mcp__archkit__conductor.`);
       } else if (onHold.length) {
-        lines.push(`Only on-hold (parked) goals remain. Run /clear + /mcp__archkit__conductor to resume one, or archkit_goal_abandon to drop it.`);
+        lines.push(`${SYM.attention} only parked (on-hold) goals remain: /clear + /mcp__archkit__conductor to resume one, or archkit_goal_abandon to drop it.`);
       } else {
-        lines.push(`Queue empty. Run archkit_goal_consolidate to fold any un-consolidated done/ goals into a dated digest, or /mcp__archkit__intake to decompose a new ask.`);
+        lines.push(`${SYM.ok} queue empty: archkit_goal_consolidate folds un-consolidated done/ goals into a dated digest, or /mcp__archkit__intake to decompose a new ask.`);
       }
       return textMessage(lines.join("\n"));
     },
@@ -386,7 +370,7 @@ export const prompts = {
       return textMessage([
         `[archkit CGR intake] Decompose the user's ask into discrete CGR goals, then call archkit_goal_intake.`,
         ``,
-        `Do this now:`,
+        `${SYM.action} Do this now:`,
         `1. Take the user's most recent ask (if none is in view, ask them for it).`,
         `2. Split it into 1..N goals — each a self-contained unit of work for one fresh context. Per goal: a kebab-case slug, a one-line title, 2-5 concrete exit-criteria, and optionally filesToTouch, requiredReading, dependsOn (DAG edges), owns (predicted file-ownership globs), feature (cohesion tag), exclusive (run-solo barrier).`,
         `3. Call archkit_goal_intake with the goals array. It persists each to .arch/goals/<slug>.md and partitions them into parallel lanes (disjoint ownership → run concurrently; exclusive → solo barrier).`,
