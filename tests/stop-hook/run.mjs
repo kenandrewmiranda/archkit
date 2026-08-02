@@ -3,6 +3,7 @@ import { strict as assert } from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -271,6 +272,47 @@ test("no spawn in this suite omits cwd", () => {
   assert.deepEqual(offenders, [], `spawn without an explicit cwd:\n  ${offenders.join("\n  ")}`);
 });
 
+// Fingerprint an .arch/ tree by CONTENT, recursively: "<relpath> <sha256>" per
+// file, sorted. A top-level `readdirSync` is not enough to guard the leak this
+// section exists for — queue-drain consolidation moves CGRs into
+// .arch/goals/done/archive/ and rewrites a digest, all of it nested under an
+// entry (`goals`) that already exists. The names at the top never change, so a
+// name-only comparison would have passed against the very bug it guards.
+function archFingerprint(projectDir) {
+  const root = path.join(projectDir, ".arch");
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const abs = path.join(dir, entry.name);
+      const rel = path.relative(root, abs).split(path.sep).join("/");
+      if (entry.isDirectory()) { out.push(`${rel}/`); walk(abs); }
+      else if (entry.isFile()) {
+        out.push(`${rel} ${crypto.createHash("sha256").update(fs.readFileSync(abs)).digest("hex")}`);
+      }
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
+test("archFingerprint sees a nested-only change that readdir would miss", () => {
+  withTempProject((dir) => {
+    setupArch(dir);
+    fs.mkdirSync(path.join(dir, ".arch", "goals", "done", "archive"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".arch", "goals", "done", "archive", "a.md"), "one\n");
+    const topBefore = fs.readdirSync(path.join(dir, ".arch")).sort();
+    const before = archFingerprint(dir);
+
+    fs.writeFileSync(path.join(dir, ".arch", "goals", "done", "archive", "a.md"), "two\n");
+    fs.writeFileSync(path.join(dir, ".arch", "goals", "done", "archive", "b.md"), "new\n");
+
+    assert.deepEqual(fs.readdirSync(path.join(dir, ".arch")).sort(), topBefore,
+      "precondition: a top-level readdir cannot see this change");
+    assert.notDeepEqual(archFingerprint(dir), before,
+      "archFingerprint must detect nested content edits and additions");
+  });
+});
+
 test("an eventless hook run never touches an .arch/ outside its own cwd", () => {
   withTempProject((outer) => {
     // A decoy project one level up from the child's cwd stands in for the repo
@@ -280,7 +322,12 @@ test("an eventless hook run never touches an .arch/ outside its own cwd", () => 
     const sibling = path.join(outer, "sibling");
     fs.mkdirSync(sibling, { recursive: true });
     setupArch(sibling);
-    const before = fs.readdirSync(path.join(sibling, ".arch")).sort();
+    // Give the sibling the nested shape the leak actually corrupts, so the
+    // comparison below has something to catch rather than an empty subtree.
+    fs.mkdirSync(path.join(sibling, ".arch", "goals", "done"), { recursive: true });
+    fs.writeFileSync(path.join(sibling, ".arch", "goals", "done", "sample.md"),
+      "---\nslug: sample\nstatus: done\n---\n# sample\n");
+    const before = archFingerprint(sibling);
 
     const isolated = path.join(outer, "isolated");
     fs.mkdirSync(isolated, { recursive: true });
@@ -288,8 +335,8 @@ test("an eventless hook run never touches an .arch/ outside its own cwd", () => 
 
     const r = spawnHook({ cwd: isolated, input: "", timeout: 4000 });
     assert.equal(r.status, 0);
-    assert.deepEqual(fs.readdirSync(path.join(sibling, ".arch")).sort(), before,
-      "a hook run in one project must not write into another project's .arch/");
+    assert.deepEqual(archFingerprint(sibling), before,
+      "a hook run in one project must not write into another project's .arch/ (compared recursively, by content)");
   });
 });
 
