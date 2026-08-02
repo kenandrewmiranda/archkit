@@ -22,6 +22,9 @@
 //      decision:"block" until the agent calls archkit_goal_complete — unless
 //      the response is a genuine question to the user, or the per-goal turn
 //      cap is hit. When no goal is active, nudge toward the next queued goal.
+//      A `dispatched` goal (ADR 0027) is claimed on behalf of a worker subagent
+//      working in ANOTHER session, so it never engages the guard here — it is
+//      reported as live-elsewhere instead.
 //
 // Safety:
 //   - Walks up looking for .arch/SYSTEM.md. If not found, exits 0 silent
@@ -49,7 +52,7 @@ const { detectDecisions } = await importPath(path.join(LIB, "decision-detector.m
 const { detectDeferredGoals } = await importPath(path.join(LIB, "goal-detector.mjs"));
 const {
   getActiveGoal, exitCriteriaOf, verifyCommandOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
-  writeGoalProposal, countGoalProposals, consolidateGoals,
+  writeGoalProposal, countGoalProposals, consolidateGoals, dispatchedGoals,
 } = await importPath(path.join(LIB, "goals.mjs"));
 const { stopGuardDecision } = await importPath(path.join(LIB, "board.mjs"));
 
@@ -273,6 +276,25 @@ async function main() {
     // No goal in progress. Clear any stale turn-cap counters, and if the queue
     // still has eligible work, nudge the relay forward (non-blocking).
     resetLoopState(archDir);
+    // DISPATCHED lanes (ADR 0027) are live work claimed on behalf of worker
+    // subagents. The guard is deliberately NOT engaged here — the claim was made
+    // in this session but the work is happening in another, so keep-working
+    // criteria would tell this session to duplicate a worker's edits in the wrong
+    // tree. Say so explicitly instead of leaving the release unexplained.
+    let dispatched = [];
+    try { dispatched = dispatchedGoals(archDir); } catch { /* non-fatal */ }
+    if (dispatched.length) {
+      const list = dispatched
+        .map((d) => `  • ${d.slug}${d.lane ? ` (lane ${d.lane})` : ""}${d.worker ? ` → ${d.worker}` : ""}`)
+        .join("\n");
+      sections.push(
+        [
+          `CGR relay: ${dispatched.length} goal${dispatched.length === 1 ? " is" : "s are"} DISPATCHED to worker subagents — the guard is RELEASED in this session because the claim was made on behalf of another one.`,
+          list,
+          `Do NOT work their exit-criteria here; the leases are held and they still show in archkit_session_state.in_flight. Wait for each worker's handoff, then close it from the owning session (archkit_goal_complete / archkit_goal_testing). An abandoned dispatch is reclaimed when its lease TTL expires.`,
+        ].join("\n"),
+      );
+    }
     const next = nextEligibleGoal(archDir);
     if (next) {
       sections.push(
