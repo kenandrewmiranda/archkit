@@ -390,16 +390,66 @@ export function slugify(s) {
     .slice(0, 60) || "goal";
 }
 
+// ── YAML-ambiguity quoting (frontmatter-colon-escaping) ──────────────────────
+//
+// The frontmatter is hand-rolled (no YAML dep), but the VALUES are author text:
+// exit criteria routinely read "X is preserved: a lane containing…". Emitted bare,
+// a colon-space turns a list item into a `key: value` map — the scalar pass below
+// then harvests it as a bogus top-level key, and the next write re-emits it as a
+// stray unindented line right after the block, where the following read swallows
+// it back as a PHANTOM DUPLICATE criterion. So every value that YAML (or this
+// parser) would read as anything but a plain scalar is quoted on write and
+// unquoted on read. This applies to EVERY frontmatter value — scalars and every
+// block-list item alike (exit-criteria, files-to-touch, owns, required-reading,
+// depends-on) — because they all share the defect.
+const YAML_LEADING_INDICATOR = /^[-?:,[\]{}#&*!|>'"%@`]/;
+function needsYamlQuote(s) {
+  if (s === "") return false;
+  if (/^\s|\s$/.test(s)) return true;            // leading/trailing space is lost bare
+  if (YAML_LEADING_INDICATOR.test(s)) return true; // dash, hash, ampersand, asterisk, brackets…
+  if (/:(\s|$)/.test(s)) return true;             // colon-space (or trailing colon) → map
+  if (s.includes(" #")) return true;              // inline comment
+  if (/[\n\r]/.test(s)) return true;              // newlines can't survive a bare scalar
+  return false;
+}
+function quoteYamlScalar(v) {
+  const s = String(v);
+  // JSON string syntax is a subset of YAML's double-quoted scalar, so
+  // JSON.stringify/JSON.parse is a safe, dependency-free quote/unquote pair.
+  return needsYamlQuote(s) ? JSON.stringify(s) : s;
+}
+function unquoteYamlScalar(raw) {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try { return JSON.parse(raw); } catch { return raw.slice(1, -1); }
+  }
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.slice(1, -1).replace(/''/g, "'");
+  }
+  return raw;
+}
+function isQuotedScalar(raw) {
+  return raw.length >= 2 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")));
+}
+
 export function parseGoal(content) {
   const m = content.match(FRONTMATTER_RE);
   if (!m) return { meta: {}, body: content, elapsedMs: null };
   const meta = {};
   for (const line of m[1].split("\n")) {
+    // List items are NOT key:value lines — an item carrying a colon ("… is
+    // preserved: a lane …") must never register as a top-level key. Skipping
+    // them here is also what makes an ALREADY-CORRUPTED file (stray unindented
+    // `- text: more` lines from the pre-fix writer) parse without re-seeding the
+    // corruption instead of throwing.
+    if (/^\s*-\s/.test(line)) continue;
     const colon = line.indexOf(":");
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim();
     const raw = line.slice(colon + 1).trim();
-    if (raw.startsWith("[") && raw.endsWith("]")) {
+    if (isQuotedScalar(raw)) {
+      // Explicitly quoted → a literal scalar, never an inline list.
+      meta[key] = unquoteYamlScalar(raw);
+    } else if (raw.startsWith("[") && raw.endsWith("]")) {
       // Bare inline list — for arrays we prefer block form (handled below)
       meta[key] = raw.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
     } else {
@@ -415,7 +465,11 @@ export function parseGoal(content) {
   let currentKey = null;
   let buffer = [];
   const flush = () => {
-    if (currentKey && buffer.length > 0) meta[currentKey] = buffer;
+    // De-dupe exact repeats: a file corrupted by the pre-fix writer carries the
+    // colon-bearing criterion twice (once indented, once as the stray line the
+    // block pass re-absorbs). Dropping the exact repeat heals the phantom
+    // duplicate on read; distinct items are untouched.
+    if (currentKey && buffer.length > 0) meta[currentKey] = [...new Set(buffer)];
     currentKey = null;
     buffer = [];
   };
@@ -423,7 +477,7 @@ export function parseGoal(content) {
     const keyMatch = line.match(/^(\w[\w-]*):\s*$/);
     if (keyMatch) { flush(); currentKey = keyMatch[1]; continue; }
     if (currentKey && line.match(/^\s*-\s+/)) {
-      const item = line.replace(/^\s*-\s+/, "").trim();
+      const item = unquoteYamlScalar(line.replace(/^\s*-\s+/, "").trim());
       if (item) buffer.push(item);
     } else if (currentKey && !line.startsWith(" ")) {
       flush();
@@ -439,11 +493,15 @@ export function parseGoal(content) {
 function emitFrontmatter(meta) {
   const lines = [];
   for (const [k, v] of Object.entries(meta)) {
+    // A key that isn't a plain identifier can only have come from a corrupted
+    // read (a list item harvested as a key by the pre-fix parser). Never re-emit
+    // it — that's exactly how the stray unindented lines propagated.
+    if (!/^[\w][\w.-]*$/.test(String(k))) continue;
     if (Array.isArray(v)) {
       lines.push(`${k}:`);
-      for (const item of v) lines.push(`  - ${item}`);
+      for (const item of v) lines.push(`  - ${quoteYamlScalar(item)}`);
     } else if (v != null) {
-      lines.push(`${k}: ${v}`);
+      lines.push(`${k}: ${quoteYamlScalar(v)}`);
     }
   }
   return lines.join("\n");
