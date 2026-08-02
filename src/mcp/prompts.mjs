@@ -19,7 +19,7 @@
 
 import fs from "node:fs";
 import { findArchDir } from "../lib/shared.mjs";
-import { conductorPlan } from "../lib/board.mjs";
+import { conductorPlan, renderConvergencePlan } from "../lib/board.mjs";
 import {
   getActiveGoal,
   triageNextGoal,
@@ -259,7 +259,7 @@ export const prompts = {
     config: {
       title: "archkit: advance the relay (conductor)",
       description:
-        "CGR relay — the ONE command to advance work after /clear or compaction. Folds the board and auto-picks the mode: with parallel lanes (or workers in flight / a non-empty merge queue / expired leases) it runs the CGR 2.0 conductor pass — claim the frontier under a lease, spawn one worktree-isolated worker per lane, collect handoffs, deep-review only exceptions, then drain the dependency-ordered merge queue verify-after-each; with a single eligible goal it loads that goal's payload to work in THIS context (no worker spawn). Pair with /mcp__archkit__intake to decompose an ask and /clear to reset context.",
+        "CGR relay — the ONE command to advance work after /clear or compaction. Folds the board and auto-picks the mode: with parallel lanes (or workers in flight / a non-empty merge queue / expired leases) it runs the CGR 2.0 conductor pass — claim the frontier under a lease, spawn one worktree-isolated worker per lane, collect handoffs, deep-review only exceptions, then run the LANE CONVERGENCE stage — the dependency-ordered merge queue grouped into one integration point per lane, each rebased onto the branch tip before it lands, verify-after-each; with a single eligible goal it loads that goal's payload to work in THIS context (no worker spawn). Pair with /mcp__archkit__intake to decompose an ask and /clear to reset context.",
     },
     handler: async () => {
       const archDir = archDirOrNull();
@@ -302,11 +302,14 @@ export const prompts = {
         plan.exceptions.length
           ? `4. DEEP-REVIEW ONLY these exceptions — rubber-stamp the rest:\n${plan.exceptions.map((e) => `   • ${e.slug}: ${e.reasons.join(", ")}`).join("\n")}`
           : `4. DEEP-REVIEW: no exceptions — the returns are clean, rubber-stamp them.`,
-        plan.mergeOrder.length
-          ? `5. MERGE the queue SEQUENTIALLY in this dependency order, verifying after EACH: ${plan.mergeOrder.map((m) => m.slug).join(" → ")}`
-          : `5. MERGE: queue empty, nothing to integrate.`,
+        // Step 5 is the LANE CONVERGENCE stage (ADR 0023), not a flat slug list:
+        // the dependency-ordered queue grouped into one integration point per
+        // lane, each carrying its rebase-onto-tip precondition (worker worktrees
+        // branch from a stale base, so a naive sequential merge can revert what an
+        // earlier merge in this same drain landed) and its path-extract fallback.
+        `5. ${renderConvergencePlan(plan.convergence).join("\n")}`,
         ``,
-        `Read archkit_conductor / archkit_session_state for the structured plan. archkit emits the plan; YOU spawn workers, review, and run the git merges.`,
+        `Read archkit_conductor / archkit_session_state for the structured plan. archkit emits the plan; YOU spawn workers, review, and run the git rebases/merges — archkit never runs git itself.`,
       );
       return textMessage(lines.join("\n"));
     },
