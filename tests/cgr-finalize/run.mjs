@@ -11,6 +11,9 @@
  *  - exit-criteria reflect exactly the enabled steps
  *  - enabling back-fills a finalize goal onto an already-queued batch
  *  - enabled:false → no finalize goal appended
+ *  - the `version` step: OFF by default, expands to bump + re-verify criteria that
+ *    name the project's real manifests, sorts before changelog/commit, and older
+ *    configs without the key keep their exact previous criteria
  *
  * Usage:
  *   node tests/cgr-finalize/run.mjs
@@ -25,6 +28,7 @@ import {
   writeFinalizeConfig,
   runFinalizeConfig,
   buildFinalizeGoal,
+  detectVersionSync,
   listGoals,
   renderPayload,
   reconcileGoalsLayout,
@@ -32,6 +36,7 @@ import {
   FINALIZE_STEPS,
 } from "../../src/lib/goals.mjs";
 import { runGoalIntake } from "../../src/commands/goal.mjs";
+import { tools } from "../../src/mcp/tools.mjs";
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -241,6 +246,111 @@ test("ungrouped batch keeps its pre-existing branch behavior", () => {
   assert.ok(!fg.meta.project, "nothing to inherit → no project");
   assert.deepEqual(branchPrework(archDir, FINALIZE_SLUG), branchPrework(archDir, "build-x"),
     "still parity with the batch goals");
+});
+
+// ── The `version` step (finalize-version-bump) ───────────────────────────────
+//
+// check:versions enforces package.json == .claude-plugin/plugin.json and the
+// release workflow refuses to publish unless the git tag equals package.json's
+// version — yet nothing in the CGR lifecycle ever bumped them. The step closes
+// that gap; it is OFF by default and must sort BEFORE changelog/commit so both
+// describe the version being cut.
+
+// A project root with a package.json + plugin manifest + a real check script,
+// i.e. the shape detectVersionSync is meant to read.
+function versionedFixture() {
+  const { dir, archDir } = fixture();
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+    name: "demo", version: "1.17.0",
+    scripts: { test: "node scripts/test.mjs", "check:versions": "node scripts/check-version-sync.mjs" },
+  }, null, 2));
+  fs.mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".claude-plugin/plugin.json"), JSON.stringify({ version: "1.17.0" }));
+  fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "scripts/check-version-sync.mjs"),
+    `const a = read("package.json");\nconst b = read(".claude-plugin/plugin.json");\n`);
+  return { dir, archDir };
+}
+
+test("version step: OFF by default, and absent from the synthesized goal", () => {
+  const { archDir } = versionedFixture();
+  assert.equal(readFinalizeConfig(archDir).steps.version, false, "default OFF");
+  writeFinalizeConfig(archDir, { enabled: true }); // defaults → version stays off
+  const g = buildFinalizeGoal(archDir, { batchSlugs: ["a"], order: 1 });
+  assert.ok(!g.exitCriteria.some((c) => /version/i.test(c)), `no version criteria (got ${JSON.stringify(g.exitCriteria)})`);
+});
+
+test("version step: enabled → bump + re-verify criteria naming the real files", () => {
+  const { archDir } = versionedFixture();
+  writeFinalizeConfig(archDir, { enabled: true, steps: { version: true } });
+  const g = buildFinalizeGoal(archDir, { batchSlugs: ["a"], order: 1 });
+  const bump = g.exitCriteria.find((c) => /bumped/i.test(c));
+  const check = g.exitCriteria.find((c) => /re-verified/i.test(c));
+  assert.ok(bump, "a bump criterion exists");
+  assert.ok(bump.includes("package.json"), `names package.json (got ${bump})`);
+  assert.ok(bump.includes(".claude-plugin/plugin.json"), `names the plugin manifest (got ${bump})`);
+  assert.ok(bump.includes("1.17.0"), "names the current version so the agent knows what it is bumping from");
+  assert.ok(check, "a re-verify criterion exists");
+  assert.ok(check.includes("npm run check:versions"), `names the project's own check (got ${check})`);
+  // The barrier edits those manifests, so it must declare them.
+  assert.ok(g.owns.includes("package.json") && g.owns.includes(".claude-plugin/plugin.json"), "owns the bumped files");
+});
+
+test("version step: ordered BEFORE changelog and commit", () => {
+  const { archDir } = versionedFixture();
+  writeFinalizeConfig(archDir, { enabled: true, steps: { version: true, changelog: true, docs: true, commit: true } });
+  const g = buildFinalizeGoal(archDir, { batchSlugs: ["a"], order: 1 });
+  const at = (re) => g.exitCriteria.findIndex((c) => re.test(c));
+  const bump = at(/bumped/i), recheck = at(/re-verified/i);
+  const changelog = at(/CHANGELOG/i), commit = at(/committed/i);
+  assert.ok(changelog >= 0 && commit >= 0, "changelog + commit criteria present");
+  assert.ok(bump < changelog && bump < commit, `bump precedes changelog/commit (bump ${bump}, changelog ${changelog}, commit ${commit})`);
+  assert.ok(recheck < commit, `re-verify precedes the commit (recheck ${recheck}, commit ${commit})`);
+  assert.ok(FINALIZE_STEPS.findIndex((s) => s.key === "version") <
+    FINALIZE_STEPS.findIndex((s) => s.key === "changelog"), "step order itself puts version first");
+});
+
+test("version step: undetectable project still gets a generic criterion", () => {
+  const { archDir } = fixture(); // no package.json at all
+  writeFinalizeConfig(archDir, { enabled: true, steps: { version: true } });
+  const g = buildFinalizeGoal(archDir, { batchSlugs: ["a"], order: 1 });
+  assert.ok(g.exitCriteria.some((c) => /bumped/i.test(c)), "bump criterion survives detection failure");
+  assert.ok(g.exitCriteria.some((c) => /re-verified/i.test(c)), "re-verify criterion survives detection failure");
+});
+
+test("detectVersionSync reads the project's own check, not a guess", () => {
+  const { archDir } = versionedFixture();
+  const v = detectVersionSync(archDir);
+  assert.equal(v.command, "npm run check:versions");
+  assert.equal(v.version, "1.17.0");
+  assert.deepEqual(v.files, ["package.json", ".claude-plugin/plugin.json"]);
+});
+
+test("back-compat: a config written before the version step keeps working", () => {
+  const { archDir } = versionedFixture();
+  // Exactly what an existing project has on disk: steps with no `version` key.
+  fs.writeFileSync(path.join(archDir, "config.json"), JSON.stringify({
+    cgr: { finalize: { enabled: true, configured: true, steps: { changelog: true, docs: true, commit: true, push: true, release: false, deployDev: false }, ciCd: "github-actions", deployCommand: "" } },
+  }, null, 2));
+  const cfg = readFinalizeConfig(archDir);
+  assert.equal(cfg.version, undefined, "no stray top-level key");
+  assert.equal(cfg.steps.version, false, "missing step reads as its default (OFF)");
+  assert.equal(cfg.steps.push, true, "pre-existing choices untouched");
+  assert.equal(cfg.ciCd, "github-actions");
+  const g = buildFinalizeGoal(archDir, { batchSlugs: ["a"], order: 1 });
+  assert.equal(g.exitCriteria.length, 4, "same 4 criteria as before the step existed");
+  assert.ok(!g.exitCriteria.some((c) => /bumped/i.test(c)), "old config gets no version criteria");
+});
+
+test("archkit_finalize_config surfaces the version step", () => {
+  // Schema acceptance: zod strips unknown keys, so a surviving `version` proves it.
+  const parsed = tools.archkit_finalize_config.inputSchema.parse({ steps: { version: true } });
+  assert.equal(parsed.steps.version, true, "steps.version is part of the tool schema");
+  assert.ok(/version/i.test(tools.archkit_finalize_config.description), "description names the step");
+  const { archDir } = versionedFixture();
+  const saved = runFinalizeConfig({ archDir, enabled: true, steps: { version: true } });
+  assert.equal(saved.config.steps.version, true, "the tool's lib entrypoint persists it");
+  assert.equal(runFinalizeConfig({ archDir, show: true }).config.steps.version, true, "and reads it back");
 });
 
 test("runFinalizeConfig show:true is read-only", () => {
