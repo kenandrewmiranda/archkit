@@ -45,6 +45,25 @@ function setupArch(dir) {
   );
 }
 
+// Spawn the Stop hook against a temp project.
+//
+// `cwd` is passed BOTH in the event payload and as the child process's actual
+// working directory. The payload alone is not enough: the hook falls back to
+// `process.cwd()` whenever the event has no `cwd` (malformed/empty stdin), and
+// a child with no explicit cwd inherits the test runner's — the repo root.
+// That made the hook's queue-drain consolidation fire against archkit's OWN
+// live .arch/ board on every `npm test`, archiving real CGRs and writing a
+// digest. Never spawn a hook here without an explicit cwd.
+function spawnHook({ cwd, input, timeout = 8000 }) {
+  if (!cwd) throw new Error("spawnHook requires an explicit cwd (never inherit the repo root)");
+  return spawnSync(process.execPath, [HOOK], {
+    input,
+    cwd,
+    encoding: "utf8",
+    timeout,
+  });
+}
+
 function runHook({ cwd, sessionId, assistantResponse }) {
   const event = {
     session_id: sessionId,
@@ -52,12 +71,7 @@ function runHook({ cwd, sessionId, assistantResponse }) {
     hook_event_name: "Stop",
     assistant_response: assistantResponse || "",
   };
-  const r = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify(event),
-    encoding: "utf8",
-    timeout: 8000,
-  });
-  return r;
+  return spawnHook({ cwd, input: JSON.stringify(event) });
 }
 
 function cleanupSession(sessionId) {
@@ -215,21 +229,68 @@ test("utilization line contains target percentage", () => {
 });
 
 test("survives malformed stdin event without crashing", () => {
-  const r = spawnSync(process.execPath, [HOOK], {
-    input: "{not valid json",
-    encoding: "utf8",
-    timeout: 4000,
+  // No `cwd` in the payload (it isn't parseable) — so the child's own cwd is
+  // what the hook resolves .arch/ from. It MUST be the temp project.
+  withTempProject((dir) => {
+    const r = spawnHook({ cwd: dir, input: "{not valid json", timeout: 4000 });
+    assert.equal(r.status, 0);
   });
-  assert.equal(r.status, 0);
 });
 
 test("survives empty stdin", () => {
-  const r = spawnSync(process.execPath, [HOOK], {
-    input: "",
-    encoding: "utf8",
-    timeout: 4000,
+  withTempProject((dir) => {
+    const r = spawnHook({ cwd: dir, input: "", timeout: 4000 });
+    assert.equal(r.status, 0);
   });
-  assert.equal(r.status, 0);
+});
+
+// ── cwd isolation regression guard ───────────────────────────────────────────
+//
+// The leak this suite caused: an eventless hook run inherited the runner's cwd
+// (the repo root), found archkit's real .arch/, saw a drained queue and
+// consolidated LIVE completed CGRs into done/archive/ + a digest. Pin the
+// invariant at the suite level so it cannot silently come back.
+
+test("no spawn in this suite omits cwd", () => {
+  const src = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const re = /\b(spawnSync|spawn|execFileSync|execSync)\s*\(/g;
+  const offenders = [];
+  let m;
+  while ((m = re.exec(src))) {
+    // Slice the whole call by balancing parens, then check for a cwd option.
+    let depth = 0;
+    let end = src.length;
+    for (let i = re.lastIndex - 1; i < src.length; i++) {
+      if (src[i] === "(") depth++;
+      else if (src[i] === ")" && --depth === 0) { end = i; break; }
+    }
+    const call = src.slice(m.index, end + 1);
+    if (/\bcwd\s*[,:}]/.test(call)) continue;
+    offenders.push(`line ${src.slice(0, m.index).split("\n").length}: ${call.replace(/\s+/g, " ").slice(0, 80)}`);
+  }
+  assert.deepEqual(offenders, [], `spawn without an explicit cwd:\n  ${offenders.join("\n  ")}`);
+});
+
+test("an eventless hook run never touches an .arch/ outside its own cwd", () => {
+  withTempProject((outer) => {
+    // A decoy project one level up from the child's cwd stands in for the repo
+    // root. If the hook ever resolved .arch/ from anywhere but its own cwd
+    // subtree this would be mutated — but here the walk-up is legitimate, so
+    // the real assertion is the sibling: a temp project the child is NOT in.
+    const sibling = path.join(outer, "sibling");
+    fs.mkdirSync(sibling, { recursive: true });
+    setupArch(sibling);
+    const before = fs.readdirSync(path.join(sibling, ".arch")).sort();
+
+    const isolated = path.join(outer, "isolated");
+    fs.mkdirSync(isolated, { recursive: true });
+    setupArch(isolated);
+
+    const r = spawnHook({ cwd: isolated, input: "", timeout: 4000 });
+    assert.equal(r.status, 0);
+    assert.deepEqual(fs.readdirSync(path.join(sibling, ".arch")).sort(), before,
+      "a hook run in one project must not write into another project's .arch/");
+  });
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
