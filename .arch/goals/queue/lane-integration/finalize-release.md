@@ -3,7 +3,8 @@ slug: finalize-release
 title: Finalize: changelog, docs, commits + release
 status: pending
 created: 2026-08-02
-order: 13
+order: 17
+project: lane-integration
 exit-criteria:
   - CHANGELOG updated with an entry covering this batch's changes
   - Docs (README / docs/) updated to match the changes
@@ -12,7 +13,9 @@ exit-criteria:
 files-to-touch: 
 required-reading: 
 depends-on:
-  - stop-hook-test-cwd-isolation
+  - dispatched-lifecycle-state
+  - board-guard-concurrent-write
+  - test-cwd-audit-remainder
 owns:
   - CHANGELOG.md
   - CHANGELOG
@@ -21,7 +24,7 @@ owns:
 feature: finalize
 exclusive: true
 verify-command: 
-source-ask: Discovered during the lane-integration dispatch pass: both worktree workers independently found that `npm test` mutates the repository's own .arch/ directory. tests/stop-hook/run.mjs spawns the Stop hook via spawnSync without a cwd option, so the hook child inherits the test runner's cwd (the repo root) even though the payload names a temp project; the queue-drain consolidation then fires against the LIVE board, archiving real CGRs into done/archive/ and writing a digest. The conductor reproduced this a third time by running npm test in a worker's worktree.
+source-ask: file all three, then dispatch finalize-version-bump with corrected owns — the three findings from the lane-integration dispatch pass: (1) Stop-hook guard is session-scoped but goal ownership is subagent-scoped, so every conductor pass gets told to work criteria belonging to a worker in another worktree; (2) the new .arch/ board-immutability guard false-positives on concurrent worker MCP writes and blames an innocent suite; (3) ten cwd-less spawns remain in test suites neither lane owned, plus migrate-playbooks resolves the archkit bin off process.cwd().
 lane: barrier-finalize-release
 ---
 
