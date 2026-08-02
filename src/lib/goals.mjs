@@ -2235,6 +2235,29 @@ export function writeFinalizeConfig(archDir, patch = {}) {
 // barrier, so the lane partition schedules it LAST and SOLO — correct, because it
 // touches changelog/docs/git across the whole batch. Exit-criteria are exactly the
 // enabled steps (so a project that only wants changelog+docs gets a 2-line goal).
+// The `project` the batch UNANIMOUSLY belongs to, or "" when the batch spans
+// several projects (or none). Inheriting it is what keeps the finalize barrier on
+// the same branch as the work it documents (finalize-project-inheritance): without
+// it the synthesized goal carried no project, so its payload instructed
+// `git switch -c cgr-queue-<date>` while every goal it depends on lived on
+// feat/<project> — the CHANGELOG/commit/push step would have run on a different
+// branch than the work. Unanimity is required precisely so a mixed batch FALLS
+// BACK to the shared dated queue branch instead of guessing one of the projects.
+// The project also decides the goal's on-disk home (writeGoal files a projected
+// goal under queue/<project>/), so inheriting keeps goal reconcile from
+// immediately relocating it.
+function inheritedBatchProject(archDir, batchSlugs) {
+  const seen = new Set();
+  for (const slug of batchSlugs) {
+    let p = "";
+    try { p = String(loadGoal(archDir, slug)?.meta?.project || "").trim(); } catch { p = ""; }
+    seen.add(p);
+    if (seen.size > 1) return ""; // mixed batch → no inheritance
+  }
+  const only = seen.size === 1 ? [...seen][0] : "";
+  return only;
+}
+
 export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk = "" } = {}) {
   const cfg = readFinalizeConfig(archDir);
   if (!cfg.enabled) return null;
@@ -2251,11 +2274,15 @@ export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk =
     enabled.map((s) => s.label.toLowerCase()).join(", ") + `.` + ciCdNote +
     ` archkit never runs git/deploy itself — do the local steps and instruct the user for push/release/deploy. ` +
     `Adjust or opt out with archkit_finalize_config (or \`archkit finalize\`).`;
+  const project = inheritedBatchProject(archDir, batchSlugs);
   return {
     slug: FINALIZE_SLUG,
     title: outward ? "Finalize: changelog, docs, commits + release" : "Finalize: changelog, docs, commits",
     exitCriteria,
     dependsOn: batchSlugs.slice(),
+    // Inherited so the barrier lands on the branch it documents; absent for a
+    // mixed/ungrouped batch, which keeps the shared dated queue branch.
+    ...(project ? { project } : {}),
     exclusive: true,
     feature: "finalize",
     owns: ["CHANGELOG.md", "CHANGELOG", "README.md", "docs/**"],

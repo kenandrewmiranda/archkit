@@ -26,6 +26,8 @@ import {
   runFinalizeConfig,
   buildFinalizeGoal,
   listGoals,
+  renderPayload,
+  reconcileGoalsLayout,
   FINALIZE_SLUG,
   FINALIZE_STEPS,
 } from "../../src/lib/goals.mjs";
@@ -159,6 +161,86 @@ test("enabled:false → intake appends nothing", () => {
   const res = runGoalIntake({ archDir, cwd: dir, sourceAsk: "x", goals: [{ title: "Goal A", exitCriteria: ["a"] }] });
   assert.equal(res.finalize.appended, null);
   assert.ok(!slugs(archDir).includes(FINALIZE_SLUG));
+});
+
+// ── Project inheritance (finalize-project-inheritance) ───────────────────────
+//
+// The barrier writes the CHANGELOG, commits and pushes the work it depends on —
+// so it MUST be on that work's branch. Without inheritance its payload said
+// `git switch -c cgr-queue-<date>` while every goal it depends on lived on
+// feat/<project>: a silently-wrong instruction at the batch's last, most
+// consequential step.
+
+// The branch-prework block of a payload — the lines the agent actually acts on.
+function branchPrework(archDir, slug) {
+  const { payload } = renderPayload(archDir, slug);
+  const lines = payload.split("\n");
+  const start = lines.findIndex((l) => l.startsWith("Branch prework"));
+  if (start < 0) return [];
+  const rest = lines.slice(start);
+  const end = rest.findIndex((l, i) => i > 0 && l === "");
+  return (end < 0 ? rest : rest.slice(0, end)).filter((l) => /`git /.test(l) || l.startsWith("Branch prework"));
+}
+
+test("finalize inherits the batch project → same branch prework as the work", () => {
+  const { dir, archDir } = fixture();
+  writeFinalizeConfig(archDir, { enabled: true });
+  runGoalIntake({ archDir, cwd: dir, sourceAsk: "x", goals: [
+    { title: "Build X", exitCriteria: ["x"], project: "lane-integration", owns: ["src/x/*"] },
+    { title: "Build Y", exitCriteria: ["y"], project: "lane-integration", owns: ["src/y/*"] },
+  ]});
+  const fg = loadGoalFile(archDir, FINALIZE_SLUG);
+  assert.equal(fg.meta.project, "lane-integration", "finalize inherited the batch project");
+  // Criterion 4: branch-prework PARITY with the goals it depends on.
+  const mine = branchPrework(archDir, FINALIZE_SLUG);
+  assert.deepEqual(mine, branchPrework(archDir, "build-x"), "same branch prework as build-x");
+  assert.deepEqual(mine, branchPrework(archDir, "build-y"), "same branch prework as build-y");
+  assert.ok(mine.some((l) => l.includes("feat/lane-integration")), "prework names the project branch");
+  assert.ok(!mine.some((l) => /cgr-queue-/.test(l)), "no dated queue branch for a projected batch");
+});
+
+test("inherited project decides the finalize goal's on-disk home", () => {
+  const { dir, archDir } = fixture();
+  writeFinalizeConfig(archDir, { enabled: true });
+  runGoalIntake({ archDir, cwd: dir, sourceAsk: "x", goals: [
+    { title: "Build X", exitCriteria: ["x"], project: "lane-integration" },
+  ]});
+  const hit = listGoals(archDir).find((g) => g.slug === FINALIZE_SLUG);
+  assert.equal(
+    path.relative(archDir, hit.filepath),
+    path.join("goals", "queue", "lane-integration", `${FINALIZE_SLUG}.md`),
+    "filed beside the batch it finalizes",
+  );
+  // Criterion 3: reconcile agrees it's already where it belongs.
+  const report = reconcileGoalsLayout(archDir, { apply: false });
+  assert.ok(!report.moved.some((m) => m.slug === FINALIZE_SLUG), "reconcile would not relocate it");
+});
+
+test("multi-project batch does NOT guess — falls back to the shared queue branch", () => {
+  const { dir, archDir } = fixture();
+  writeFinalizeConfig(archDir, { enabled: true });
+  runGoalIntake({ archDir, cwd: dir, sourceAsk: "x", goals: [
+    { title: "Build X", exitCriteria: ["x"], project: "alpha" },
+    { title: "Build Y", exitCriteria: ["y"], project: "beta" },
+  ]});
+  const fg = loadGoalFile(archDir, FINALIZE_SLUG);
+  assert.ok(!fg.meta.project, `no project inherited from a mixed batch (got ${fg.meta.project})`);
+  const mine = branchPrework(archDir, FINALIZE_SLUG);
+  assert.ok(mine.some((l) => /cgr-queue-/.test(l)), "falls back to the shared dated queue branch");
+  assert.ok(!mine.some((l) => /feat\//.test(l)), "never guesses one of the projects");
+});
+
+test("ungrouped batch keeps its pre-existing branch behavior", () => {
+  const { dir, archDir } = fixture();
+  writeFinalizeConfig(archDir, { enabled: true });
+  runGoalIntake({ archDir, cwd: dir, sourceAsk: "x", goals: [
+    { title: "Build X", exitCriteria: ["x"] },
+    { title: "Build Y", exitCriteria: ["y"] },
+  ]});
+  const fg = loadGoalFile(archDir, FINALIZE_SLUG);
+  assert.ok(!fg.meta.project, "nothing to inherit → no project");
+  assert.deepEqual(branchPrework(archDir, FINALIZE_SLUG), branchPrework(archDir, "build-x"),
+    "still parity with the batch goals");
 });
 
 test("runFinalizeConfig show:true is read-only", () => {
