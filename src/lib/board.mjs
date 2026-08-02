@@ -36,6 +36,7 @@ import {
   completionOf,
   exclusiveOf,
   filesToTouchOf,
+  verifyCommandOf,
   globsIntersect,
   handoffOf,
   stampGoalFields,
@@ -651,6 +652,262 @@ export function mergeQueueOrder(archDir, { now = new Date().toISOString(), board
   return orderMergeQueue(state.merge_queue, depsOf);
 }
 
+// ── Lane CONVERGENCE stage (lane-convergence-stage, ADR 0023) ────────────────
+//
+// NAMING — deliberately NOT "reconcile". archkit already owns that word for
+// GOAL-FILE PLACEMENT (archkit_goal_reconcile / reconcileGoalsLayout, ADR
+// 0020/0021: re-file a goal into the folder its status dictates). This is an
+// unrelated concept — BRANCH-level convergence before the merge queue drains —
+// so it gets its own vocabulary (converge / convergence / integration point) and
+// the two can never be confused in tool output, docs, or a grep.
+//
+// Why the stage exists: conductor step 5 drained the dependency-ordered merge
+// queue as N INDEPENDENT merges onto the branch, one per CGR, with no
+// rebase-onto-tip precondition. Agent-tool worktree workers branch from a STALE
+// base — the worktree is cut when the worker spawns, not when its work lands — so
+// a naive sequential `git merge` of worker branch #2 can REVERT what worker
+// branch #1's merge landed moments earlier in the SAME drain: #2's tree still
+// carries the pre-#1 content of any shared file, and the merge resolves it as an
+// intentional change. The fix is a convergence stage: group the ordered queue BY
+// LANE, converge each lane onto the branch TIP first (rebase), and land each lane
+// as ONE integration point, verifying after each.
+//
+// archkit NEVER runs git (instruct-not-act, ADR 0010). Everything here COMPUTES
+// and EMITS a plan — a pure structure plus rendered text — and the agent performs
+// the rebases/merges. No shelling out, no child_process, ever.
+
+// The primary integration primitive: converge the lane's worktree onto the
+// branch tip before it lands, so it can only ever fast-forward-or-conflict, and
+// can never silently revert an earlier integration point in this drain.
+export const CONVERGENCE_PRECONDITION = "rebase-onto-tip";
+
+// The escape hatch for a lane whose worker base is UNRECOVERABLY stale (the
+// rebase can't be completed — base commit gone, worktree pruned, or the conflict
+// surface is the whole tree): take ONLY the lane's owned paths out of its branch
+// while standing on the integration branch. Bounded by ownership, so intervening
+// work outside those paths survives by construction.
+export const CONVERGENCE_FALLBACK = "path-extract";
+
+export const DEFAULT_INTEGRATION_BRANCH = "main";
+
+// The branch lanes converge onto (.arch/config.json → cgr.integrationBranch,
+// default "main"). Tolerant: a missing/invalid config falls back, never throws.
+export function integrationBranch(archDir) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(archDir, "config.json"), "utf8"));
+    const v = cfg?.cgr?.integrationBranch;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch { /* no/invalid config → default */ }
+  return DEFAULT_INTEGRATION_BRANCH;
+}
+
+function uniqSorted(xs) {
+  const out = new Set();
+  for (const x of xs || []) {
+    if (x == null) continue;
+    const s = String(x).trim();
+    if (s) out.add(s);
+  }
+  return [...out].sort();
+}
+
+// Group an ALREADY dependency-ordered merge queue (the output of orderMergeQueue /
+// mergeQueueOrder) into per-lane integration points, each carrying its
+// rebase-onto-tip precondition and its path-extract fallback.
+//
+// Ordering contract (the load-bearing invariant): cross-lane dependency order
+// survives the grouping. Lane-level edges are induced from the CGR-level
+// depends_on that orderMergeQueue already honored — a CGR depending on a CGR in
+// ANOTHER lane makes that lane a predecessor — and the lanes are Kahn-sorted with
+// the queue's first-appearance index as the tie-break, so independent lanes keep
+// the queue's relative order and a dependent lane can never land first.
+//
+// Degenerate case: if two lanes depend on each other (a genuine cross-lane
+// cycle), no per-lane collapse is possible without breaking dependency order. The
+// plan then falls back to SEGMENTS — maximal contiguous same-lane runs of the flat
+// queue, which preserves the flat order exactly — and marks `split: true` so the
+// conductor sees the lanes were too entangled to collapse.
+//
+// Pure: no clock, no IO, no git. Injectable accessors keep it testable:
+//   depsOf(slug)   → depends_on slugs
+//   pathsOf(slug)  → owned paths/globs for the CGR
+//   branchOf(slug) → the worker's worktree branch, when known (else a placeholder)
+export function laneConvergencePlan(orderedQueue, {
+  branch = DEFAULT_INTEGRATION_BRANCH,
+  depsOf = () => [],
+  pathsOf = () => [],
+  branchOf = () => null,
+  verify = null,
+} = {}) {
+  const items = (Array.isArray(orderedQueue) ? orderedQueue : []).filter((m) => m && m.slug);
+  const target = String(branch || "").trim() || DEFAULT_INTEGRATION_BRANCH;
+  const laneOfItem = (m) => String(m.lane || "default");
+  const inQueue = new Set(items.map((m) => m.slug));
+  const laneBySlug = new Map(items.map((m) => [m.slug, laneOfItem(m)]));
+
+  // Lanes in first-appearance order (the queue's own ordering signal).
+  const lanes = [];
+  const firstIndex = new Map();
+  items.forEach((m, i) => {
+    const lane = laneOfItem(m);
+    if (!firstIndex.has(lane)) { firstIndex.set(lane, i); lanes.push(lane); }
+  });
+
+  // Induced lane-level dependency edges. Same-lane deps need no edge — queue
+  // order inside a lane already sequences them within the one integration point.
+  const waitsFor = new Map(lanes.map((l) => [l, new Set()]));
+  const crossLaneEdges = [];
+  for (const m of items) {
+    const lane = laneOfItem(m);
+    for (const d of depsOf(m.slug) || []) {
+      if (!inQueue.has(d)) continue;
+      const depLane = laneBySlug.get(d);
+      if (!depLane || depLane === lane) continue;
+      waitsFor.get(lane).add(depLane);
+      crossLaneEdges.push({ from: depLane, to: lane, dependent: m.slug, dependsOn: d });
+    }
+  }
+
+  // Kahn over the lane graph, tie-broken by first appearance in the queue.
+  const laneOrder = [];
+  const placed = new Set();
+  let cyclic = false;
+  while (placed.size < lanes.length) {
+    const ready = lanes
+      .filter((l) => !placed.has(l) && [...waitsFor.get(l)].every((d) => placed.has(d)))
+      .sort((a, b) => firstIndex.get(a) - firstIndex.get(b));
+    if (ready.length === 0) { cyclic = true; break; }
+    for (const l of ready) { laneOrder.push(l); placed.add(l); }
+  }
+
+  // Acyclic → one integration point per lane. Cyclic → contiguous segments of the
+  // flat queue (flat order preserved verbatim; never drop an item).
+  const buckets = [];
+  if (!cyclic) {
+    for (const lane of laneOrder) {
+      buckets.push({ lane, slugs: items.filter((m) => laneOfItem(m) === lane).map((m) => m.slug) });
+    }
+  } else {
+    for (const m of items) {
+      const lane = laneOfItem(m);
+      const last = buckets[buckets.length - 1];
+      if (last && last.lane === lane) last.slugs.push(m.slug);
+      else buckets.push({ lane, slugs: [m.slug] });
+    }
+  }
+
+  const bySlugItem = new Map(items.map((m) => [m.slug, m]));
+  const groups = buckets.map((b, i) => {
+    const paths = uniqSorted(b.slugs.flatMap((s) => pathsOf(s) || []));
+    const branches = uniqSorted(b.slugs.map((s) => branchOf(s)));
+    const workers = uniqSorted(b.slugs.map((s) => bySlugItem.get(s)?.worker));
+    const branchRef = branches.length === 1 ? branches[0] : `<worktree-branch:${b.lane}>`;
+    const pathArgs = paths.length ? paths.join(" ") : "<owned paths>";
+    return {
+      lane: b.lane,
+      order: i + 1,
+      slugs: b.slugs,
+      segment: cyclic ? i + 1 : null,
+      dependsOnLanes: [...(waitsFor.get(b.lane) || [])].sort(),
+      paths,
+      workers,
+      branches,
+      branchRef,
+      // The precondition IS the point of this stage — never emit a group without it.
+      precondition: {
+        kind: CONVERGENCE_PRECONDITION,
+        branch: target,
+        command: `git -C <worktree-for-${b.lane}> fetch && git -C <worktree-for-${b.lane}> rebase ${target}`,
+        why: `worker worktrees branch from a STALE base — converge ${b.lane} onto the ${target} TIP before landing it, or this merge can revert an integration point that landed earlier in this same drain`,
+      },
+      integration: {
+        command: `git merge --no-ff ${branchRef}`,
+        on: target,
+        verify: verify || null,
+      },
+      fallback: {
+        kind: CONVERGENCE_FALLBACK,
+        command: `git checkout ${branchRef} -- ${pathArgs}`,
+        on: target,
+        when: `the rebase precondition cannot be completed (worker base unrecoverably stale)`,
+        why: `path-extract takes ONLY this lane's owned paths, so intervening work outside them survives — a whole-tree merge from a stale base does not`,
+      },
+    };
+  });
+
+  return {
+    branch: target,
+    groups,
+    laneOrder: cyclic ? uniqSorted(buckets.map((b) => b.lane)) : laneOrder,
+    split: cyclic,
+    splitReason: cyclic ? "cross-lane-dependency-cycle" : null,
+    crossLaneEdges,
+    precondition: CONVERGENCE_PRECONDITION,
+    fallback: CONVERGENCE_FALLBACK,
+    counts: {
+      groups: groups.length,
+      lanes: new Set(groups.map((g) => g.lane)).size,
+      cgrs: items.length,
+      crossLaneEdges: crossLaneEdges.length,
+    },
+  };
+}
+
+// Render the convergence plan as the instruction block conductor step 5 emits.
+// Returns an array of lines (the caller joins) — the emitted-plan half of
+// instruct-not-act: the agent runs these commands, archkit only writes them down.
+export function renderConvergencePlan(plan, { maxPaths = 6 } = {}) {
+  const p = plan || {};
+  const groups = p.groups || [];
+  if (!groups.length) return [`MERGE: queue empty, nothing to converge or integrate.`];
+
+  const lines = [
+    `CONVERGE + MERGE — ${groups.length} integration point${groups.length === 1 ? "" : "s"} (one per lane), landed in THIS order onto ${p.branch}, verifying after EACH:`,
+    `   Worker worktrees branch from a STALE base, so a naive merge of a worker branch can REVERT what an earlier merge in this same drain landed. Every lane converges onto the ${p.branch} TIP before it lands.`,
+  ];
+  if (p.split) {
+    lines.push(
+      `   ! lanes are mutually dependent (${p.splitReason}) — they could NOT collapse to one point each; the queue is split into ordered segments instead.`,
+    );
+  }
+  for (const g of groups) {
+    const shown = g.paths.slice(0, maxPaths).join(", ");
+    const more = g.paths.length > maxPaths ? ` (+${g.paths.length - maxPaths} more)` : "";
+    const after = g.dependsOnLanes.length ? ` — lands AFTER lane${g.dependsOnLanes.length === 1 ? "" : "s"} ${g.dependsOnLanes.join(", ")}` : "";
+    lines.push(
+      `   ${g.order}) lane ${g.lane}${g.segment ? ` (segment ${g.segment})` : ""}: ${g.slugs.join(" → ")}${after}`,
+      `      owns: ${shown || "(unpredicted)"}${more}`,
+      `      1. PRECONDITION (${g.precondition.kind}): ${g.precondition.command}`,
+      `      2. INTEGRATE on ${g.integration.on}: ${g.integration.command}${g.integration.verify ? `, then verify: ${g.integration.verify}` : `, then re-run the verify-command`}`,
+      `      3. FALLBACK (${g.fallback.kind}) only if the rebase can't be completed: from ${g.fallback.on}, ${g.fallback.command}`,
+    );
+  }
+  lines.push(
+    `   Never merge a worker branch onto ${p.branch} without step 1. The path-extract fallback is bounded by the lane's OWNED paths, so intervening work outside them survives — a whole-tree merge from a stale base does not.`,
+  );
+  return lines;
+}
+
+// archDir wrapper: build the convergence plan for the LIVE board — dependency
+// order from each CGR's frontmatter, owned paths from `owns` ∪ files-to-touch,
+// integration branch from cgr.integrationBranch. Read-only (folds + reads goal
+// files; writes nothing, runs nothing).
+export function laneConvergence(archDir, { now = new Date().toISOString(), board, mergeOrder, branch } = {}) {
+  const ordered = mergeOrder || mergeQueueOrder(archDir, { now, board });
+  const goalCache = new Map();
+  const goal = (slug) => {
+    if (!goalCache.has(slug)) goalCache.set(slug, loadGoal(archDir, slug));
+    return goalCache.get(slug);
+  };
+  const verifies = uniqSorted(ordered.map((m) => verifyCommandOf(goal(m.slug))));
+  return laneConvergencePlan(ordered, {
+    branch: branch || integrationBranch(archDir),
+    depsOf: (slug) => { const g = goal(slug); return g ? dependsOnOf(g) : []; },
+    pathsOf: (slug) => { const g = goal(slug); return g ? [...ownsOf(g), ...filesToTouchOf(g)] : []; },
+    verify: verifies.length === 1 ? verifies[0] : null,
+  });
+}
+
 // The deep-review EXCEPTIONS (exit-criterion 1: "deep-review only exceptions").
 // A lean conductor rubber-stamps the clean returns and spends attention only on
 // what's risky. An item is an exception when ANY of:
@@ -710,6 +967,11 @@ export function conductorExceptions(board, { ownershipFloor = 0.5 } = {}) {
 export function conductorPlan(archDir, { now = new Date().toISOString(), ownershipFloor = 0.5 } = {}) {
   const board = sessionState(archDir, { now });
   const mergeOrder = mergeQueueOrder(archDir, { now, board });
+  // Lane convergence (ADR 0023): the same ordered queue, grouped into one
+  // integration point per lane with the rebase-onto-tip precondition. mergeOrder
+  // is kept alongside it — existing consumers (session-start digest, the
+  // archkit_conductor tool) still read the flat order; step 5 reads convergence.
+  const convergence = laneConvergence(archDir, { now, board, mergeOrder });
   const review = conductorExceptions(board, { ownershipFloor });
 
   // Claimable = frontier CGRs not already in-flight, grouped by lane. Exclusive
@@ -728,6 +990,7 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
     barriers: barriers.length,
     in_flight: board.in_flight.length,
     merge_queue: mergeOrder.length,
+    convergenceGroups: convergence.counts.groups,
     blocked: board.blocked.length,
     exceptions: review.exceptions.length,
     leases_expired: board.leases_expired.length,
@@ -740,6 +1003,7 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
     barriers: barriers.sort(),
     inFlight: board.in_flight,
     mergeOrder,
+    convergence,
     exceptions: review.exceptions,
     clean: review.clean,
     conflicts: review.conflicts,
