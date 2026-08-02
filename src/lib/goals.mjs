@@ -26,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createArchReader, loadGraphCluster } from "./parsers.mjs";
 import { archkitError } from "./errors.mjs";
+import { toPosixPath } from "./shared.mjs";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
 // Copy-paste ceiling: the `archkit goal payload` / `/goal` fallback path pastes
@@ -390,16 +391,66 @@ export function slugify(s) {
     .slice(0, 60) || "goal";
 }
 
+// ── YAML-ambiguity quoting (frontmatter-colon-escaping) ──────────────────────
+//
+// The frontmatter is hand-rolled (no YAML dep), but the VALUES are author text:
+// exit criteria routinely read "X is preserved: a lane containing…". Emitted bare,
+// a colon-space turns a list item into a `key: value` map — the scalar pass below
+// then harvests it as a bogus top-level key, and the next write re-emits it as a
+// stray unindented line right after the block, where the following read swallows
+// it back as a PHANTOM DUPLICATE criterion. So every value that YAML (or this
+// parser) would read as anything but a plain scalar is quoted on write and
+// unquoted on read. This applies to EVERY frontmatter value — scalars and every
+// block-list item alike (exit-criteria, files-to-touch, owns, required-reading,
+// depends-on) — because they all share the defect.
+const YAML_LEADING_INDICATOR = /^[-?:,[\]{}#&*!|>'"%@`]/;
+function needsYamlQuote(s) {
+  if (s === "") return false;
+  if (/^\s|\s$/.test(s)) return true;            // leading/trailing space is lost bare
+  if (YAML_LEADING_INDICATOR.test(s)) return true; // dash, hash, ampersand, asterisk, brackets…
+  if (/:(\s|$)/.test(s)) return true;             // colon-space (or trailing colon) → map
+  if (s.includes(" #")) return true;              // inline comment
+  if (/[\n\r]/.test(s)) return true;              // newlines can't survive a bare scalar
+  return false;
+}
+function quoteYamlScalar(v) {
+  const s = String(v);
+  // JSON string syntax is a subset of YAML's double-quoted scalar, so
+  // JSON.stringify/JSON.parse is a safe, dependency-free quote/unquote pair.
+  return needsYamlQuote(s) ? JSON.stringify(s) : s;
+}
+function unquoteYamlScalar(raw) {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try { return JSON.parse(raw); } catch { return raw.slice(1, -1); }
+  }
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.slice(1, -1).replace(/''/g, "'");
+  }
+  return raw;
+}
+function isQuotedScalar(raw) {
+  return raw.length >= 2 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")));
+}
+
 export function parseGoal(content) {
   const m = content.match(FRONTMATTER_RE);
   if (!m) return { meta: {}, body: content, elapsedMs: null };
   const meta = {};
   for (const line of m[1].split("\n")) {
+    // List items are NOT key:value lines — an item carrying a colon ("… is
+    // preserved: a lane …") must never register as a top-level key. Skipping
+    // them here is also what makes an ALREADY-CORRUPTED file (stray unindented
+    // `- text: more` lines from the pre-fix writer) parse without re-seeding the
+    // corruption instead of throwing.
+    if (/^\s*-\s/.test(line)) continue;
     const colon = line.indexOf(":");
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim();
     const raw = line.slice(colon + 1).trim();
-    if (raw.startsWith("[") && raw.endsWith("]")) {
+    if (isQuotedScalar(raw)) {
+      // Explicitly quoted → a literal scalar, never an inline list.
+      meta[key] = unquoteYamlScalar(raw);
+    } else if (raw.startsWith("[") && raw.endsWith("]")) {
       // Bare inline list — for arrays we prefer block form (handled below)
       meta[key] = raw.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
     } else {
@@ -415,7 +466,11 @@ export function parseGoal(content) {
   let currentKey = null;
   let buffer = [];
   const flush = () => {
-    if (currentKey && buffer.length > 0) meta[currentKey] = buffer;
+    // De-dupe exact repeats: a file corrupted by the pre-fix writer carries the
+    // colon-bearing criterion twice (once indented, once as the stray line the
+    // block pass re-absorbs). Dropping the exact repeat heals the phantom
+    // duplicate on read; distinct items are untouched.
+    if (currentKey && buffer.length > 0) meta[currentKey] = [...new Set(buffer)];
     currentKey = null;
     buffer = [];
   };
@@ -423,7 +478,7 @@ export function parseGoal(content) {
     const keyMatch = line.match(/^(\w[\w-]*):\s*$/);
     if (keyMatch) { flush(); currentKey = keyMatch[1]; continue; }
     if (currentKey && line.match(/^\s*-\s+/)) {
-      const item = line.replace(/^\s*-\s+/, "").trim();
+      const item = unquoteYamlScalar(line.replace(/^\s*-\s+/, "").trim());
       if (item) buffer.push(item);
     } else if (currentKey && !line.startsWith(" ")) {
       flush();
@@ -439,11 +494,15 @@ export function parseGoal(content) {
 function emitFrontmatter(meta) {
   const lines = [];
   for (const [k, v] of Object.entries(meta)) {
+    // A key that isn't a plain identifier can only have come from a corrupted
+    // read (a list item harvested as a key by the pre-fix parser). Never re-emit
+    // it — that's exactly how the stray unindented lines propagated.
+    if (!/^[\w][\w.-]*$/.test(String(k))) continue;
     if (Array.isArray(v)) {
       lines.push(`${k}:`);
-      for (const item of v) lines.push(`  - ${item}`);
+      for (const item of v) lines.push(`  - ${quoteYamlScalar(item)}`);
     } else if (v != null) {
-      lines.push(`${k}: ${v}`);
+      lines.push(`${k}: ${quoteYamlScalar(v)}`);
     }
   }
   return lines.join("\n");
@@ -939,6 +998,20 @@ export function acceptGraphProposal(archDir, slug, { file, line } = {}) {
 // Render a tight, copy-pasteable payload for the user to paste after `/goal`
 // in a fresh /clear'ed session. Stays under PAYLOAD_BUDGET — the full goal
 // context lives on disk; the payload just points to it.
+// A goal file's path as the agent will type it: relative to the PROJECT ROOT
+// (the parent of .arch/), forward-slashed so a Windows path is still a valid
+// Read argument. Falls back to the legacy root-level shape only if the path
+// can't be expressed relative to the project (never in practice — every goal
+// path is built from archDir).
+export function goalRelPath(archDir, filepath, slug) {
+  try {
+    const root = path.dirname(path.resolve(archDir));
+    const rel = toPosixPath(path.relative(root, path.resolve(filepath)));
+    if (rel && !rel.startsWith("..")) return rel;
+  } catch {}
+  return `${toPosixPath(path.join(path.basename(archDir), "goals"))}/${slug}.md`;
+}
+
 export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
@@ -953,7 +1026,12 @@ export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   lines.push(`Title: ${m.title || slug}`);
   lines.push("");
   lines.push(`Read first:`);
-  lines.push(`- .arch/goals/${slug}.md`);
+  // The goal's REAL on-disk path (payload-goal-path). A goal lives in one of four
+  // canonical places — queue/, queue/<project>/, goals/ root (live), testing/ —
+  // so a reconstructed `.arch/goals/<slug>.md` guess was wrong for every queued
+  // goal, and this is the FIRST action a fresh worker takes with no other way to
+  // find its own goal file. Derived from the path loadGoal actually resolved.
+  lines.push(`- ${goalRelPath(archDir, goal.filepath, slug)}`);
   for (const r of required) lines.push(`- ${r}`);
   lines.push("");
   lines.push(`Then run: archkit resolve warmup`);
@@ -2177,6 +2255,29 @@ export function writeFinalizeConfig(archDir, patch = {}) {
 // barrier, so the lane partition schedules it LAST and SOLO — correct, because it
 // touches changelog/docs/git across the whole batch. Exit-criteria are exactly the
 // enabled steps (so a project that only wants changelog+docs gets a 2-line goal).
+// The `project` the batch UNANIMOUSLY belongs to, or "" when the batch spans
+// several projects (or none). Inheriting it is what keeps the finalize barrier on
+// the same branch as the work it documents (finalize-project-inheritance): without
+// it the synthesized goal carried no project, so its payload instructed
+// `git switch -c cgr-queue-<date>` while every goal it depends on lived on
+// feat/<project> — the CHANGELOG/commit/push step would have run on a different
+// branch than the work. Unanimity is required precisely so a mixed batch FALLS
+// BACK to the shared dated queue branch instead of guessing one of the projects.
+// The project also decides the goal's on-disk home (writeGoal files a projected
+// goal under queue/<project>/), so inheriting keeps goal reconcile from
+// immediately relocating it.
+function inheritedBatchProject(archDir, batchSlugs) {
+  const seen = new Set();
+  for (const slug of batchSlugs) {
+    let p = "";
+    try { p = String(loadGoal(archDir, slug)?.meta?.project || "").trim(); } catch { p = ""; }
+    seen.add(p);
+    if (seen.size > 1) return ""; // mixed batch → no inheritance
+  }
+  const only = seen.size === 1 ? [...seen][0] : "";
+  return only;
+}
+
 export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk = "" } = {}) {
   const cfg = readFinalizeConfig(archDir);
   if (!cfg.enabled) return null;
@@ -2193,11 +2294,15 @@ export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk =
     enabled.map((s) => s.label.toLowerCase()).join(", ") + `.` + ciCdNote +
     ` archkit never runs git/deploy itself — do the local steps and instruct the user for push/release/deploy. ` +
     `Adjust or opt out with archkit_finalize_config (or \`archkit finalize\`).`;
+  const project = inheritedBatchProject(archDir, batchSlugs);
   return {
     slug: FINALIZE_SLUG,
     title: outward ? "Finalize: changelog, docs, commits + release" : "Finalize: changelog, docs, commits",
     exitCriteria,
     dependsOn: batchSlugs.slice(),
+    // Inherited so the barrier lands on the branch it documents; absent for a
+    // mixed/ungrouped batch, which keeps the shared dated queue branch.
+    ...(project ? { project } : {}),
     exclusive: true,
     feature: "finalize",
     owns: ["CHANGELOG.md", "CHANGELOG", "README.md", "docs/**"],
