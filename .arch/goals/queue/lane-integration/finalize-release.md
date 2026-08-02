@@ -1,9 +1,9 @@
 ---
 slug: finalize-release
-title: Finalize: changelog, docs, commits + release
+title: "Finalize: changelog, docs, commits + release"
 status: pending
 created: 2026-08-02
-order: 17
+order: 19
 project: lane-integration
 exit-criteria:
   - CHANGELOG updated with an entry covering this batch's changes
@@ -13,9 +13,7 @@ exit-criteria:
 files-to-touch: 
 required-reading: 
 depends-on:
-  - dispatched-lifecycle-state
-  - board-guard-concurrent-write
-  - test-cwd-audit-remainder
+  - conductor-dispatch-claim-wiring
 owns:
   - CHANGELOG.md
   - CHANGELOG
@@ -24,7 +22,7 @@ owns:
 feature: finalize
 exclusive: true
 verify-command: 
-source-ask: file all three, then dispatch finalize-version-bump with corrected owns — the three findings from the lane-integration dispatch pass: (1) Stop-hook guard is session-scoped but goal ownership is subagent-scoped, so every conductor pass gets told to work criteria belonging to a worker in another worktree; (2) the new .arch/ board-immutability guard false-positives on concurrent worker MCP writes and blames an innocent suite; (3) ten cwd-less spawns remain in test suites neither lane owned, plus migrate-playbooks resolves the archkit bin off process.cwd().
+source-ask: file the conductor-wiring follow-up — ADR 0027's `dispatched` state is implemented and tested but never reached in practice, because archkit_conductor's dispatch step still doesn't tell the conductor to claim each lane with archkit_goal_start {worker}. Until that wiring lands, conductors keep falling back to the archkit_goal_hold workaround, which misrepresents an actively-worked lane as deliberately parked. Observed six times across two sessions.
 lane: barrier-finalize-release
 ---
 
