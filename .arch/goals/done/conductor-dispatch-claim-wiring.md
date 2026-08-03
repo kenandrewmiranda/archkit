@@ -1,7 +1,7 @@
 ---
 slug: conductor-dispatch-claim-wiring
 title: Make the conductor pass actually claim each lane into the `dispatched` state it now has
-status: in-progress
+status: completed
 created: 2026-08-02
 order: 16
 project: lane-integration
@@ -26,7 +26,13 @@ verify-command: npm test
 source-ask: file the conductor-wiring follow-up — ADR 0027's `dispatched` state is implemented and tested but never reached in practice, because archkit_conductor's dispatch step still doesn't tell the conductor to claim each lane with archkit_goal_start {worker}. Until that wiring lands, conductors keep falling back to the archkit_goal_hold workaround, which misrepresents an actively-worked lane as deliberately parked. Observed six times across two sessions.
 lane: cgr-conductor
 started: 2026-08-03T00:36:37.419Z
+completed: 2026-08-03T00:52:11.234Z
+completion-notes: Rendered dispatch step now claims each lane via archkit_goal_start {slug, worker} before the spawn (ADR 0028); goal_hold marked as the anti-pattern; in_flight respects terminal CGR status; 77/77 suites green.
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-03
 ---
+
 
 
 
