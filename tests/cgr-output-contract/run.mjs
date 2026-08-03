@@ -140,6 +140,17 @@ function legacyConductorProse(plan) {
   if (laneList.length) {
     lines.push(`2. CLAIM + DISPATCH — spawn ONE worker subagent per claimable lane, each in an isolated git worktree (lanes have disjoint ownership → run them in parallel):`);
     for (const [lane, slugs] of laneList) lines.push(`   • lane ${lane}: ${slugs.join(" → ")}`);
+    // AMENDED, not rewritten (conductor-dispatch-claim-wiring, ADR 0027): the
+    // dispatch step gained a CLAIM instruction. EC4 measures the same INSTRUCTION
+    // SET rendered two ways — an instruction the graph carries and the baseline
+    // does not would quietly turn "the graph beats prose 2:1" into "no
+    // instruction may ever be added again". So the new one is written here in
+    // this function's own verbose pre-contract voice. Nothing already pinned
+    // above or below is edited.
+    lines.push(
+      `   • CLAIM each of those CGRs BEFORE (or as) you spawn its worker: call archkit_goal_start with the slug and the worker id you are spawning, so the goal enters the dispatched state instead of in-progress — it holds its lease, releases this session's Stop-hook guard, and stays in the board's in-flight slice across a /clear.`,
+      `   • Do NOT reach for archkit_goal_hold to end a conductor session that still has workers running: on-hold means deliberately parked work, it drops the lease, and it misrepresents an actively-worked lane as set aside.`,
+    );
   } else {
     lines.push(`2. CLAIM + DISPATCH — no claimable lanes right now.`);
   }

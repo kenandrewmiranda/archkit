@@ -435,6 +435,11 @@ export function sessionState(archDir, { now = new Date().toISOString() } = {}) {
   const in_flight = [];
   for (const [slug, a] of bySlug) {
     if (a.lifecycle !== "claimed") continue;
+    // A claim is live only while its CGR is: status is the source of truth
+    // (ADR 0003), so a CGR the worker already closed drops out of flight even
+    // when no `completed` event was appended. Without this a finished dispatch
+    // rehydrates forever after a /clear and its lease keeps aging into reclaim.
+    if (isGoalDone(archDir, slug)) continue;
     const g = liveBySlug.get(slug);
     const lease = (g && leaseOf(g)) || a.lease || null;
     in_flight.push({
@@ -1437,6 +1442,46 @@ export function conductorExceptions(board, { ownershipFloor = 0.5 } = {}) {
   };
 }
 
+// ── The dispatch CLAIM (ADR 0027 wiring) ─────────────────────────────────────
+//
+// A lane is not dispatched by spawning its worker — it is dispatched by CLAIMING
+// it: archkit_goal_start {slug, worker} called from the CONDUCTOR's session puts
+// the goal in `dispatched` (lease held, Stop-hook guard released HERE because a
+// subagent does the work) and appends the `claimed` event, so a conductor cleared
+// mid-pass rehydrates the dispatch out of session_state.in_flight instead of
+// reading an empty board. Spawn-without-claim leaves the worker to call goal_start
+// from ITS session, which lands `in-progress` and re-arms the guard in the
+// conductor's — the exact failure ADR 0027 exists to close, and the reason
+// conductors reached for archkit_goal_hold (which drops the lease and lies about
+// the lane being deliberately parked).
+//
+// Derives the claim calls one pass owes, grouped by DISPATCH UNIT (a lane, or a
+// solo barrier). Worker ids are DEFAULTS — the conductor should substitute the
+// real subagent id; what matters is that some stable id is passed so the lease
+// names its holder. Pure: no IO, no writes (claiming is the conductor's call).
+export function dispatchWorkerId(key) {
+  const slug = String(key || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `w-${slug || "lane"}`;
+}
+
+export function dispatchClaims({ claimableLanes = {}, barriers = [] } = {}) {
+  const units = [];
+  for (const [lane, slugs] of Object.entries(claimableLanes || {})) {
+    units.push({ key: lane, lane, worker: dispatchWorkerId(lane), slugs: [...(slugs || [])], solo: false });
+  }
+  // A barrier is its OWN dispatch unit (it runs solo), so it is keyed by slug —
+  // two barriers on the same lane must not collide onto one worker id.
+  for (const slug of barriers || []) {
+    units.push({ key: slug, lane: null, worker: dispatchWorkerId(slug), slugs: [slug], solo: true });
+  }
+  const claims = units.flatMap((u) => u.slugs.map((slug) => ({ slug, lane: u.lane, worker: u.worker, solo: u.solo })));
+  const workers = Object.fromEntries(units.map((u) => [u.key, u.worker]));
+  return { tool: "archkit_goal_start", units, claims, workers };
+}
+
 // The full conductor plan — the orchestration view the conductor session reads to
 // drive one loop pass. Assembles the folded board, the dependency-ordered merge
 // queue, the deep-review exceptions, and the claimable frontier grouped BY LANE
@@ -1474,6 +1519,11 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
   }
   for (const k of Object.keys(claimableLanes)) claimableLanes[k].sort();
 
+  // The claim calls this pass owes (ADR 0027): one archkit_goal_start {slug,
+  // worker} per claimable slug, made BEFORE/AS its worker is spawned so the goal
+  // enters `dispatched` rather than in-progress.
+  const dispatch = dispatchClaims({ claimableLanes, barriers });
+
   // INTEGRATION DEBT (ADR 0024): CGRs that MERGED without a green recorded
   // verify. Surfaced as its own slice — silence about a merge is not evidence it
   // was green, and a later pass must be able to see what it inherited.
@@ -1493,6 +1543,7 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
     frontier: board.frontier.length,
     claimableLanes: Object.keys(claimableLanes).length,
     barriers: barriers.length,
+    dispatch_claims: dispatch.claims.length,
     in_flight: board.in_flight.length,
     merge_queue: mergeOrder.length,
     convergenceGroups: convergence.counts.groups,
@@ -1510,6 +1561,7 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
     board,
     claimableLanes,
     barriers: barriers.sort(),
+    dispatch,
     inFlight: board.in_flight,
     mergeOrder,
     convergence,

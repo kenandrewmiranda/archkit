@@ -1,0 +1,15 @@
+{
+  "hash": "c79dbc7012a6",
+  "title": "Append a `completed` board event when a CGR completes, so the merge queue fills outside fission",
+  "why": "Nothing appends a `completed` event on a normal completion — only fission does (src/commands/goal.mjs). So sessionState.merge_queue stays empty for CGRs that genuinely completed and were never merged, and the conductor's convergence stage has nothing to drain. Surfaced while wiring the claim -> dispatched -> in_flight -> complete shape (ADR 0028); fixing it changes board behaviour repo-wide, so it needs its own goal.",
+  "exitCriteria": [
+    "archkit_goal_complete (runGoalComplete) appends a `completed` board event carrying the CGR's lane, worker and completion (full|partial)",
+    "A completed-but-unmerged CGR appears in archkit_session_state.merge_queue and in the conductor's convergence plan",
+    "Completing a CGR that was never claimed does not manufacture a phantom merge entry for work that already landed on the integration branch",
+    "Tests cover complete -> merge_queue -> archkit_board_merged -> off the queue"
+  ],
+  "contextExcerpt": "conductor-dispatch-claim-wiring: the e2e test showed in_flight cleared on completion (via the new terminal-status check) but merge_queue never filled.",
+  "patternName": null,
+  "source": "goal-defer",
+  "createdAt": "2026-08-03T00:50:39.426Z"
+}

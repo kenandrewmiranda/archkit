@@ -122,18 +122,22 @@ export function tree(nodes, { indent = "  " } = {}) {
 }
 
 // Lanes as branches, goals as leaves, barriers marked distinctly.
-//   ├─ ▸ output: fmt-a → fmt-b
+//   ├─ ▸ output: fmt-a → fmt-b · W=w-output
 //   └─ ! ⊘ solo-x SOLO — merge everything before it
 // `lanes` is conductorPlan.claimableLanes ({ lane: [slug] }); `barriers` is its
-// flat list of exclusive slugs. Returns lines.
-export function laneTree(lanes = {}, barriers = []) {
+// flat list of exclusive slugs. `workers` is conductorPlan.dispatch.workers
+// ({ laneOrBarrierSlug: workerId }) — when present each dispatch unit carries the
+// worker id its claim names, so the W in the claim template resolves per leaf
+// instead of being left for the reader to invent. Returns lines.
+export function laneTree(lanes = {}, barriers = [], { workers = {} } = {}) {
+  const w = (key) => (workers && workers[key] ? ` ${GLYPH.sep} W=${code(workers[key])}` : "");
   // Ordinary lanes are unmarked — they are the baseline case. Only a BARRIER
   // gets a symbol, so "run this one solo" is the thing the eye lands on.
   const nodes = Object.entries(lanes).map(([lane, slugs]) => ({
-    text: `${lane}: ${(slugs || []).join(` ${GLYPH.flow} `)}`,
+    text: `${lane}: ${(slugs || []).join(` ${GLYPH.flow} `)}${w(lane)}`,
   }));
   for (const slug of barriers || []) {
-    nodes.push({ text: `${SYM.attention} ${GLYPH.barrier} ${slug} ${strong("SOLO")} — merge everything before it` });
+    nodes.push({ text: `${SYM.attention} ${GLYPH.barrier} ${slug} ${strong("SOLO")} — merge everything before it${w(slug)}` });
   }
   return tree(nodes);
 }
@@ -256,6 +260,14 @@ export function conductorGraph(plan = {}) {
       : step(2, "ok", `claim + dispatch: no claimable lanes`),
   ];
   if (laneCount || (plan.barriers || []).length) {
+    // The CLAIM is the dispatch (ADR 0027) — emitted ONCE as a substitution
+    // template (W = the unit's worker id, carried on each leaf below) instead of
+    // a call per slug, so the cost stays O(1) in lanes. Spawn-without-claim is
+    // the bug: the worker's own goal_start lands in-progress and re-arms THIS
+    // session's guard, which is what drove conductors to goal_hold.
+    lines.push(
+      `   ${SYM.action} CLAIM first: ${code("archkit_goal_start {slug, worker:w-<lane>}")} ${GLYPH.flow} ${strong("dispatched")} (lease held, THIS guard freed, survives /clear) ${SYM.error}${code("archkit_goal_hold")}: parked ≠ live`,
+    );
     lines.push(...laneTree(plan.claimableLanes || {}, plan.barriers || []));
   }
   lines.push(

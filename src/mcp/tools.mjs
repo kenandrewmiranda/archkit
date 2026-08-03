@@ -539,7 +539,7 @@ export const tools = {
   },
 
   archkit_conductor: {
-    description: "CGR conductor PLAN -- what to do in one orchestration pass (ADR 0013): claimableLanes to claim under a lease, barriers that run SOLO, mergeOrder, convergence (per-lane rebase-onto-tip then a concrete verify command, ADR 0023/0024), unverifiedMerges (integration debt), exceptions to deep-review vs clean to rubber-stamp, and pendingEscalations (collisions not yet escalated -- mint a solo barrier via archkit_board_conflict). Spawn ONE worker subagent per claimable lane in an isolated worktree. Read-only: claiming, merging, and escalating are your follow-up calls. Trigger: conductor session start, and after collecting worker handoffs. For the raw board slices underneath, use archkit_session_state.",
+    description: "CGR conductor PLAN -- what to do in one orchestration pass (ADR 0013): claimableLanes to claim under a lease, barriers that run SOLO, mergeOrder, convergence (per-lane rebase-onto-tip then a concrete verify command, ADR 0023/0024), unverifiedMerges (integration debt), exceptions to deep-review vs clean to rubber-stamp, and pendingEscalations (collisions not yet escalated -- mint a solo barrier via archkit_board_conflict). `dispatch` = the claims owed: archkit_goal_start {slug, worker} BEFORE spawning each lane's worktree-isolated worker, so it lands `dispatched` (ADR 0027). Read-only: claiming, merging, and escalating are your follow-up calls. Trigger: conductor session start, and after collecting worker handoffs. For the raw board slices underneath, use archkit_session_state.",
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
@@ -572,7 +572,10 @@ export const tools = {
         const reclaim = c.leases_expired > 0 ? `, reclaim ${c.leases_expired} orphan lease${c.leases_expired === 1 ? "" : "s"}` : "";
         const bar = c.barriers ? ` + ${c.barriers} barrier${c.barriers === 1 ? "" : "s"}` : "";
         const esc = c.escalations_pending > 0 ? `, escalate ${c.escalations_pending} conflict${c.escalations_pending === 1 ? "" : "s"}` : "";
-        out.nextStep = `Loop: claim ${c.claimableLanes} lane${c.claimableLanes === 1 ? "" : "s"}${bar}, ${c.in_flight} in flight, merge ${c.merge_queue} in dep order${review}${reclaim}${debt}${esc}. Verify after EACH integration point, then record it with archkit_board_merged.`;
+        const claim = c.dispatch_claims
+          ? ` — claim its ${c.dispatch_claims} CGR${c.dispatch_claims === 1 ? "" : "s"} with archkit_goal_start {slug, worker} BEFORE spawning the worker (see \`dispatch\`), never archkit_goal_hold`
+          : "";
+        out.nextStep = `Loop: claim ${c.claimableLanes} lane${c.claimableLanes === 1 ? "" : "s"}${bar}${claim}, ${c.in_flight} in flight, merge ${c.merge_queue} in dep order${review}${reclaim}${debt}${esc}. Verify after EACH integration point, then record it with archkit_board_merged.`;
       }
       return out;
     },

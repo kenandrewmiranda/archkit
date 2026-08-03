@@ -13,6 +13,16 @@
 //   - rehydrateConductor reclaims orphans, consumes the flush marker, folds a plan
 //   - stopGuardDecision releases per-lane (drained OR wind-down handoff), else blocks
 //   - config knobs (windDownAt/windDownAtByModel/leaseTtlHours) resolve (EC4)
+//
+// conductor-dispatch-claim-wiring (ADR 0027) adds the CLAIM half of dispatch —
+// the pass has to tell the conductor to claim each lane, not just to spawn for it:
+//   - dispatchClaims derives one archkit_goal_start {slug, worker} call per
+//     claimable slug, grouped by dispatch unit (lane, or a solo barrier)
+//   - conductorPlan carries that as `dispatch` + counts.dispatch_claims
+//   - the RENDERED pass (conductorGraph) carries the claim step with the worker
+//     identifier, and never offers archkit_goal_hold as an action
+//   - end to end: claim -> dispatched -> session_state.in_flight -> complete,
+//     including a worker's own goal_start only CONFIRMING the existing claim
 
 import { strict as assert } from "node:assert";
 import fs from "node:fs";
@@ -36,7 +46,10 @@ import {
   flushMarkerPath,
   stopGuardDecision,
   writeHandoff,
+  dispatchClaims,
+  dispatchWorkerId,
 } from "../../src/lib/board.mjs";
+import { conductorGraph } from "../../src/lib/format.mjs";
 import {
   writeGoal,
   loadGoal,
@@ -45,6 +58,12 @@ import {
   leaseOf,
   leaseTtlHours,
   windDownAt,
+  dispatchGoal,
+  completeGoal,
+  statusOf,
+  getActiveGoal,
+  isGoalDone,
+  STATUS_DISPATCHED,
 } from "../../src/lib/goals.mjs";
 
 let passed = 0, failed = 0;
@@ -295,6 +314,112 @@ test("config knobs resolve: windDownAt (+ per-model) and leaseTtlHours", () => {
   assert.equal(windDownAt(arch, {}), 0.65, "base wind-down threshold");
   assert.equal(windDownAt(arch, { model: "claude-opus-4-8" }), 0.7, "per-model override");
   assert.equal(leaseTtlHours(arch), 24, "lease TTL hours");
+});
+
+// ── the dispatch CLAIM (conductor-dispatch-claim-wiring, ADR 0027) ───────────
+
+test("dispatchClaims derives one goal_start claim per slug, grouped by dispatch unit", () => {
+  const d = dispatchClaims({
+    claimableLanes: { backend: ["b1", "b2"], "output fmt": ["o1"] },
+    barriers: ["solo-x"],
+  });
+  assert.equal(d.tool, "archkit_goal_start", "the claim is made with goal_start, not a new verb");
+  assert.deepEqual(d.claims.map((c) => c.slug), ["b1", "b2", "o1", "solo-x"], "every claimable slug is claimed");
+  // One worker per LANE (the dispatch unit) — both backend CGRs go to the same one.
+  assert.equal(d.claims[0].worker, d.claims[1].worker, "a lane's CGRs share its worker");
+  assert.equal(d.workers.backend, "w-backend");
+  assert.equal(d.workers["output fmt"], dispatchWorkerId("output fmt"), "a lane id is slugified into the worker id");
+  // A barrier is its OWN unit: keyed by slug, so two barriers never collide.
+  const solo = d.units.find((u) => u.solo);
+  assert.deepEqual(solo.slugs, ["solo-x"]);
+  assert.equal(solo.worker, "w-solo-x");
+  assert.equal(d.claims.find((c) => c.slug === "solo-x").lane, null);
+});
+
+test("conductorPlan carries the claims the pass owes (dispatch + counts)", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "f1", { lane: "backend" });
+  pendingGoal(arch, "f2", { lane: "frontend" });
+  pendingGoal(arch, "x1", { lane: "wide", exclusive: true });
+  const plan = conductorPlan(arch, { now: NOW });
+  assert.deepEqual(plan.dispatch.claims.map((c) => c.slug).sort(), ["f1", "f2", "x1"]);
+  assert.equal(plan.counts.dispatch_claims, 3, "one claim per claimable CGR, barriers included");
+  assert.equal(plan.dispatch.workers.backend, "w-backend");
+  assert.equal(plan.dispatch.workers.x1, "w-x1", "the barrier's unit is keyed by slug");
+});
+
+test("the RENDERED dispatch step tells the conductor to CLAIM with a worker before spawning", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "f1", { lane: "backend" });
+  pendingGoal(arch, "f2", { lane: "frontend" });
+  const text = conductorGraph(conductorPlan(arch, { now: NOW })).join("\n");
+  const claimLine = text.split("\n").find((l) => l.includes("archkit_goal_start"));
+  assert.ok(claimLine, "the pass names the claim tool at all");
+  assert.match(claimLine, /worker/, "…and passes a worker identifier with it");
+  assert.match(claimLine, /CLAIM first/i, "…before/as the worker is spawned, not after");
+  assert.match(claimLine, /dispatched/, "…so the goal lands in `dispatched`, not in-progress");
+  // The claim template is emitted ONCE for N lanes — O(1), like the convergence one.
+  assert.equal(text.split("archkit_goal_start").length - 1, 1, "one claim template, not one call per lane");
+  // The lane tree still maps lanes to slugs, so <lane> in the template resolves.
+  assert.match(text, /backend: f1/);
+  assert.match(text, /frontend: f2/);
+});
+
+test("the rendered pass never offers archkit_goal_hold as a way to end the session", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "f1", { lane: "backend" });
+  pendingGoal(arch, "f2", { lane: "frontend" });
+  const lines = conductorGraph(conductorPlan(arch, { now: NOW }));
+  for (const line of lines) {
+    if (!line.includes("archkit_goal_hold")) continue;
+    // on-hold stays reserved for deliberately parked work: the only way the pass
+    // may mention it is as the ✗ anti-pattern, never as a ▸ action to take.
+    assert.ok(line.includes("✗"), `goal_hold must be marked as the anti-pattern, got: ${line}`);
+    assert.ok(!/^\d+ ▸/.test(line), "…and never as a numbered action step");
+  }
+});
+
+// ── end to end: claim → dispatched → in_flight → complete ────────────────────
+
+test("claim → dispatched → in_flight (lane/worker/lease) → complete clears the board", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "lane-a", { lane: "backend" });
+  pendingGoal(arch, "lane-b", { lane: "frontend" });
+  const worker = conductorPlan(arch, { now: NOW }).dispatch.workers.backend;
+
+  // 1. the conductor claims, exactly as archkit_goal_start {slug, worker} does.
+  const claim = claimFrontier(arch, { slug: "lane-a", worker, now: NOW });
+  const dispatched = dispatchGoal(arch, "lane-a", { worker });
+  assert.equal(dispatched.status, STATUS_DISPATCHED, "the claim dispatches rather than starting");
+  assert.equal(claim.lane, "backend");
+
+  // 2. the guard is released in the claiming session, and the board shows the
+  //    dispatch — so a conductor cleared mid-pass rehydrates it.
+  assert.equal(getActiveGoal(arch), null, "a dispatched goal does not guard the conductor's session");
+  const flight = sessionState(arch, { now: NOW }).in_flight.find((f) => f.slug === "lane-a");
+  assert.ok(flight, "the dispatched lane is in flight");
+  assert.equal(flight.lane, "backend");
+  assert.equal(flight.worker, worker);
+  assert.ok(flight.lease?.expires, "under a lease with a TTL");
+  const rehydrated = rehydrateConductor(arch, { now: NOW });
+  assert.deepEqual(rehydrated.plan.inFlight.map((f) => f.slug), ["lane-a"], "it survives the /clear rehydrate");
+  assert.deepEqual(rehydrated.reclaimed, [], "and a live lease is not reclaimed out from under the worker");
+
+  // 3. it is no longer offered for claiming — the frontier can't double-dispatch it.
+  assert.deepEqual(rehydrated.plan.dispatch.claims.map((c) => c.slug), ["lane-b"]);
+
+  // 4. the worker confirming its own claim does NOT flip it back to in-progress
+  //    (that would re-arm the conductor's guard — ADR 0027).
+  assert.equal(startGoal(arch, "lane-a").status, STATUS_DISPATCHED, "a worker's goal_start only CONFIRMS");
+  assert.equal(getActiveGoal(arch), null, "so the guard stays released");
+  assert.equal(leaseOf(loadGoal(arch, "lane-a")).worker, worker, "and the lease still names the worker");
+
+  // 5. the worker closes it from its own session → off the board.
+  completeGoal(arch, "lane-a");
+  assert.equal(isGoalDone(arch, "lane-a"), true);
+  const after = sessionState(arch, { now: NOW });
+  assert.deepEqual(after.in_flight.map((f) => f.slug), [], "a closed dispatch stops rehydrating as in-flight");
+  assert.deepEqual(after.leases_expired.map((l) => l.slug), [], "and its lease is not left to age into reclaim");
 });
 
 console.log("");
