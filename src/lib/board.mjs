@@ -308,6 +308,9 @@ export function foldEvents(events) {
       a = {
         slug, lifecycle: null, lane: null, worker: null, lease: null,
         completion: null, lineage: null,
+        // Integration metadata a `completed` event may carry, so a CGR archived
+        // out of goals/ can still order and bound its own merge (ADR 0029).
+        dependsOn: null, paths: null, verify: null,
         claimedAt: null, completedAt: null, mergedAt: null, events: 0,
         // Post-integration verification carried by the `merged` event (ADR 0024).
         verification: null, mergedBranch: null,
@@ -331,6 +334,9 @@ export function foldEvents(events) {
     if (ev.lane != null) a.lane = ev.lane;
     if (ev.worker != null) a.worker = ev.worker;
     if (ev.lease != null) a.lease = ev.lease;
+    if (Array.isArray(ev.dependsOn)) a.dependsOn = [...ev.dependsOn];
+    if (Array.isArray(ev.paths)) a.paths = [...ev.paths];
+    if (ev.verify != null) a.verify = ev.verify;
     switch (ev.type) {
       case "claimed":
         a.lifecycle = "claimed"; a.claimedAt = ev.at || a.claimedAt; break;
@@ -464,6 +470,14 @@ export function sessionState(archDir, { now = new Date().toISOString() } = {}) {
       completion: a.completion || (g && completionOf(g)) || "full",
       worker: a.worker || null,
       since: a.completedAt || null,
+      // Integration metadata: the live CGR when it is still on disk, else what
+      // its `completed` event carried (ADR 0029). A completed CGR is archived to
+      // done/, which loadGoal deliberately does not read — without this the merge
+      // queue would lose the dependency order, the owned paths the path-extract
+      // fallback is bounded by, and the CGR's own verify command.
+      dependsOn: (g ? dependsOnOf(g) : a.dependsOn) || [],
+      paths: (g ? [...ownsOf(g), ...filesToTouchOf(g)] : a.paths) || [],
+      verify: (g ? verifyCommandOf(g) : a.verify) || null,
     });
   }
   merge_queue.sort(bySlugAsc);
@@ -686,11 +700,15 @@ export function orderMergeQueue(mergeQueue, depsOf = () => []) {
 // each CGR's frontmatter via dependsOnOf), falling back to (since, slug).
 export function mergeQueueOrder(archDir, { now = new Date().toISOString(), board } = {}) {
   const state = board || sessionState(archDir, { now });
+  // Deps come from the live CGR, and from the board when the CGR has already been
+  // archived out of goals/ (ADR 0029) — otherwise a completed stack loses its
+  // bottom-up order the moment its files move to done/.
+  const boardDeps = new Map(state.merge_queue.map((m) => [m.slug, m.dependsOn || []]));
   const depCache = new Map();
   const depsOf = (slug) => {
     if (!depCache.has(slug)) {
       const g = loadGoal(archDir, slug);
-      depCache.set(slug, g ? dependsOnOf(g) : []);
+      depCache.set(slug, g ? dependsOnOf(g) : (boardDeps.get(slug) || []));
     }
     return depCache.get(slug);
   };
@@ -1091,15 +1109,69 @@ export function laneConvergence(archDir, { now = new Date().toISOString(), board
     if (!goalCache.has(slug)) goalCache.set(slug, loadGoal(archDir, slug));
     return goalCache.get(slug);
   };
+  // What the merge-queue entry itself carries — the live CGR's frontmatter, or
+  // what its `completed` event recorded once the file was archived (ADR 0029).
+  const queued = new Map(ordered.map((m) => [m.slug, m]));
+  const carried = (slug) => queued.get(slug) || {};
   return laneConvergencePlan(ordered, {
     branch: branch || integrationBranch(archDir),
-    depsOf: (slug) => { const g = goal(slug); return g ? dependsOnOf(g) : []; },
-    pathsOf: (slug) => { const g = goal(slug); return g ? [...ownsOf(g), ...filesToTouchOf(g)] : []; },
+    depsOf: (slug) => { const g = goal(slug); return g ? dependsOnOf(g) : (carried(slug).dependsOn || []); },
+    pathsOf: (slug) => { const g = goal(slug); return g ? [...ownsOf(g), ...filesToTouchOf(g)] : (carried(slug).paths || []); },
     // The fallback chain, live: the CGR's own verify-command first, the project
     // test command behind it (ADR 0024). Each lane resolves independently.
-    verifyOf: (slug) => verifyCommandOf(goal(slug)),
+    verifyOf: (slug) => verifyCommandOf(goal(slug)) || carried(slug).verify || null,
     projectVerify: projectVerify !== undefined ? projectVerify : projectVerifyCommand(archDir),
   });
+}
+
+// Record that a CGR met its exit-criteria: append the `completed` event the
+// merge queue is derived from (ADR 0029). Until this existed, only fission
+// appended one, so a CGR a worker finished normally left the board stuck showing
+// it as claimed — and never reached the convergence stage that merges it.
+//
+// GATED ON A PRIOR CLAIM, deliberately. The merge queue means "finished in an
+// isolated worktree, not yet on the integration branch". A foreground CGR —
+// started and completed in the same tree, never claimed — has nothing to merge;
+// recording it would manufacture an integration point and send the conductor
+// asking a human to merge a branch that does not exist. A CLAIMED CGR
+// (claimFrontier, i.e. a dispatch — ADR 0027/0028) is exactly the worktree case.
+//
+// The event carries the integration metadata the archived CGR file would
+// otherwise take with it: lane, worker, completion, depends_on, owned paths, and
+// the CGR's own verify command.
+//
+// Idempotent: a slug already folded past `claimed` is left alone, so re-running
+// (or replaying a log) never double-appends. Returns { appended, reason, event }.
+export function recordCompletion(archDir, {
+  slug, completion = "full", worker = null, lane = null,
+  dependsOn = null, paths = null, verify = null,
+  now = new Date().toISOString(),
+} = {}) {
+  if (!slug) throw new Error("recordCompletion requires a slug");
+  const { bySlug } = foldEvents(readEvents(archDir));
+  const a = bySlug.get(slug) || null;
+  if (!a || a.lifecycle !== "claimed") {
+    return {
+      appended: false,
+      // never-claimed = a foreground CGR, nothing to merge. Anything else means
+      // the completion is already on the board (or the CGR was fissioned).
+      reason: a ? `already-${a.lifecycle}` : "never-claimed",
+      event: null,
+      slug,
+    };
+  }
+  const event = appendEvent(archDir, {
+    type: "completed",
+    slug,
+    lane: lane || a.lane || null,
+    worker: worker || a.worker || a.lease?.worker || null,
+    completion: completion || "full",
+    dependsOn: Array.isArray(dependsOn) ? dependsOn : [],
+    paths: Array.isArray(paths) ? paths : [],
+    verify: verify || null,
+    at: now,
+  });
+  return { appended: true, reason: "claimed", event, slug, lane: event.lane, worker: event.worker };
 }
 
 // Record an integration point landing: append ONE `merged` event per CGR in the

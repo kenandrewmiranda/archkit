@@ -48,7 +48,10 @@ import {
   writeHandoff,
   dispatchClaims,
   dispatchWorkerId,
+  recordCompletion,
+  recordMerge,
 } from "../../src/lib/board.mjs";
+import { runGoalComplete } from "../../src/commands/goal.mjs";
 import { conductorGraph } from "../../src/lib/format.mjs";
 import {
   writeGoal,
@@ -84,6 +87,17 @@ function liveGoal(arch, slug, fields = {}) {
   if (Object.keys(fields).length) stampGoalFields(arch, slug, fields);
   return slug;
 }
+// A temp PROJECT (root + .arch/) — runGoalComplete needs a cwd it can run the
+// verify-command and `git diff` in, unlike the bare-.arch helpers above.
+function freshProject() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-conductor-proj-"));
+  const arch = path.join(root, ".arch");
+  fs.mkdirSync(arch, { recursive: true });
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fixture", scripts: {} }, null, 2));
+  return { root, arch };
+}
+const PASS_CMD = `node -e "process.exit(0)"`;
+
 function pendingGoal(arch, slug, fields = {}) {
   writeGoal(arch, { slug, title: slug, exitCriteria: ["x"] });
   if (Object.keys(fields).length) stampGoalFields(arch, slug, fields);
@@ -420,6 +434,103 @@ test("claim → dispatched → in_flight (lane/worker/lease) → complete clears
   const after = sessionState(arch, { now: NOW });
   assert.deepEqual(after.in_flight.map((f) => f.slug), [], "a closed dispatch stops rehydrating as in-flight");
   assert.deepEqual(after.leases_expired.map((l) => l.slug), [], "and its lease is not left to age into reclaim");
+});
+
+// ── completion reaches the board (ADR 0029) ──────────────────────────────────
+
+test("recordCompletion appends a `completed` event for a CLAIMED CGR, carrying its integration metadata", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "c1", { lane: "backend" });
+  claimFrontier(arch, { slug: "c1", worker: "w-backend", now: NOW });
+  const r = recordCompletion(arch, {
+    slug: "c1", completion: "full", dependsOn: ["base"], paths: ["src/a.mjs"], verify: "npm test", now: NOW,
+  });
+  assert.equal(r.appended, true);
+  assert.equal(r.lane, "backend", "the lane is carried from the claim");
+  assert.equal(r.worker, "w-backend");
+  const ev = readEvents(arch).filter((e) => e.type === "completed");
+  assert.equal(ev.length, 1);
+  assert.deepEqual(ev[0].paths, ["src/a.mjs"], "owned paths ride along — the CGR file is about to be archived");
+  assert.deepEqual(ev[0].dependsOn, ["base"]);
+  assert.equal(ev[0].verify, "npm test");
+});
+
+test("recordCompletion records NOTHING for a CGR that was never claimed (no phantom merge)", () => {
+  const arch = freshArch();
+  liveGoal(arch, "foreground", { lane: "L" });
+  const r = recordCompletion(arch, { slug: "foreground", now: NOW });
+  assert.equal(r.appended, false);
+  assert.equal(r.reason, "never-claimed", "a foreground CGR has no worktree branch to merge");
+  assert.equal(readEvents(arch).filter((e) => e.type === "completed").length, 0);
+  assert.deepEqual(sessionState(arch, { now: NOW }).merge_queue, [], "so it never enters the merge queue");
+});
+
+test("recordCompletion is idempotent — a completion already on the board is not re-appended", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "c1", { lane: "L" });
+  claimFrontier(arch, { slug: "c1", worker: "w1", now: NOW });
+  assert.equal(recordCompletion(arch, { slug: "c1", now: NOW }).appended, true);
+  const second = recordCompletion(arch, { slug: "c1", now: NOW });
+  assert.equal(second.appended, false);
+  assert.equal(second.reason, "already-completed");
+  assert.equal(readEvents(arch).filter((e) => e.type === "completed").length, 1);
+});
+
+test("archkit_goal_complete moves a dispatched CGR from in_flight into the merge queue, and board_merged clears it", () => {
+  const { arch, root } = freshProject();
+  writeGoal(arch, {
+    slug: "lane-a", title: "Lane A", exitCriteria: ["x"],
+    owns: ["src/a.mjs"], verifyCommand: PASS_CMD,
+  });
+  stampGoalFields(arch, "lane-a", { lane: "backend" });
+  claimFrontier(arch, { slug: "lane-a", worker: "w-backend", now: NOW });
+  dispatchGoal(arch, "lane-a", { worker: "w-backend" });
+
+  const done = runGoalComplete({ archDir: arch, cwd: root, slug: "lane-a" });
+  assert.equal(done.boardRecord.recorded, true, "the completion is recorded on the board");
+  assert.equal(done.boardRecord.lane, "backend");
+  assert.match(done.nextStep, /merge queue/i, "…and the agent is told where the CGR went");
+
+  const plan = conductorPlan(arch, { now: NOW });
+  assert.deepEqual(plan.board.in_flight.map((f) => f.slug), [], "it is no longer in flight");
+  const queued = plan.board.merge_queue.find((m) => m.slug === "lane-a");
+  assert.ok(queued, "it is in the merge queue");
+  assert.equal(queued.lane, "backend");
+  assert.equal(queued.completion, "full");
+  // The CGR file is archived to done/ by now, so this metadata can only have
+  // come off the event — which is the point of carrying it.
+  assert.equal(loadGoal(arch, "lane-a"), null, "the CGR file is archived out of goals/");
+  assert.deepEqual(queued.paths, ["src/a.mjs"], "its owned paths survive the archive");
+  assert.equal(queued.verify, PASS_CMD, "as does its own verify-command");
+
+  // …and the convergence stage now has an integration point to drain.
+  const group = plan.convergence.groups.find((g) => g.slugs.includes("lane-a"));
+  assert.ok(group, "the merge queue reaches the convergence plan");
+  assert.equal(group.lane, "backend");
+  assert.deepEqual(group.paths, ["src/a.mjs"], "the path-extract fallback is still bounded by what it owns");
+  assert.equal(group.integration.verify, PASS_CMD);
+  assert.equal(group.integration.verifySource, "cgr");
+
+  // Recording the merge takes it off the queue for good.
+  recordMerge(arch, { slugs: ["lane-a"], lane: "backend", branch: "main", verifyCommand: PASS_CMD, passed: true, now: NOW });
+  const after = conductorPlan(arch, { now: NOW });
+  assert.deepEqual(after.board.merge_queue.map((m) => m.slug), [], "merged CGRs leave the queue");
+  assert.deepEqual(after.unverifiedMerges, [], "and the merge carries a green verify, so no integration debt");
+});
+
+test("dependency order survives archival — a completed stack still merges bottom-up", () => {
+  const { arch, root } = freshProject();
+  for (const slug of ["base", "feat"]) {
+    writeGoal(arch, { slug, title: slug, exitCriteria: ["x"], dependsOn: slug === "feat" ? ["base"] : [] });
+    stampGoalFields(arch, slug, { lane: "backend" });
+    claimFrontier(arch, { slug, worker: "w-backend", now: NOW });
+  }
+  // feat finishes FIRST, so only the recorded depends_on can order them.
+  runGoalComplete({ archDir: arch, cwd: root, slug: "feat" });
+  runGoalComplete({ archDir: arch, cwd: root, slug: "base" });
+  assert.equal(loadGoal(arch, "feat"), null, "both CGRs are archived");
+  assert.deepEqual(mergeQueueOrder(arch, { now: NOW }).map((m) => m.slug), ["base", "feat"],
+    "the dependency edge outlives the CGR file it was declared in");
 });
 
 console.log("");

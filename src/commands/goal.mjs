@@ -50,6 +50,9 @@ import {
   bucketCompletion,
   ownsOf,
   filesToTouchOf,
+  laneOf,
+  completionOf,
+  dependsOnOf,
   windDownAt,
   partitionCriteria,
   fissionDecision,
@@ -59,7 +62,7 @@ import {
   FINALIZE_STEPS,
   reconcileGoalsLayout,
 } from "../lib/goals.mjs";
-import { writeHandoff, appendEvent } from "../lib/board.mjs";
+import { writeHandoff, appendEvent, recordCompletion } from "../lib/board.mjs";
 import crypto from "node:crypto";
 import { detectTestCommand, runTests } from "../lib/test-runner.mjs";
 import { archkitError } from "../lib/errors.mjs";
@@ -477,7 +480,26 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
   let bucketDone = null;
   try { bucketDone = bucketCompletion(archDir, listGoals(archDir), slug); } catch { /* non-fatal */ }
 
+  // Integration metadata read while the CGR is still on disk — completeGoal
+  // archives it to done/, which loadGoal deliberately cannot see (ADR 0029).
+  const integration = {
+    lane: laneOf(goal) || null,
+    completion: completionOf(goal) || "full",
+    dependsOn: dependsOnOf(goal),
+    paths: [...new Set([...ownsOf(goal), ...filesToTouchOf(goal)])],
+    verify: verifyCommand || null,
+  };
+
   const result = completeGoal(archDir, slug, { notes, extraMeta, timeSpent });
+
+  // Board record: a CGR that was CLAIMED (dispatched to a worker's worktree,
+  // ADR 0027) now appends its `completed` event, so it leaves in_flight and
+  // enters the merge queue the convergence stage drains. A foreground CGR never
+  // claimed one, so nothing is appended — there is no branch to merge. Recorded
+  // AFTER the archive, so an event never claims a completion that didn't happen.
+  let completedEvent = null;
+  try { completedEvent = recordCompletion(archDir, { slug, ...integration }); } catch { /* non-fatal */ }
+
   // Suggest the next goal's payload if any
   const remaining = listGoals(archDir);
   const next = remaining.find((g) => statusOf(g) !== STATUS_COMPLETED);
@@ -500,6 +522,11 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
     : "";
   // Per-goal effort breadcrumb: explicit override if given, else derived
   // wall-clock; silent for legacy date-only goals where neither is available.
+  // A dispatched lane's completion now has somewhere to go: say so, so the
+  // conductor knows the CGR moved from in-flight to the merge queue (ADR 0029).
+  const mergeNote = completedEvent && completedEvent.appended
+    ? ` Recorded on the board — ${slug} left in_flight for the merge queue${completedEvent.lane ? ` (lane ${completedEvent.lane})` : ""}; converge it, then archkit_board_merged.`
+    : "";
   const timeNote = result.effort && result.effort.display
     ? ` Time ${result.effort.source === "explicit" ? "logged" : "elapsed"}: ${result.effort.display}.`
     : "";
@@ -523,6 +550,12 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
     // agent presents merge-vs-archive; merge emits `mergeGuidance` for the user
     // to run (instruct-not-act), archive-only leaves the branch unmerged.
     bucketCompletion: bucketDone,
+    // Whether this completion was recorded on the board (ADR 0029). Appended for
+    // a CLAIMED CGR — it leaves in_flight and enters the merge queue; skipped for
+    // a foreground one, which has no worktree branch to integrate.
+    boardRecord: completedEvent
+      ? { recorded: completedEvent.appended, reason: completedEvent.reason, lane: completedEvent.lane || null }
+      : null,
     nextGoal: next
       ? {
           slug: next.slug,
@@ -531,8 +564,8 @@ export function runGoalComplete({ archDir, cwd = process.cwd(), slug, notes, tim
         }
       : null,
     nextStep: next
-      ? `${bucketNote ? bucketNote.trim() + " Then: " : ""}Run /clear, then /mcp__archkit__conductor to begin ${next.slug}.${timeNote}${graphNote}`
-      : `CGR queue empty.${bucketNote}${drainNote}${timeNote}${graphNote}${bucketNote ? "" : " Ask the user what to tackle next."}`,
+      ? `${bucketNote ? bucketNote.trim() + " Then: " : ""}Run /clear, then /mcp__archkit__conductor to begin ${next.slug}.${mergeNote}${timeNote}${graphNote}`
+      : `CGR queue empty.${bucketNote}${drainNote}${mergeNote}${timeNote}${graphNote}${bucketNote ? "" : " Ask the user what to tackle next."}`,
   };
 }
 
