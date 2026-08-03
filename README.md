@@ -49,14 +49,14 @@ archkit solves this by compiling your architecture into structured files the age
 ## Highlights
 
 - **Clear Goal Run (CGR)** *(v1.7+)* — decompose a sprawling ask into discrete, one-per-fresh-context goals, then advance the queue with a single keystroke. A goal-aware Stop hook keeps the agent on the current goal until its exit-criteria are met. [See below](#clear-goal-run-cgr).
-- **Full MCP server** — **35 tools** (review, resolve, drift, doctor, boundaries, decisions, goals…), **5 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
+- **Full MCP server** — **49 tools** (review, resolve, drift, doctor, boundaries, decisions, goals, orchestration…), **5 prompts** (the CGR relay slash commands), and **MCP resources** (`@archkit:` handles for `.arch/` source). Native for Claude Code, Cursor, Continue.
 - **API-doc hard gate** *(ADR 0022)* — if an edit touches an external API that has no referenced doc/SDK, a PreToolUse gate **denies the edit before it lands** and tells you how to clear it (register a doc or override with a reason). No coding starts against a guessed API surface. No-op when disabled; docs and spec are never blocked. [See below](#api-doc-gate-adr-0022).
 - **CGR test gate + deferred-goal proposals** *(v1.9)* — every goal carries an auto-detected `verify-command`, and `archkit_goal_complete` refuses to finish a goal whose tests are red. Follow-up work spotted mid-goal is captured as a **proposed** goal (`archkit_goal_defer` + Stop-hook auto-drafting) and reviewed later instead of lost. [See below](#the-test-gate-v19).
 - **Continuous-guardrail hooks** *(v1.6+)* — SessionStart, UserPromptSubmit, PostToolUse, and a goal-aware Stop hook fire every turn so archkit stays in working memory even on long sessions. Self-installing via `archkit_install_hooks` or the plugin.
 - **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
 - **Live runtime signal** — `preflight` surfaces recent commits, scoped gotchas, active drift, and **related ADRs** per feature/layer, so agents see current state and prior decisions, not yesterday's snapshot.
 - **Institutional memory** — log architectural decisions (`archkit_log_decision`) and read them back (`archkit_decisions_search`) so settled choices survive context resets.
-- **Lean footprint** — 1 runtime dependency (`inquirer`), 82 source modules, 49 integration test suites.
+- **Lean footprint** — 1 runtime dependency (`inquirer`), 98 source modules, 77 integration test suites.
 
 ---
 
@@ -186,14 +186,16 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 }
 ```
 
-### Available tools (35)
+### Available tools (49)
 
 **Resolve & scaffold**
 - `archkit_init` — greenfield setup; returns the wizard inline
+- `archkit_init_generate` — generate the `.arch/` scaffold from collected wizard answers
 - `archkit_resolve_warmup` — pre-session health check
 - `archkit_resolve_preflight` — verify a feature/layer before coding (recent commits, scoped gotchas, drift, **related ADRs**, required-reading playbooks)
 - `archkit_resolve_scaffold` — new-feature checklist
 - `archkit_resolve_lookup` — look up a node, playbook, or cluster by id
+- `archkit_sync` — report which `.arch/` docs need authoring after code changes (new feature dirs missing from `INDEX.md`, deps with no playbook, dead `basePath` nodes, playbook version drift)
 
 **Review & boundaries**
 - `archkit_review` / `archkit_review_staged` — review files / git-staged files against rules + gotchas
@@ -204,11 +206,14 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 - `archkit_drift` — detect stale/orphaned `.arch/` files
 - `archkit_stats` — health dashboard data
 - `archkit_doctor` — workflow logistic gauge (is `.arch/` actually load-bearing? are the hooks installed?)
+- `archkit_verify_wiring` — find exports nothing outside their own directory imports (the dead-code / unwired-component check)
+- `archkit_audit_spec` — audit a spec's `REQ-###` requirement lines against the codebase
 
 **Knowledge & decisions**
 - `archkit_gotcha_propose` / `archkit_gotcha_list` — propose / list package gotchas
 - `archkit_log_decision` — append an ADR to `.arch/decisions/`
 - `archkit_decisions_search` — read/search past ADRs (closes the institutional-memory loop)
+- `archkit_graph_accept` — apply one authored node line from a persisted graph-proposal to its cluster `.graph` (ADR 0004 — the accept half of the flywheel `archkit_goal_complete` starts)
 - `archkit_prd_check` — detect a PRD and check it against `.arch/SYSTEM.md`
 
 **Clear Goal Run (CGR)**
@@ -222,6 +227,17 @@ Other MCP-capable clients can run the server directly. Add to your client's MCP 
 - `archkit_goal_defer` — stash a follow-up you spotted mid-session as a **proposed** goal (out of scope now, reviewed later)
 - `archkit_goal_promote` / `archkit_goal_dismiss` — promote selected proposals into planned goals, or reject them
 - `archkit_goal_reconcile` — reconcile goal **placement** against `status` frontmatter (the folder is a derived cache); dry-run to preview or apply to fix. Warmup runs this automatically and reports the moves
+- `archkit_goal_start` — mark a specific goal in-progress by slug and return its payload, with the branch guidance for its bucket. Pass `worker` to make the claim a **dispatch** (`dispatched`, ADR 0027)
+- `archkit_finalize_config` — read/set `cgr.finalize`, the per-project wrap-up policy (changelog, docs, commit, plus opt-in version-bump / push / release / deploy-to-dev)
+- `archkit_worklog` — a copy-pasteable day-by-day worklog of completed goals, for Jira or standups
+
+**Parallel lanes (CGR 2.0)**
+- `archkit_conductor` — the orchestration **plan** for one pass: claimable lanes, solo barriers, the claims owed (`archkit_goal_start {slug, worker}`), merge order, per-lane convergence, integration debt, exceptions to deep-review, and un-escalated collisions. Read-only — claiming, merging, and escalating are your follow-up calls
+- `archkit_session_state` — the raw folded board: lanes, frontier, blocked, in-flight, merge queue, merged (with verify outcome), conflicts, expired leases
+- `archkit_board_merged` — record that a lane's integration landed, with its post-integration **verify outcome** (`green` / `red` / `unverified` — derived, never assumed)
+- `archkit_board_conflict` — escalate a genuine cross-lane content collision into a solo `merge-reconcile-*` barrier CGR
+- `archkit_goal_fission` — split a **partially met** goal at wind-down into what's done and what remains
+- `archkit_goal_handoff` — author a goal's carry-forward handoff (done + evidence, decisions, remaining, continuation notes)
 
 **API-doc gate**
 - `archkit_api_register` — clear an API by registering a real doc/SDK reference (unblocks edits that touch it)
@@ -284,7 +300,7 @@ A long agent session accumulates context, drifts off-task, and re-litigates sett
 - **One command to advance.** `/mcp__archkit__conductor` marks the next goal in-progress and injects its payload (or, when independent lanes exist, runs the orchestration pass) — replacing the old copy-paste-after-`/goal` step (still available as a fallback).
 - **A goal-aware Stop hook** blocks stopping while a goal's exit-criteria are unmet, and releases when the agent calls `archkit_goal_complete`. It won't trap a genuine question to you, and a per-goal turn cap prevents runaway loops. It only fires for relay-started goals — plain sessions are untouched.
 - **Verify before you finish.** `archkit_goal_verify` reports objective evidence (which planned files changed, what a staged review finds) so "done" isn't just a vibe. `archkit_goal_abandon` drops a mis-scoped goal without marking it complete.
-- **Finalization goal** *(cgr.finalize)*. Once configured, intake auto-appends a wrap-up goal that runs **last and solo** — update the changelog, refresh docs, finalize commits, and the opt-in push / release / deploy-to-dev — so a sprawling ask closes out its release chores in a fresh context. A project's first intake asks you once which steps to enable (saved to `.arch/config.json` → `cgr.finalize`); reconfigure or opt out anytime with `archkit_finalize_config` or `archkit finalize`. Defaults: changelog/docs/commit on, outward steps off. archkit emits the steps as exit-criteria — it never runs git/deploy itself.
+- **Finalization goal** *(cgr.finalize)*. Once configured, intake auto-appends a wrap-up goal that runs **last and solo** — update the changelog, refresh docs, finalize commits, and the opt-in version bump / push / release / deploy-to-dev — so a sprawling ask closes out its release chores in a fresh context. A project's first intake asks you once which steps to enable (saved to `.arch/config.json` → `cgr.finalize`); reconfigure or opt out anytime with `archkit_finalize_config` or `archkit finalize`. Defaults: changelog/docs/commit on, version bump and the outward steps off. The **version bump** runs *first* when enabled — it bumps every file the project's own version check compares (e.g. `package.json` + `.claude-plugin/plugin.json`) and re-runs that check, so the batch ends on a commit that is actually taggable. archkit emits the steps as exit-criteria — it never runs git/deploy itself.
 
 ### The goal lifecycle
 
@@ -292,15 +308,19 @@ A goal moves through a small, explicit set of states (the `status:` field in the
 
 ```
   pending ──▶ in-progress ──▶ testing ──▶ completed
-                  │              ▲            │
-                  │ (set aside)  │ (resume)   ▼
-                  └──▶ on-hold ──┘        consolidation
-                       │                  (dated digest +
-                       └──▶ abandoned      raw archive)
+     │            │              ▲            │
+     │            │ (set aside)  │ (resume)   ▼
+     │            └──▶ on-hold ──┘        consolidation
+     │                 │                  (dated digest +
+     │                 └──▶ abandoned      raw archive)
+     │
+     └──▶ dispatched ──────────────────────▶ (worker closes it normally)
+          claimed for a worker session
 ```
 
 - **pending** — decomposed and queued, not started. (Existing goal files using `planned` keep working — it's an accepted alias.)
 - **in-progress** — actively being worked; the Stop-hook relay guard is engaged.
+- **dispatched** *(ADR 0027)* — **claimed on behalf of another session.** The conductor calls `archkit_goal_start {slug, worker}` *before* spawning a worktree-isolated worker; the goal **holds the lease** but is excluded from the guarded statuses, so the *claiming* session's Stop hook releases while the lane stays live for conflict detection. This exists because the MCP server resolves one `.arch/` from one cwd — without it, a worker's `archkit_goal_start` lands `in-progress` in the conductor's shared state and tells the conductor to work exit-criteria a worker is editing in a different tree. All terminal transitions work from `dispatched`, so the worker closes it normally from its own session; `startGoal(…, { reclaim: true })` is the explicit take-back after a failed dispatch. **Not** a substitute for `on-hold` — and `archkit_goal_hold` is now explicitly marked as the anti-pattern at the dispatch step.
 - **testing** *(v1.10.0)* — edits applied, **verification still pending**. This is the antidote to premature completion: instead of `archkit_goal_complete`-ing the moment a fast mass-edit lands (hiding unverified work in `done/`), call `archkit_goal_testing` to park it as **visible debt** in `.arch/goals/testing/`. A testing goal survives `/clear` and stays guarded — it is *not* done until a later session runs its `verify-command` green and completes it.
 - **completed** — terminal success, archived to `.arch/goals/done/`. (Internally `done`; reconciled to `completed` in the lifecycle vocabulary.)
 - **on-hold** *(v1.10.0)* — a real, queued goal **deliberately set aside** via `archkit_goal_hold`. Unlike `testing`, parking *releases* the guard so the session can end, and the goal isn't auto-selected ahead of pending/testing work — `/mcp__archkit__conductor` resumes it (back to in-progress) only once nothing live is left. Distinct from a **proposed** follow-up (`archkit_goal_defer`), which isn't a queued goal at all.
@@ -311,6 +331,17 @@ A goal moves through a small, explicit set of states (the `status:` field in the
 **Consolidation.** At queue-drain (after `archkit_goal_complete`) and session-end (the Stop hook) — or on demand via `archkit_goal_consolidate` — terminal goals are folded into a dated per-day **digest** (`.arch/goals/done/digest/<date>.md`) and each raw CGR is preserved verbatim under `.arch/goals/done/archive/<slug>.md` so full context stays recoverable. Digests are discoverable through `archkit_goal_list`.
 
 **Placement reconcile.** Because `status:` is the source of truth, the goal **folder is just a derived cache**. `archkit resolve warmup` reconciles the two on startup — it scans the goals folder and auto-fixes any CGR sitting in the wrong place (a `status: on-hold` goal stranded in `queue/`, say) into the folder its status dictates, and **reports every move** rather than shuffling files silently. Run the same pass on demand with `archkit_goal_reconcile` (dry-run to preview, apply to fix). A separate lightweight staleness check compares the folder against chat/board state to flag cross-project cruft, but it stays **advisory-only** — it reports, never moves.
+
+### Parallel lanes: dispatch → converge → verify → land (ADRs 0023–0029)
+
+When intake partitions a batch into independent lanes, `/mcp__archkit__conductor` runs an orchestration pass instead of working a single goal. archkit **emits the plan; you run the git and the tests** — it spawns nothing and merges nothing itself.
+
+- **Claim, then spawn.** The pass renders `archkit_goal_start {slug, worker}` for each claimable lane *before* the worker is spawned, so the lane lands `dispatched` — lease held, the conductor's guard released, and the claim survives a `/clear`.
+- **Converge, don't drain.** Worktree workers branch from a **stale base**, so merging each CGR independently lets a later merge silently revert an earlier one. Each *lane* lands as **one integration point**, with an explicit **rebase-onto-branch-tip precondition** so the merge can only fast-forward or conflict — plus a **path-extract fallback** (`git checkout <lane-branch> -- <owned paths>`) bounded by the lane's declared ownership, for when the base is unrecoverably stale. Cross-lane dependency order is preserved; a genuine cycle degrades to ordered segments and is flagged rather than mis-ordered.
+- **Verify with a real command.** Each integration point carries a resolved verify command — the CGR's own `verify-command`, else the detected project test command, else an explicit "no command resolved, record it as unverified." A lane whose CGRs resolve differently gets the union joined with `&&`.
+- **Record the outcome.** `archkit_board_merged` appends the result per CGR, and the status is **derived, never trusted**: passed → `green`, failed → `red`, no command or no reported result → `unverified`. Silence never reads as success — unverified merges surface as **integration debt** that keeps the conductor non-idle.
+- **Land through CI.** When `cgr.finalize.ciCd` names a provider, a drained bucket's guidance is push + open a PR and **wait for the required checks** — the PR *is* the gate. With no provider configured the guidance stays a plain local merge, unchanged.
+- **Escalate real collisions.** Two lanes that genuinely collide on file *content* get escalated by `archkit_board_conflict` into an exclusive `merge-reconcile-*` barrier CGR that depends on both — resolved as its own goal in its own context, not inline in the conductor's window.
 
 ### API-doc gate (ADR 0022)
 
