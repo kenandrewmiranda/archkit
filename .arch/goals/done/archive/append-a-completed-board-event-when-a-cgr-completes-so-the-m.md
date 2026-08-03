@@ -1,7 +1,7 @@
 ---
 slug: append-a-completed-board-event-when-a-cgr-completes-so-the-m
 title: Append a `completed` board event when a CGR completes, so the merge queue fills outside fission
-status: in-progress
+status: completed
 created: 2026-08-03
 exit-criteria:
   - archkit_goal_complete (runGoalComplete) appends a `completed` board event carrying the CGR's lane, worker and completion (full|partial)
@@ -14,7 +14,10 @@ depends-on:
 verify-command: 
 source-ask: "Deferred during a prior session: conductor-dispatch-claim-wiring: the e2e test showed in_flight cleared on completion (via the new terminal-status check) but merge_queue never filled."
 started: 2026-08-03T00:56:22.558Z
+completed: 2026-08-03T01:02:38.588Z
+completion-notes: recordCompletion appends the `completed` event for CLAIMED CGRs only, carrying lane/worker/completion/deps/paths/verify so an archived CGR still orders and bounds its merge (ADR 0029). 77/77 suites green.
 ---
+
 
 
 # Append a `completed` board event when a CGR completes, so the merge queue fills outside fission
