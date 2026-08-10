@@ -16,11 +16,22 @@
 
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ARCHKIT = path.resolve(__dirname, "..", "..", "bin", "archkit.mjs");
+
+// This suite only asserts router output, but the router hands off to real
+// commands (`update`, `stats`) that walk up from process.cwd() looking for an
+// .arch/. A child with no explicit `cwd` inherits the runner's — which, run
+// directly from the repo root, is archkit's OWN board. Every run happens in
+// this empty scratch project instead: no .arch/ here or above tmpdir, so the
+// walk-up finds nothing and the router still prints what we assert on.
+const PROJECT = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "archkit-cli-dispatch-"));
+process.on("exit", () => { try { fs.rmSync(PROJECT, { recursive: true, force: true }); } catch {} });
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -34,7 +45,7 @@ function test(name, fn) {
 // (e.g. `update`) can't hang the suite — we only assert the router's own output,
 // which is printed before any command body runs.
 function run(args) {
-  const r = spawnSync(process.execPath, [ARCHKIT, ...args], { encoding: "utf8", timeout: 8000 });
+  const r = spawnSync(process.execPath, [ARCHKIT, ...args], { cwd: PROJECT, encoding: "utf8", timeout: 8000 });
   return { status: r.status, stdout: r.stdout || "", stderr: r.stderr || "" };
 }
 

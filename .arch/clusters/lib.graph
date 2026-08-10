@@ -17,3 +17,4 @@ Playbooks [U] : src/lib/playbooks.mjs — central resolver for package-knowledge
 GoalTriage [U] : src/lib/goal-triage.mjs — advisory staleness triage; scores live+pending goals as cross-project cruft (no board event / no chat mention / age / branch-project mismatch), returns findings only, never mutates | Board+Goals → THIS → Warmup/Conductor
 ApiRegistry [S] : src/lib/api-registry.mjs — read/write .arch/apis.json API-doc clearance manifest (atomic, corruption-tolerant) + readApiGateConfig; isApiCleared/registerApi/overrideApi/listApis | ApiTools,ApiGateHook → THIS
 ApiDetect [U] : src/lib/api-detect.mjs — detectApis heuristic scan flagging SDK imports / non-internal fetch+base-URL hosts / declared apis in an edit, pure never-throws | ApiGateHook → THIS
+Format [U] : src/lib/format.mjs — terse MCP output contract: lane/board graph renderer + four-symbol severity vocabulary, markdown emphasis only (no ANSI) | Board,Prompts → THIS → McpTools

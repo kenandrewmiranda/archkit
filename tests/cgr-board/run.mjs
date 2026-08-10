@@ -5,7 +5,7 @@
 //   - appendEvent / readEvents round-trip + unknown-type rejection + torn-line tolerance
 //   - foldEvents is PURE/deterministic (same events → identical fold)
 //   - sessionState is deterministic (same inputs + same `now` → identical board)
-//   - the seven derived slices: lanes, frontier, blocked, in_flight, merge_queue,
+//   - the derived slices: lanes, frontier, blocked, in_flight, merge_queue, merged,
 //     conflicts, leases_expired — driven by events folded over CGR frontmatter
 //   - the board is purely DERIVED — no separate mutable board file is created
 //   - extended CGR frontmatter round-trips (lane/owns/depends_on/exclusive/
@@ -154,7 +154,7 @@ test("sessionState is deterministic for fixed inputs + now", () => {
   const s2 = sessionState(arch, { now });
   assert.deepEqual(s1, s2);
   assert.deepEqual(Object.keys(s1).sort(),
-    ["blocked", "conflicts", "frontier", "handoffs", "in_flight", "lanes", "leases_expired", "merge_queue"]);
+    ["blocked", "conflicts", "frontier", "handoffs", "in_flight", "lanes", "leases_expired", "merge_queue", "merged"]);
 });
 
 // ── derived slices ───────────────────────────────────────────────────────────
@@ -314,6 +314,11 @@ await testAsync("parallel appends from N processes produce N*M intact lines", as
 
   await Promise.all(Array.from({ length: N }, (_, w) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", worker], {
+      // The worker addresses the board through ARCH_DIR, but an inherited cwd
+      // is still archkit's own checkout when this suite is run directly. Root
+      // the child in the temp project that owns `arch` so nothing it does can
+      // resolve back to the live board.
+      cwd: path.dirname(arch),
       env: { ...process.env, BOARD_URL, ARCH_DIR: arch, COUNT: String(M), WID: `w${w}` },
       stdio: ["ignore", "ignore", "inherit"],
     });

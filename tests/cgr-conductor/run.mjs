@@ -13,6 +13,16 @@
 //   - rehydrateConductor reclaims orphans, consumes the flush marker, folds a plan
 //   - stopGuardDecision releases per-lane (drained OR wind-down handoff), else blocks
 //   - config knobs (windDownAt/windDownAtByModel/leaseTtlHours) resolve (EC4)
+//
+// conductor-dispatch-claim-wiring (ADR 0027) adds the CLAIM half of dispatch —
+// the pass has to tell the conductor to claim each lane, not just to spawn for it:
+//   - dispatchClaims derives one archkit_goal_start {slug, worker} call per
+//     claimable slug, grouped by dispatch unit (lane, or a solo barrier)
+//   - conductorPlan carries that as `dispatch` + counts.dispatch_claims
+//   - the RENDERED pass (conductorGraph) carries the claim step with the worker
+//     identifier, and never offers archkit_goal_hold as an action
+//   - end to end: claim -> dispatched -> session_state.in_flight -> complete,
+//     including a worker's own goal_start only CONFIRMING the existing claim
 
 import { strict as assert } from "node:assert";
 import fs from "node:fs";
@@ -36,7 +46,13 @@ import {
   flushMarkerPath,
   stopGuardDecision,
   writeHandoff,
+  dispatchClaims,
+  dispatchWorkerId,
+  recordCompletion,
+  recordMerge,
 } from "../../src/lib/board.mjs";
+import { runGoalComplete } from "../../src/commands/goal.mjs";
+import { conductorGraph } from "../../src/lib/format.mjs";
 import {
   writeGoal,
   loadGoal,
@@ -45,6 +61,12 @@ import {
   leaseOf,
   leaseTtlHours,
   windDownAt,
+  dispatchGoal,
+  completeGoal,
+  statusOf,
+  getActiveGoal,
+  isGoalDone,
+  STATUS_DISPATCHED,
 } from "../../src/lib/goals.mjs";
 
 let passed = 0, failed = 0;
@@ -65,6 +87,17 @@ function liveGoal(arch, slug, fields = {}) {
   if (Object.keys(fields).length) stampGoalFields(arch, slug, fields);
   return slug;
 }
+// A temp PROJECT (root + .arch/) — runGoalComplete needs a cwd it can run the
+// verify-command and `git diff` in, unlike the bare-.arch helpers above.
+function freshProject() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "archkit-conductor-proj-"));
+  const arch = path.join(root, ".arch");
+  fs.mkdirSync(arch, { recursive: true });
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "fixture", scripts: {} }, null, 2));
+  return { root, arch };
+}
+const PASS_CMD = `node -e "process.exit(0)"`;
+
 function pendingGoal(arch, slug, fields = {}) {
   writeGoal(arch, { slug, title: slug, exitCriteria: ["x"] });
   if (Object.keys(fields).length) stampGoalFields(arch, slug, fields);
@@ -295,6 +328,209 @@ test("config knobs resolve: windDownAt (+ per-model) and leaseTtlHours", () => {
   assert.equal(windDownAt(arch, {}), 0.65, "base wind-down threshold");
   assert.equal(windDownAt(arch, { model: "claude-opus-4-8" }), 0.7, "per-model override");
   assert.equal(leaseTtlHours(arch), 24, "lease TTL hours");
+});
+
+// ── the dispatch CLAIM (conductor-dispatch-claim-wiring, ADR 0027) ───────────
+
+test("dispatchClaims derives one goal_start claim per slug, grouped by dispatch unit", () => {
+  const d = dispatchClaims({
+    claimableLanes: { backend: ["b1", "b2"], "output fmt": ["o1"] },
+    barriers: ["solo-x"],
+  });
+  assert.equal(d.tool, "archkit_goal_start", "the claim is made with goal_start, not a new verb");
+  assert.deepEqual(d.claims.map((c) => c.slug), ["b1", "b2", "o1", "solo-x"], "every claimable slug is claimed");
+  // One worker per LANE (the dispatch unit) — both backend CGRs go to the same one.
+  assert.equal(d.claims[0].worker, d.claims[1].worker, "a lane's CGRs share its worker");
+  assert.equal(d.workers.backend, "w-backend");
+  assert.equal(d.workers["output fmt"], dispatchWorkerId("output fmt"), "a lane id is slugified into the worker id");
+  // A barrier is its OWN unit: keyed by slug, so two barriers never collide.
+  const solo = d.units.find((u) => u.solo);
+  assert.deepEqual(solo.slugs, ["solo-x"]);
+  assert.equal(solo.worker, "w-solo-x");
+  assert.equal(d.claims.find((c) => c.slug === "solo-x").lane, null);
+});
+
+test("conductorPlan carries the claims the pass owes (dispatch + counts)", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "f1", { lane: "backend" });
+  pendingGoal(arch, "f2", { lane: "frontend" });
+  pendingGoal(arch, "x1", { lane: "wide", exclusive: true });
+  const plan = conductorPlan(arch, { now: NOW });
+  assert.deepEqual(plan.dispatch.claims.map((c) => c.slug).sort(), ["f1", "f2", "x1"]);
+  assert.equal(plan.counts.dispatch_claims, 3, "one claim per claimable CGR, barriers included");
+  assert.equal(plan.dispatch.workers.backend, "w-backend");
+  assert.equal(plan.dispatch.workers.x1, "w-x1", "the barrier's unit is keyed by slug");
+});
+
+test("the RENDERED dispatch step tells the conductor to CLAIM with a worker before spawning", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "f1", { lane: "backend" });
+  pendingGoal(arch, "f2", { lane: "frontend" });
+  const text = conductorGraph(conductorPlan(arch, { now: NOW })).join("\n");
+  const claimLine = text.split("\n").find((l) => l.includes("archkit_goal_start"));
+  assert.ok(claimLine, "the pass names the claim tool at all");
+  assert.match(claimLine, /worker/, "…and passes a worker identifier with it");
+  assert.match(claimLine, /CLAIM first/i, "…before/as the worker is spawned, not after");
+  assert.match(claimLine, /dispatched/, "…so the goal lands in `dispatched`, not in-progress");
+  // The claim template is emitted ONCE for N lanes — O(1), like the convergence one.
+  assert.equal(text.split("archkit_goal_start").length - 1, 1, "one claim template, not one call per lane");
+  // The lane tree still maps lanes to slugs, so <lane> in the template resolves.
+  assert.match(text, /backend: f1/);
+  assert.match(text, /frontend: f2/);
+});
+
+test("the rendered pass never offers archkit_goal_hold as a way to end the session", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "f1", { lane: "backend" });
+  pendingGoal(arch, "f2", { lane: "frontend" });
+  const lines = conductorGraph(conductorPlan(arch, { now: NOW }));
+  for (const line of lines) {
+    if (!line.includes("archkit_goal_hold")) continue;
+    // on-hold stays reserved for deliberately parked work: the only way the pass
+    // may mention it is as the ✗ anti-pattern, never as a ▸ action to take.
+    assert.ok(line.includes("✗"), `goal_hold must be marked as the anti-pattern, got: ${line}`);
+    assert.ok(!/^\d+ ▸/.test(line), "…and never as a numbered action step");
+  }
+});
+
+// ── end to end: claim → dispatched → in_flight → complete ────────────────────
+
+test("claim → dispatched → in_flight (lane/worker/lease) → complete clears the board", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "lane-a", { lane: "backend" });
+  pendingGoal(arch, "lane-b", { lane: "frontend" });
+  const worker = conductorPlan(arch, { now: NOW }).dispatch.workers.backend;
+
+  // 1. the conductor claims, exactly as archkit_goal_start {slug, worker} does.
+  const claim = claimFrontier(arch, { slug: "lane-a", worker, now: NOW });
+  const dispatched = dispatchGoal(arch, "lane-a", { worker });
+  assert.equal(dispatched.status, STATUS_DISPATCHED, "the claim dispatches rather than starting");
+  assert.equal(claim.lane, "backend");
+
+  // 2. the guard is released in the claiming session, and the board shows the
+  //    dispatch — so a conductor cleared mid-pass rehydrates it.
+  assert.equal(getActiveGoal(arch), null, "a dispatched goal does not guard the conductor's session");
+  const flight = sessionState(arch, { now: NOW }).in_flight.find((f) => f.slug === "lane-a");
+  assert.ok(flight, "the dispatched lane is in flight");
+  assert.equal(flight.lane, "backend");
+  assert.equal(flight.worker, worker);
+  assert.ok(flight.lease?.expires, "under a lease with a TTL");
+  const rehydrated = rehydrateConductor(arch, { now: NOW });
+  assert.deepEqual(rehydrated.plan.inFlight.map((f) => f.slug), ["lane-a"], "it survives the /clear rehydrate");
+  assert.deepEqual(rehydrated.reclaimed, [], "and a live lease is not reclaimed out from under the worker");
+
+  // 3. it is no longer offered for claiming — the frontier can't double-dispatch it.
+  assert.deepEqual(rehydrated.plan.dispatch.claims.map((c) => c.slug), ["lane-b"]);
+
+  // 4. the worker confirming its own claim does NOT flip it back to in-progress
+  //    (that would re-arm the conductor's guard — ADR 0027).
+  assert.equal(startGoal(arch, "lane-a").status, STATUS_DISPATCHED, "a worker's goal_start only CONFIRMS");
+  assert.equal(getActiveGoal(arch), null, "so the guard stays released");
+  assert.equal(leaseOf(loadGoal(arch, "lane-a")).worker, worker, "and the lease still names the worker");
+
+  // 5. the worker closes it from its own session → off the board.
+  completeGoal(arch, "lane-a");
+  assert.equal(isGoalDone(arch, "lane-a"), true);
+  const after = sessionState(arch, { now: NOW });
+  assert.deepEqual(after.in_flight.map((f) => f.slug), [], "a closed dispatch stops rehydrating as in-flight");
+  assert.deepEqual(after.leases_expired.map((l) => l.slug), [], "and its lease is not left to age into reclaim");
+});
+
+// ── completion reaches the board (ADR 0029) ──────────────────────────────────
+
+test("recordCompletion appends a `completed` event for a CLAIMED CGR, carrying its integration metadata", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "c1", { lane: "backend" });
+  claimFrontier(arch, { slug: "c1", worker: "w-backend", now: NOW });
+  const r = recordCompletion(arch, {
+    slug: "c1", completion: "full", dependsOn: ["base"], paths: ["src/a.mjs"], verify: "npm test", now: NOW,
+  });
+  assert.equal(r.appended, true);
+  assert.equal(r.lane, "backend", "the lane is carried from the claim");
+  assert.equal(r.worker, "w-backend");
+  const ev = readEvents(arch).filter((e) => e.type === "completed");
+  assert.equal(ev.length, 1);
+  assert.deepEqual(ev[0].paths, ["src/a.mjs"], "owned paths ride along — the CGR file is about to be archived");
+  assert.deepEqual(ev[0].dependsOn, ["base"]);
+  assert.equal(ev[0].verify, "npm test");
+});
+
+test("recordCompletion records NOTHING for a CGR that was never claimed (no phantom merge)", () => {
+  const arch = freshArch();
+  liveGoal(arch, "foreground", { lane: "L" });
+  const r = recordCompletion(arch, { slug: "foreground", now: NOW });
+  assert.equal(r.appended, false);
+  assert.equal(r.reason, "never-claimed", "a foreground CGR has no worktree branch to merge");
+  assert.equal(readEvents(arch).filter((e) => e.type === "completed").length, 0);
+  assert.deepEqual(sessionState(arch, { now: NOW }).merge_queue, [], "so it never enters the merge queue");
+});
+
+test("recordCompletion is idempotent — a completion already on the board is not re-appended", () => {
+  const arch = freshArch();
+  pendingGoal(arch, "c1", { lane: "L" });
+  claimFrontier(arch, { slug: "c1", worker: "w1", now: NOW });
+  assert.equal(recordCompletion(arch, { slug: "c1", now: NOW }).appended, true);
+  const second = recordCompletion(arch, { slug: "c1", now: NOW });
+  assert.equal(second.appended, false);
+  assert.equal(second.reason, "already-completed");
+  assert.equal(readEvents(arch).filter((e) => e.type === "completed").length, 1);
+});
+
+test("archkit_goal_complete moves a dispatched CGR from in_flight into the merge queue, and board_merged clears it", () => {
+  const { arch, root } = freshProject();
+  writeGoal(arch, {
+    slug: "lane-a", title: "Lane A", exitCriteria: ["x"],
+    owns: ["src/a.mjs"], verifyCommand: PASS_CMD,
+  });
+  stampGoalFields(arch, "lane-a", { lane: "backend" });
+  claimFrontier(arch, { slug: "lane-a", worker: "w-backend", now: NOW });
+  dispatchGoal(arch, "lane-a", { worker: "w-backend" });
+
+  const done = runGoalComplete({ archDir: arch, cwd: root, slug: "lane-a" });
+  assert.equal(done.boardRecord.recorded, true, "the completion is recorded on the board");
+  assert.equal(done.boardRecord.lane, "backend");
+  assert.match(done.nextStep, /merge queue/i, "…and the agent is told where the CGR went");
+
+  const plan = conductorPlan(arch, { now: NOW });
+  assert.deepEqual(plan.board.in_flight.map((f) => f.slug), [], "it is no longer in flight");
+  const queued = plan.board.merge_queue.find((m) => m.slug === "lane-a");
+  assert.ok(queued, "it is in the merge queue");
+  assert.equal(queued.lane, "backend");
+  assert.equal(queued.completion, "full");
+  // The CGR file is archived to done/ by now, so this metadata can only have
+  // come off the event — which is the point of carrying it.
+  assert.equal(loadGoal(arch, "lane-a"), null, "the CGR file is archived out of goals/");
+  assert.deepEqual(queued.paths, ["src/a.mjs"], "its owned paths survive the archive");
+  assert.equal(queued.verify, PASS_CMD, "as does its own verify-command");
+
+  // …and the convergence stage now has an integration point to drain.
+  const group = plan.convergence.groups.find((g) => g.slugs.includes("lane-a"));
+  assert.ok(group, "the merge queue reaches the convergence plan");
+  assert.equal(group.lane, "backend");
+  assert.deepEqual(group.paths, ["src/a.mjs"], "the path-extract fallback is still bounded by what it owns");
+  assert.equal(group.integration.verify, PASS_CMD);
+  assert.equal(group.integration.verifySource, "cgr");
+
+  // Recording the merge takes it off the queue for good.
+  recordMerge(arch, { slugs: ["lane-a"], lane: "backend", branch: "main", verifyCommand: PASS_CMD, passed: true, now: NOW });
+  const after = conductorPlan(arch, { now: NOW });
+  assert.deepEqual(after.board.merge_queue.map((m) => m.slug), [], "merged CGRs leave the queue");
+  assert.deepEqual(after.unverifiedMerges, [], "and the merge carries a green verify, so no integration debt");
+});
+
+test("dependency order survives archival — a completed stack still merges bottom-up", () => {
+  const { arch, root } = freshProject();
+  for (const slug of ["base", "feat"]) {
+    writeGoal(arch, { slug, title: slug, exitCriteria: ["x"], dependsOn: slug === "feat" ? ["base"] : [] });
+    stampGoalFields(arch, slug, { lane: "backend" });
+    claimFrontier(arch, { slug, worker: "w-backend", now: NOW });
+  }
+  // feat finishes FIRST, so only the recorded depends_on can order them.
+  runGoalComplete({ archDir: arch, cwd: root, slug: "feat" });
+  runGoalComplete({ archDir: arch, cwd: root, slug: "base" });
+  assert.equal(loadGoal(arch, "feat"), null, "both CGRs are archived");
+  assert.deepEqual(mergeQueueOrder(arch, { now: NOW }).map((m) => m.slug), ["base", "feat"],
+    "the dependency edge outlives the CGR file it was declared in");
 });
 
 console.log("");

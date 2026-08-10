@@ -24,9 +24,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import {
   listGoals,
   loadGoal,
+  writeGoal,
+  nextOrderBase,
   statusOf,
   isGoalDone,
   laneOf,
@@ -36,6 +39,7 @@ import {
   completionOf,
   exclusiveOf,
   filesToTouchOf,
+  verifyCommandOf,
   globsIntersect,
   handoffOf,
   stampGoalFields,
@@ -43,6 +47,10 @@ import {
   STATUS_PENDING,
   triageNextGoal,
 } from "./goals.mjs";
+// Detection ONLY (a package.json read) — board.mjs never RUNS a command. The
+// post-integration verify command is resolved here and EMITTED in the plan; the
+// agent runs it and reports the result back via recordMerge (instruct-not-act).
+import { detectTestCommand } from "./test-runner.mjs";
 
 // The closed vocabulary of board events (ADR 0014). Anything else is refused at
 // append time — a typo'd event type would silently corrupt the fold.
@@ -300,7 +308,12 @@ export function foldEvents(events) {
       a = {
         slug, lifecycle: null, lane: null, worker: null, lease: null,
         completion: null, lineage: null,
+        // Integration metadata a `completed` event may carry, so a CGR archived
+        // out of goals/ can still order and bound its own merge (ADR 0029).
+        dependsOn: null, paths: null, verify: null,
         claimedAt: null, completedAt: null, mergedAt: null, events: 0,
+        // Post-integration verification carried by the `merged` event (ADR 0024).
+        verification: null, mergedBranch: null,
       };
       bySlug.set(slug, a);
     }
@@ -321,6 +334,9 @@ export function foldEvents(events) {
     if (ev.lane != null) a.lane = ev.lane;
     if (ev.worker != null) a.worker = ev.worker;
     if (ev.lease != null) a.lease = ev.lease;
+    if (Array.isArray(ev.dependsOn)) a.dependsOn = [...ev.dependsOn];
+    if (Array.isArray(ev.paths)) a.paths = [...ev.paths];
+    if (ev.verify != null) a.verify = ev.verify;
     switch (ev.type) {
       case "claimed":
         a.lifecycle = "claimed"; a.claimedAt = ev.at || a.claimedAt; break;
@@ -328,7 +344,12 @@ export function foldEvents(events) {
         a.lifecycle = "completed"; a.completedAt = ev.at || a.completedAt;
         if (ev.completion != null) a.completion = ev.completion; break;
       case "merged":
-        a.lifecycle = "merged"; a.mergedAt = ev.at || a.mergedAt; break;
+        a.lifecycle = "merged"; a.mergedAt = ev.at || a.mergedAt;
+        // A merged event with no verification payload folds to an explicit
+        // unverified outcome — never to "assumed green" (ADR 0024).
+        a.verification = normalizeMergeVerification({ ...(ev.verification || {}), at: ev.verification?.at || ev.at || null });
+        if (ev.branch != null) a.mergedBranch = ev.branch;
+        break;
       case "fissioned":
         a.lifecycle = "fissioned";
         if (ev.lineage != null) a.lineage = ev.lineage; break;
@@ -384,6 +405,8 @@ function fileOverlapConflicts(goals) {
 //   blocked        — live CGRs with an unmet depends_on (→ blockedOn list)
 //   in_flight      — CGRs claimed but not yet completed (carry lane/worker/lease)
 //   merge_queue    — CGRs completed but not yet merged (carry completion)
+//   merged         — CGRs whose integration landed, with the recorded verify
+//                    outcome (green|red|unverified) — never assumed green
 //   conflicts      — file-overlap among live CGRs + conflict events
 //   leases_expired — in-flight CGRs whose lease TTL elapsed (reclaim as orphans)
 //
@@ -418,6 +441,11 @@ export function sessionState(archDir, { now = new Date().toISOString() } = {}) {
   const in_flight = [];
   for (const [slug, a] of bySlug) {
     if (a.lifecycle !== "claimed") continue;
+    // A claim is live only while its CGR is: status is the source of truth
+    // (ADR 0003), so a CGR the worker already closed drops out of flight even
+    // when no `completed` event was appended. Without this a finished dispatch
+    // rehydrates forever after a /clear and its lease keeps aging into reclaim.
+    if (isGoalDone(archDir, slug)) continue;
     const g = liveBySlug.get(slug);
     const lease = (g && leaseOf(g)) || a.lease || null;
     in_flight.push({
@@ -442,9 +470,41 @@ export function sessionState(archDir, { now = new Date().toISOString() } = {}) {
       completion: a.completion || (g && completionOf(g)) || "full",
       worker: a.worker || null,
       since: a.completedAt || null,
+      // Integration metadata: the live CGR when it is still on disk, else what
+      // its `completed` event carried (ADR 0029). A completed CGR is archived to
+      // done/, which loadGoal deliberately does not read — without this the merge
+      // queue would lose the dependency order, the owned paths the path-extract
+      // fallback is bounded by, and the CGR's own verify command.
+      dependsOn: (g ? dependsOnOf(g) : a.dependsOn) || [],
+      paths: (g ? [...ownsOf(g), ...filesToTouchOf(g)] : a.paths) || [],
+      verify: (g ? verifyCommandOf(g) : a.verify) || null,
     });
   }
   merge_queue.sort(bySlugAsc);
+
+  // merged: CGRs whose integration point LANDED, each carrying the recorded
+  // post-integration verification outcome (ADR 0024). This is what lets the
+  // folded board distinguish a VERIFIED integration from an assumed-green one:
+  // an event with no verification payload folds to status "unverified", never to
+  // green, so integration debt is visible instead of silent.
+  const merged = [];
+  for (const [slug, a] of bySlug) {
+    if (a.lifecycle !== "merged") continue;
+    const g = liveBySlug.get(slug);
+    const v = a.verification || normalizeMergeVerification({});
+    merged.push({
+      slug,
+      lane: (g && laneOf(g)) || a.lane || "default",
+      at: a.mergedAt || null,
+      branch: a.mergedBranch || null,
+      verifyStatus: v.status,
+      verifyCommand: v.command,
+      verifySource: v.source,
+      verified: v.status === "green",
+      verification: v,
+    });
+  }
+  merged.sort(bySlugAsc);
 
   // leases_expired: explicit lease-expired events, plus any in-flight claim whose
   // lease.expires is already in the past relative to `now` (orphan reclaim).
@@ -523,7 +583,7 @@ export function sessionState(archDir, { now = new Date().toISOString() } = {}) {
   }
   handoffs.sort(bySlugAsc);
 
-  return { lanes, frontier, blocked, in_flight, merge_queue, conflicts, leases_expired, handoffs };
+  return { lanes, frontier, blocked, in_flight, merge_queue, merged, conflicts, leases_expired, handoffs };
 }
 
 // ── Conductor orchestration loop (conductor-loop-hooks, ADR 0013) ─────────────
@@ -640,15 +700,769 @@ export function orderMergeQueue(mergeQueue, depsOf = () => []) {
 // each CGR's frontmatter via dependsOnOf), falling back to (since, slug).
 export function mergeQueueOrder(archDir, { now = new Date().toISOString(), board } = {}) {
   const state = board || sessionState(archDir, { now });
+  // Deps come from the live CGR, and from the board when the CGR has already been
+  // archived out of goals/ (ADR 0029) — otherwise a completed stack loses its
+  // bottom-up order the moment its files move to done/.
+  const boardDeps = new Map(state.merge_queue.map((m) => [m.slug, m.dependsOn || []]));
   const depCache = new Map();
   const depsOf = (slug) => {
     if (!depCache.has(slug)) {
       const g = loadGoal(archDir, slug);
-      depCache.set(slug, g ? dependsOnOf(g) : []);
+      depCache.set(slug, g ? dependsOnOf(g) : (boardDeps.get(slug) || []));
     }
     return depCache.get(slug);
   };
   return orderMergeQueue(state.merge_queue, depsOf);
+}
+
+// ── Lane CONVERGENCE stage (lane-convergence-stage, ADR 0023) ────────────────
+//
+// NAMING — deliberately NOT "reconcile". archkit already owns that word for
+// GOAL-FILE PLACEMENT (archkit_goal_reconcile / reconcileGoalsLayout, ADR
+// 0020/0021: re-file a goal into the folder its status dictates). This is an
+// unrelated concept — BRANCH-level convergence before the merge queue drains —
+// so it gets its own vocabulary (converge / convergence / integration point) and
+// the two can never be confused in tool output, docs, or a grep.
+//
+// Why the stage exists: conductor step 5 drained the dependency-ordered merge
+// queue as N INDEPENDENT merges onto the branch, one per CGR, with no
+// rebase-onto-tip precondition. Agent-tool worktree workers branch from a STALE
+// base — the worktree is cut when the worker spawns, not when its work lands — so
+// a naive sequential `git merge` of worker branch #2 can REVERT what worker
+// branch #1's merge landed moments earlier in the SAME drain: #2's tree still
+// carries the pre-#1 content of any shared file, and the merge resolves it as an
+// intentional change. The fix is a convergence stage: group the ordered queue BY
+// LANE, converge each lane onto the branch TIP first (rebase), and land each lane
+// as ONE integration point, verifying after each.
+//
+// archkit NEVER runs git (instruct-not-act, ADR 0010). Everything here COMPUTES
+// and EMITS a plan — a pure structure plus rendered text — and the agent performs
+// the rebases/merges. No shelling out, no child_process, ever.
+
+// The primary integration primitive: converge the lane's worktree onto the
+// branch tip before it lands, so it can only ever fast-forward-or-conflict, and
+// can never silently revert an earlier integration point in this drain.
+export const CONVERGENCE_PRECONDITION = "rebase-onto-tip";
+
+// The escape hatch for a lane whose worker base is UNRECOVERABLY stale (the
+// rebase can't be completed — base commit gone, worktree pruned, or the conflict
+// surface is the whole tree): take ONLY the lane's owned paths out of its branch
+// while standing on the integration branch. Bounded by ownership, so intervening
+// work outside those paths survives by construction.
+export const CONVERGENCE_FALLBACK = "path-extract";
+
+export const DEFAULT_INTEGRATION_BRANCH = "main";
+
+// The branch lanes converge onto (.arch/config.json → cgr.integrationBranch,
+// default "main"). Tolerant: a missing/invalid config falls back, never throws.
+export function integrationBranch(archDir) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(archDir, "config.json"), "utf8"));
+    const v = cfg?.cgr?.integrationBranch;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  } catch { /* no/invalid config → default */ }
+  return DEFAULT_INTEGRATION_BRANCH;
+}
+
+function uniqSorted(xs) {
+  const out = new Set();
+  for (const x of xs || []) {
+    if (x == null) continue;
+    const s = String(x).trim();
+    if (s) out.add(s);
+  }
+  return [...out].sort();
+}
+
+// Same de-dup, but FIRST-APPEARANCE order (the queue's own ordering signal) —
+// used where sorting would scramble a meaningful sequence, e.g. the commands of
+// a lane's integration point, which read best in the order the CGRs land.
+function uniqInOrder(xs) {
+  const seen = new Set();
+  const out = [];
+  for (const x of xs || []) {
+    if (x == null) continue;
+    const s = String(x).trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+// ── Post-integration VERIFICATION (merge-verify-command, ADR 0024) ───────────
+//
+// "verify after EACH merge" named no command and recorded no result, so it was
+// advisory prose: the CGR test gate runs at goal_complete INSIDE the worker's
+// worktree, PRE-merge — a green worktree does not prove a green branch after
+// integration. This block makes it concrete on both ends:
+//   resolve  — every integration point carries a CONCRETE command (or an explicit
+//              "none", never a silent gap), and
+//   record   — the `merged` event carries the OUTCOME, so the fold can tell a
+//              verified integration from an assumed-green one.
+//
+// The fallback chain (per CGR, then unioned per lane):
+//   1. the CGR's own `verify-command` frontmatter (scoped to its slice), else
+//   2. the project test command (package.json scripts.test via detectTestCommand), else
+//   3. none — surfaced as source "none" so the merge is recorded as UNVERIFIED
+//      rather than assumed green.
+
+// Where a resolved verify command came from. "mixed" = a lane whose CGRs
+// resolved to more than one distinct command (they're unioned, all must pass).
+export const VERIFY_SOURCES = Object.freeze(["cgr", "project", "mixed", "none"]);
+
+// The recorded outcome of a post-integration verify run.
+//   green      — the command ran and passed
+//   red        — the command ran and FAILED (the worst integration debt)
+//   unverified — no command resolved, or one resolved but no result was recorded
+export const MERGE_VERIFY_STATUSES = Object.freeze(["green", "red", "unverified"]);
+
+// The project's test command for a project rooted at archDir's parent. Detection
+// only (reads package.json → scripts.test); null when the project has no real
+// test script, which is a legitimate "none" tail of the fallback chain, not an
+// error. Tolerant — never throws.
+export function projectVerifyCommand(archDir, { cwd } = {}) {
+  const root = cwd || path.dirname(String(archDir || "."));
+  try { return detectTestCommand(root)?.command || null; }
+  catch { return null; }
+}
+
+// THE fallback chain, pure and injectable: resolve the post-integration verify
+// command for a set of CGRs (one lane's integration point, or a single slug).
+// Each slug resolves independently (its own verify-command → the project command
+// → none); the lane's command is the DE-DUPED UNION of what its CGRs resolved,
+// joined with `&&` so all of them must pass. Returns:
+//   { command, commands, source, perSlug:[{slug,command,source}], mixed, unresolved }
+// command is null (source "none", unresolved true) when nothing resolved — the
+// caller must then record the merge as unverified rather than assume green.
+export function resolveVerifyCommand(slugs, { verifyOf = () => null, projectCommand = null } = {}) {
+  const list = (Array.isArray(slugs) ? slugs : [slugs]).filter(Boolean).map(String);
+  const project = typeof projectCommand === "string" && projectCommand.trim() ? projectCommand.trim() : null;
+  const perSlug = list.map((slug) => {
+    let own = null;
+    try { own = verifyOf(slug); } catch { own = null; }
+    const cgr = typeof own === "string" && own.trim() ? own.trim() : null;
+    if (cgr) return { slug, command: cgr, source: "cgr" };
+    if (project) return { slug, command: project, source: "project" };
+    return { slug, command: null, source: "none" };
+  });
+  const commands = uniqInOrder(perSlug.map((p) => p.command));
+  const sources = new Set(perSlug.filter((p) => p.command).map((p) => p.source));
+  const source = commands.length === 0 ? "none" : (sources.size > 1 ? "mixed" : [...sources][0]);
+  return {
+    command: commands.length ? commands.join(" && ") : null,
+    commands,
+    source,
+    perSlug,
+    mixed: commands.length > 1,
+    unresolved: commands.length === 0,
+  };
+}
+
+// Normalize a reported verify outcome into the payload the `merged` event
+// carries. Pure. The status is derived, never taken on trust:
+//   no command            → unverified (reason no-verify-command)
+//   command + passed:true → green
+//   command + passed:false→ red        (reason verify-failed)
+//   command, no result    → unverified (reason verify-not-run)
+export function normalizeMergeVerification({ command = null, source = null, passed = null, exitCode = null, at = null, note = null } = {}) {
+  const cmd = typeof command === "string" && command.trim() ? command.trim() : null;
+  const src = VERIFY_SOURCES.includes(String(source)) ? String(source) : (cmd ? "cgr" : "none");
+  let status, reason;
+  if (!cmd) { status = "unverified"; reason = "no-verify-command"; }
+  else if (passed === true) { status = "green"; reason = null; }
+  else if (passed === false) { status = "red"; reason = "verify-failed"; }
+  else { status = "unverified"; reason = "verify-not-run"; }
+  return {
+    command: cmd,
+    source: src,
+    status,
+    reason,
+    passed: status === "green" ? true : status === "red" ? false : null,
+    exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : null,
+    at: at || null,
+    note: note || null,
+  };
+}
+
+// Group an ALREADY dependency-ordered merge queue (the output of orderMergeQueue /
+// mergeQueueOrder) into per-lane integration points, each carrying its
+// rebase-onto-tip precondition and its path-extract fallback.
+//
+// Ordering contract (the load-bearing invariant): cross-lane dependency order
+// survives the grouping. Lane-level edges are induced from the CGR-level
+// depends_on that orderMergeQueue already honored — a CGR depending on a CGR in
+// ANOTHER lane makes that lane a predecessor — and the lanes are Kahn-sorted with
+// the queue's first-appearance index as the tie-break, so independent lanes keep
+// the queue's relative order and a dependent lane can never land first.
+//
+// Degenerate case: if two lanes depend on each other (a genuine cross-lane
+// cycle), no per-lane collapse is possible without breaking dependency order. The
+// plan then falls back to SEGMENTS — maximal contiguous same-lane runs of the flat
+// queue, which preserves the flat order exactly — and marks `split: true` so the
+// conductor sees the lanes were too entangled to collapse.
+//
+// Pure: no clock, no IO, no git. Injectable accessors keep it testable:
+//   depsOf(slug)   → depends_on slugs
+//   pathsOf(slug)  → owned paths/globs for the CGR
+//   branchOf(slug) → the worker's worktree branch, when known (else a placeholder)
+//   verifyOf(slug) → the CGR's own verify-command (head of the fallback chain)
+//   projectVerify  → the project test command (the chain's fallback)
+// `verify` is the pre-ADR-0024 single-command option, kept as a back-compat
+// ALIAS for projectVerify so older callers keep resolving the same command.
+export function laneConvergencePlan(orderedQueue, {
+  branch = DEFAULT_INTEGRATION_BRANCH,
+  depsOf = () => [],
+  pathsOf = () => [],
+  branchOf = () => null,
+  verifyOf = () => null,
+  projectVerify = null,
+  verify = null,
+} = {}) {
+  const projectCommand = projectVerify != null ? projectVerify : verify;
+  const items = (Array.isArray(orderedQueue) ? orderedQueue : []).filter((m) => m && m.slug);
+  const target = String(branch || "").trim() || DEFAULT_INTEGRATION_BRANCH;
+  const laneOfItem = (m) => String(m.lane || "default");
+  const inQueue = new Set(items.map((m) => m.slug));
+  const laneBySlug = new Map(items.map((m) => [m.slug, laneOfItem(m)]));
+
+  // Lanes in first-appearance order (the queue's own ordering signal).
+  const lanes = [];
+  const firstIndex = new Map();
+  items.forEach((m, i) => {
+    const lane = laneOfItem(m);
+    if (!firstIndex.has(lane)) { firstIndex.set(lane, i); lanes.push(lane); }
+  });
+
+  // Induced lane-level dependency edges. Same-lane deps need no edge — queue
+  // order inside a lane already sequences them within the one integration point.
+  const waitsFor = new Map(lanes.map((l) => [l, new Set()]));
+  const crossLaneEdges = [];
+  for (const m of items) {
+    const lane = laneOfItem(m);
+    for (const d of depsOf(m.slug) || []) {
+      if (!inQueue.has(d)) continue;
+      const depLane = laneBySlug.get(d);
+      if (!depLane || depLane === lane) continue;
+      waitsFor.get(lane).add(depLane);
+      crossLaneEdges.push({ from: depLane, to: lane, dependent: m.slug, dependsOn: d });
+    }
+  }
+
+  // Kahn over the lane graph, tie-broken by first appearance in the queue.
+  const laneOrder = [];
+  const placed = new Set();
+  let cyclic = false;
+  while (placed.size < lanes.length) {
+    const ready = lanes
+      .filter((l) => !placed.has(l) && [...waitsFor.get(l)].every((d) => placed.has(d)))
+      .sort((a, b) => firstIndex.get(a) - firstIndex.get(b));
+    if (ready.length === 0) { cyclic = true; break; }
+    for (const l of ready) { laneOrder.push(l); placed.add(l); }
+  }
+
+  // Acyclic → one integration point per lane. Cyclic → contiguous segments of the
+  // flat queue (flat order preserved verbatim; never drop an item).
+  const buckets = [];
+  if (!cyclic) {
+    for (const lane of laneOrder) {
+      buckets.push({ lane, slugs: items.filter((m) => laneOfItem(m) === lane).map((m) => m.slug) });
+    }
+  } else {
+    for (const m of items) {
+      const lane = laneOfItem(m);
+      const last = buckets[buckets.length - 1];
+      if (last && last.lane === lane) last.slugs.push(m.slug);
+      else buckets.push({ lane, slugs: [m.slug] });
+    }
+  }
+
+  const bySlugItem = new Map(items.map((m) => [m.slug, m]));
+  const groups = buckets.map((b, i) => {
+    const paths = uniqSorted(b.slugs.flatMap((s) => pathsOf(s) || []));
+    const branches = uniqSorted(b.slugs.map((s) => branchOf(s)));
+    const workers = uniqSorted(b.slugs.map((s) => bySlugItem.get(s)?.worker));
+    const branchRef = branches.length === 1 ? branches[0] : `<worktree-branch:${b.lane}>`;
+    const pathArgs = paths.length ? paths.join(" ") : "<owned paths>";
+    // The concrete post-integration verify command for THIS lane (ADR 0024):
+    // per-CGR verify-command → project test command → none. Resolved per group,
+    // never plan-wide, so a lane with a scoped command keeps it.
+    const v = resolveVerifyCommand(b.slugs, { verifyOf, projectCommand });
+    return {
+      lane: b.lane,
+      order: i + 1,
+      slugs: b.slugs,
+      segment: cyclic ? i + 1 : null,
+      dependsOnLanes: [...(waitsFor.get(b.lane) || [])].sort(),
+      paths,
+      workers,
+      branches,
+      branchRef,
+      // The precondition IS the point of this stage — never emit a group without it.
+      precondition: {
+        kind: CONVERGENCE_PRECONDITION,
+        branch: target,
+        command: `git -C <worktree-for-${b.lane}> fetch && git -C <worktree-for-${b.lane}> rebase ${target}`,
+        why: `worker worktrees branch from a STALE base — converge ${b.lane} onto the ${target} TIP before landing it, or this merge can revert an integration point that landed earlier in this same drain`,
+      },
+      integration: {
+        command: `git merge --no-ff ${branchRef}`,
+        on: target,
+        // verify stays a plain string for existing consumers; the resolution
+        // provenance rides alongside it so an unverifiable lane is VISIBLE.
+        verify: v.command,
+        verifySource: v.source,
+        verifyCommands: v.commands,
+        verifyBySlug: v.perSlug,
+        verifiable: !v.unresolved,
+      },
+      // The other half of "verify after EACH": the outcome must be RECORDED, or
+      // the fold can't tell a verified integration from an assumed-green one.
+      record: {
+        tool: "archkit_board_merged",
+        args: { slugs: b.slugs, lane: b.lane, branch: target, verifyCommand: v.command, passed: "<true|false>" },
+        why: v.unresolved
+          ? `no verify command resolved for ${b.lane} (no verify-command on its CGRs and no project test command) — record the merge so it lands as visible integration debt instead of assumed green`
+          : `record the result of \`${v.command}\` on the merged event, so the board can distinguish a verified integration from an assumed-green one`,
+      },
+      fallback: {
+        kind: CONVERGENCE_FALLBACK,
+        command: `git checkout ${branchRef} -- ${pathArgs}`,
+        on: target,
+        when: `the rebase precondition cannot be completed (worker base unrecoverably stale)`,
+        why: `path-extract takes ONLY this lane's owned paths, so intervening work outside them survives — a whole-tree merge from a stale base does not`,
+      },
+    };
+  });
+
+  return {
+    branch: target,
+    groups,
+    laneOrder: cyclic ? uniqSorted(buckets.map((b) => b.lane)) : laneOrder,
+    split: cyclic,
+    splitReason: cyclic ? "cross-lane-dependency-cycle" : null,
+    crossLaneEdges,
+    precondition: CONVERGENCE_PRECONDITION,
+    fallback: CONVERGENCE_FALLBACK,
+    projectVerify: projectCommand || null,
+    counts: {
+      groups: groups.length,
+      lanes: new Set(groups.map((g) => g.lane)).size,
+      cgrs: items.length,
+      crossLaneEdges: crossLaneEdges.length,
+      // How much of the drain can actually be verified after it lands.
+      verifiableGroups: groups.filter((g) => g.integration.verifiable).length,
+      unverifiableGroups: groups.filter((g) => !g.integration.verifiable).length,
+    },
+  };
+}
+
+// Render the convergence plan as the instruction block conductor step 5 emits.
+// Returns an array of lines (the caller joins) — the emitted-plan half of
+// instruct-not-act: the agent runs these commands, archkit only writes them down.
+export function renderConvergencePlan(plan, { maxPaths = 6 } = {}) {
+  const p = plan || {};
+  const groups = p.groups || [];
+  if (!groups.length) return [`MERGE: queue empty, nothing to converge or integrate.`];
+
+  const lines = [
+    `CONVERGE + MERGE — ${groups.length} integration point${groups.length === 1 ? "" : "s"} (one per lane), landed in THIS order onto ${p.branch}, verifying after EACH:`,
+    `   Worker worktrees branch from a STALE base, so a naive merge of a worker branch can REVERT what an earlier merge in this same drain landed. Every lane converges onto the ${p.branch} TIP before it lands.`,
+  ];
+  if (p.split) {
+    lines.push(
+      `   ! lanes are mutually dependent (${p.splitReason}) — they could NOT collapse to one point each; the queue is split into ordered segments instead.`,
+    );
+  }
+  for (const g of groups) {
+    const shown = g.paths.slice(0, maxPaths).join(", ");
+    const more = g.paths.length > maxPaths ? ` (+${g.paths.length - maxPaths} more)` : "";
+    const after = g.dependsOnLanes.length ? ` — lands AFTER lane${g.dependsOnLanes.length === 1 ? "" : "s"} ${g.dependsOnLanes.join(", ")}` : "";
+    const rec = g.record || {};
+    lines.push(
+      `   ${g.order}) lane ${g.lane}${g.segment ? ` (segment ${g.segment})` : ""}: ${g.slugs.join(" → ")}${after}`,
+      `      owns: ${shown || "(unpredicted)"}${more}`,
+      `      1. PRECONDITION (${g.precondition.kind}): ${g.precondition.command}`,
+      `      2. INTEGRATE on ${g.integration.on}: ${g.integration.command}`,
+      g.integration.verify
+        ? `      3. VERIFY (from ${g.integration.verifySource}): ${g.integration.verify}`
+        : `      3. VERIFY: NO command resolved — no verify-command on ${g.slugs.join("/")} and no project test command. This integration point CANNOT be verified; record it as unverified rather than assuming green.`,
+      `      4. RECORD: ${rec.tool || "archkit_board_merged"} slugs=${g.slugs.join(",")} lane=${g.lane} branch=${g.integration.on}${g.integration.verify ? ` verifyCommand="${g.integration.verify}" passed=<true|false>` : ` (no verifyCommand → recorded unverified)`}`,
+      `      5. FALLBACK (${g.fallback.kind}) only if the rebase can't be completed: from ${g.fallback.on}, ${g.fallback.command}`,
+    );
+  }
+  lines.push(
+    `   Never merge a worker branch onto ${p.branch} without step 1. The path-extract fallback is bounded by the lane's OWNED paths, so intervening work outside them survives — a whole-tree merge from a stale base does not.`,
+    `   Verify AFTER each integration point and RECORD the result — a merge with no recorded outcome is integration debt, not a green branch. The worker's pre-merge test gate ran inside its worktree; it does not prove ${p.branch} is green.`,
+  );
+  return lines;
+}
+
+// archDir wrapper: build the convergence plan for the LIVE board — dependency
+// order from each CGR's frontmatter, owned paths from `owns` ∪ files-to-touch,
+// integration branch from cgr.integrationBranch. Read-only (folds + reads goal
+// files; writes nothing, runs nothing).
+export function laneConvergence(archDir, { now = new Date().toISOString(), board, mergeOrder, branch, projectVerify } = {}) {
+  const ordered = mergeOrder || mergeQueueOrder(archDir, { now, board });
+  const goalCache = new Map();
+  const goal = (slug) => {
+    if (!goalCache.has(slug)) goalCache.set(slug, loadGoal(archDir, slug));
+    return goalCache.get(slug);
+  };
+  // What the merge-queue entry itself carries — the live CGR's frontmatter, or
+  // what its `completed` event recorded once the file was archived (ADR 0029).
+  const queued = new Map(ordered.map((m) => [m.slug, m]));
+  const carried = (slug) => queued.get(slug) || {};
+  return laneConvergencePlan(ordered, {
+    branch: branch || integrationBranch(archDir),
+    depsOf: (slug) => { const g = goal(slug); return g ? dependsOnOf(g) : (carried(slug).dependsOn || []); },
+    pathsOf: (slug) => { const g = goal(slug); return g ? [...ownsOf(g), ...filesToTouchOf(g)] : (carried(slug).paths || []); },
+    // The fallback chain, live: the CGR's own verify-command first, the project
+    // test command behind it (ADR 0024). Each lane resolves independently.
+    verifyOf: (slug) => verifyCommandOf(goal(slug)) || carried(slug).verify || null,
+    projectVerify: projectVerify !== undefined ? projectVerify : projectVerifyCommand(archDir),
+  });
+}
+
+// Record that a CGR met its exit-criteria: append the `completed` event the
+// merge queue is derived from (ADR 0029). Until this existed, only fission
+// appended one, so a CGR a worker finished normally left the board stuck showing
+// it as claimed — and never reached the convergence stage that merges it.
+//
+// GATED ON A PRIOR CLAIM, deliberately. The merge queue means "finished in an
+// isolated worktree, not yet on the integration branch". A foreground CGR —
+// started and completed in the same tree, never claimed — has nothing to merge;
+// recording it would manufacture an integration point and send the conductor
+// asking a human to merge a branch that does not exist. A CLAIMED CGR
+// (claimFrontier, i.e. a dispatch — ADR 0027/0028) is exactly the worktree case.
+//
+// The event carries the integration metadata the archived CGR file would
+// otherwise take with it: lane, worker, completion, depends_on, owned paths, and
+// the CGR's own verify command.
+//
+// Idempotent: a slug already folded past `claimed` is left alone, so re-running
+// (or replaying a log) never double-appends. Returns { appended, reason, event }.
+export function recordCompletion(archDir, {
+  slug, completion = "full", worker = null, lane = null,
+  dependsOn = null, paths = null, verify = null,
+  now = new Date().toISOString(),
+} = {}) {
+  if (!slug) throw new Error("recordCompletion requires a slug");
+  const { bySlug } = foldEvents(readEvents(archDir));
+  const a = bySlug.get(slug) || null;
+  if (!a || a.lifecycle !== "claimed") {
+    return {
+      appended: false,
+      // never-claimed = a foreground CGR, nothing to merge. Anything else means
+      // the completion is already on the board (or the CGR was fissioned).
+      reason: a ? `already-${a.lifecycle}` : "never-claimed",
+      event: null,
+      slug,
+    };
+  }
+  const event = appendEvent(archDir, {
+    type: "completed",
+    slug,
+    lane: lane || a.lane || null,
+    worker: worker || a.worker || a.lease?.worker || null,
+    completion: completion || "full",
+    dependsOn: Array.isArray(dependsOn) ? dependsOn : [],
+    paths: Array.isArray(paths) ? paths : [],
+    verify: verify || null,
+    at: now,
+  });
+  return { appended: true, reason: "claimed", event, slug, lane: event.lane, worker: event.worker };
+}
+
+// Record an integration point landing: append ONE `merged` event per CGR in the
+// group, each carrying the post-integration verification OUTCOME (command +
+// pass/fail). This is the write half of ADR 0024 — the conductor runs the verify
+// command the plan emitted and reports the result here, so a later pass can tell
+// a verified integration from an assumed-green one instead of inferring silence
+// as success. archkit still runs no git and no tests: it only records what the
+// agent reports. Returns { merged:[event], verification, slugs }.
+export function recordMerge(archDir, {
+  slug, slugs, lane = null, branch = null, worker = null,
+  verifyCommand = null, verifySource = null, passed = null, exitCode = null, note = null,
+  now = new Date().toISOString(),
+} = {}) {
+  const list = uniqInOrder([...(Array.isArray(slugs) ? slugs : []), ...(slug ? [slug] : [])]);
+  if (!list.length) throw new Error("recordMerge requires slug or slugs");
+  const verification = normalizeMergeVerification({
+    command: verifyCommand, source: verifySource, passed, exitCode, at: now, note,
+  });
+  const merged = list.map((s) => appendEvent(archDir, {
+    type: "merged",
+    slug: s,
+    lane: lane || (loadGoal(archDir, s) && laneOf(loadGoal(archDir, s))) || null,
+    worker: worker || null,
+    branch: branch || null,
+    verification,
+    at: now,
+  }));
+  return { slugs: list, verification, merged };
+}
+
+// ── Tier 3: ESCALATE a genuine conflict to a merge-reconcile CGR (ADR 0013) ──
+//
+// ADR 0013's conflict strategy is a three-tier HYBRID, in order:
+//   1. pre-partition by ownership (pessimistic)  — partitionLanes, goals.mjs
+//   2. worktree-isolate                          — the conductor's dispatch unit
+//   3. escalate to a reconcile goal              — THIS block
+// Tiers 1+2 shipped; tier 3 did not, so a cross-lane collision could only ever
+// become an `exception` string for manual conductor review and the documented
+// escalation path dead-ended. Escalation MINTS a real CGR so the resolution gets
+// a fresh worker context, a dependency edge, and a place on the board.
+//
+// NAMING (the load-bearing disambiguation): archkit uses "reconcile" in TWO
+// unrelated senses and they must never be confusable in a fresh context —
+//   MERGE-sense   (HERE, ADR 0013 tier 3): resolve conflicting file CONTENT
+//                 produced by two CGRs that collided. Minted CGRs are always
+//                 prefixed `merge-reconcile-` and tagged feature `merge-reconcile`,
+//                 so the sense is greppable from the slug alone.
+//   PLACEMENT-sense (archkit_goal_reconcile / reconcileGoalsLayout, ADR 0020/0021):
+//                 move goal FILES into the folder their status dictates. Touches
+//                 no file content and no git.
+// Branch-level convergence is a third, separately named thing (ADR 0023).
+//
+// archkit still runs no git: escalation writes a CGR record, nothing else. The
+// worker the conductor dispatches for that CGR does the actual resolution.
+
+export const MERGE_RECONCILE_PREFIX = "merge-reconcile-";
+export const MERGE_RECONCILE_FEATURE = "merge-reconcile";
+
+// The deterministic slug for the reconcile CGR of a given conflict. Derived
+// PURELY from the sorted conflicting slugs, which is what makes minting
+// idempotent: folding the same conflict twice resolves to the same slug, and the
+// second mint sees the CGR already on disk. Long slug pairs are truncated with a
+// stable hash suffix so the derivation stays collision-free and filename-safe.
+export function reconcileSlugFor(slugs) {
+  const parts = uniqSorted(slugs);
+  if (parts.length === 0) return null;
+  const base = `${MERGE_RECONCILE_PREFIX}${parts.join("-")}`;
+  if (base.length <= 80) return base;
+  const h = crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 8);
+  return `${base.slice(0, 71)}-${h}`;
+}
+
+// Normalize a conflict's file list into concrete claim patterns. The derived
+// file-overlap slice reports an intersection of two DIFFERENT patterns as
+// "a∩b" (see fileOverlapConflicts); a reconcile CGR needs both sides as real
+// claims, so those are split back out. Event-sourced conflicts carry plain paths
+// and pass through untouched.
+export function conflictClaimFiles(files) {
+  return uniqSorted((files || []).flatMap((f) => String(f).split("∩")));
+}
+
+// Build (PURELY) the reconcile CGR record for one conflict. It is:
+//   - dependsOn every conflicting slug — so the board's frontier withholds it
+//     until the work it must reconcile has actually completed, and
+//   - exclusive — so partitionLanes pulls it out as a SOLO BARRIER stage rather
+//     than running it beside the lanes whose output it is merging.
+// The body carries the conflicting slugs and files verbatim, so a fresh worker
+// context can resolve the conflict without re-deriving it from the board.
+export function buildReconcileGoal({
+  slugs = [], files = [], lanes = [], source = "event", at = null, order, note = "",
+} = {}) {
+  const conflicting = uniqSorted(slugs);
+  if (conflicting.length === 0) return null;
+  const slug = reconcileSlugFor(conflicting);
+  const claims = conflictClaimFiles(files);
+  const laneList = uniqSorted(lanes);
+
+  const pretty = conflicting.join(" ↔ ");
+  const exitCriteria = [
+    `Each conflicting file has ONE reconciled version that preserves the intent of every colliding CGR (${conflicting.join(", ")})`,
+    `No conflict markers or duplicated/reverted hunks remain in the conflicting files`,
+    `The reconciled result is VERIFIED green by the project verify command — conflict-free is not the same as correct`,
+  ];
+
+  const body = [
+    `# Reconcile merge conflict: ${pretty}`,
+    ``,
+    `## Why`,
+    `Tier 3 of ADR 0013's hybrid conflict strategy (pre-partition → worktree-isolate →`,
+    `ESCALATE). Ownership pre-partitioning and worktree isolation did not keep these`,
+    `CGRs apart, so the collision is genuine and needs its own context to resolve.`,
+    ``,
+    `MERGE-sense reconcile — conflicting file CONTENT. This is NOT archkit_goal_reconcile`,
+    `(goal-FILE placement, ADR 0020/0021), which only moves goal files between`,
+    `.arch/goals/ folders and never touches content or git.`,
+    ``,
+    `## Conflicting CGRs`,
+    ...conflicting.map((s) => `- ${s}`),
+    ``,
+    `## Conflicting files`,
+    ...(claims.length ? claims.map((f) => `- ${f}`) : [`- (none recorded — inspect the colliding CGRs' owns/files-to-touch)`]),
+    ``,
+    `## Conflict provenance`,
+    `- source: ${source}`,
+    `- lanes: ${laneList.length ? laneList.join(", ") : "(unrecorded)"}`,
+    `- detected: ${at || "(unrecorded)"}`,
+    ...(note ? [`- note: ${note}`] : []),
+    ``,
+    `## Exit criteria`,
+    ...exitCriteria.map((c) => `- [ ] ${c}`),
+    ``,
+    `## How to resolve`,
+    `Read each conflicting CGR's landed change for the files above, then author ONE`,
+    `version that satisfies both. Do not pick a side by default — a revert of the`,
+    `other CGR's intent is a failed reconcile, not a resolved one.`,
+  ].join("\n");
+
+  return {
+    slug,
+    title: `Reconcile merge conflict: ${pretty}`,
+    exitCriteria,
+    dependsOn: conflicting,
+    // Solo barrier: it merges other lanes' output, so it must not run beside them.
+    exclusive: true,
+    feature: MERGE_RECONCILE_FEATURE,
+    owns: claims,
+    filesToTouch: claims,
+    ...(order !== undefined ? { order } : {}),
+    why:
+      `Escalated by archkit (ADR 0013 tier 3) — ${conflicting.join(" and ")} collided on ` +
+      `${claims.length ? claims.join(", ") : "shared files"}. MERGE-sense reconcile (file CONTENT), ` +
+      `NOT archkit_goal_reconcile (goal-file placement, ADR 0020/0021).`,
+    body,
+    sourceAsk: `cross-lane conflict between ${conflicting.join(" and ")}`,
+  };
+}
+
+// Mint the reconcile CGR for ONE conflict, IDEMPOTENTLY. The slug is derived
+// deterministically from the conflicting slugs, so a second call (or a second
+// fold of the same conflict event) sees the CGR already live or already done and
+// returns minted:false instead of writing a duplicate. Writes exactly one goal
+// file; appends nothing and runs nothing.
+export function escalateConflict(archDir, {
+  slugs = [], files = [], lanes = [], source = "event", at = null, note = "", order,
+} = {}) {
+  const conflicting = uniqSorted(slugs);
+  if (conflicting.length === 0) throw new Error("escalateConflict requires the conflicting slugs");
+  const slug = reconcileSlugFor(conflicting);
+
+  // Idempotency: live copy, or one already archived in done/.
+  let existing = null;
+  try { existing = loadGoal(archDir, slug); } catch { existing = null; }
+  if (existing) {
+    return { slug, minted: false, reason: "already-queued", conflictSlugs: conflicting, goal: null, path: null };
+  }
+  if (isGoalDone(archDir, slug)) {
+    return { slug, minted: false, reason: "already-resolved", conflictSlugs: conflicting, goal: null, path: null };
+  }
+
+  let resolvedOrder = order;
+  if (resolvedOrder === undefined) {
+    try { resolvedOrder = nextOrderBase(archDir); } catch { resolvedOrder = undefined; }
+  }
+  const goal = buildReconcileGoal({ slugs: conflicting, files, lanes, source, at, note, order: resolvedOrder });
+  const written = writeGoal(archDir, goal);
+  return {
+    slug,
+    minted: true,
+    reason: "minted",
+    conflictSlugs: conflicting,
+    files: goal.owns,
+    exclusive: true,
+    dependsOn: goal.dependsOn,
+    goal,
+    path: written.filepath,
+  };
+}
+
+// Is a board conflict ESCALATABLE to tier 3?
+//   event-sourced      — always. Someone REPORTED a real collision; that is the
+//                        genuine merge conflict ADR 0013 escalates.
+//   derived cross-lane — only with includeDerived. A file-overlap among live CGRs
+//                        is a PREDICTION, and predictions are what tiers 1+2 exist
+//                        to handle; auto-minting for every predicted overlap would
+//                        bury the board in reconcile CGRs for conflicts that never
+//                        happen. Surfaced as a candidate, minted only on request.
+//   derived same-lane  — never. Same lane = sequential in one worker context.
+export function isEscalatableConflict(conflict, { includeDerived = false } = {}) {
+  const c = conflict || {};
+  if (!Array.isArray(c.slugs) || c.slugs.length < 2) return false;
+  if (c.source === "event") return true;
+  if (includeDerived !== true || c.crossLane !== true) return false;
+  // A reconcile CGR OWNS the files it was minted to reconcile, so it necessarily
+  // overlaps the CGRs it depends on. Escalating that predicted overlap would mint
+  // a reconcile CGR for the reconcile CGR, forever. Genuine (event) collisions
+  // involving one still escalate — only the prediction is suppressed.
+  return !c.slugs.some((s) => String(s).startsWith(MERGE_RECONCILE_PREFIX));
+}
+
+// READ-ONLY escalation view: for every escalatable conflict on the board, the
+// reconcile slug it maps to and whether that CGR already exists. This is what
+// lets conductorPlan surface "this collision has not been escalated yet" without
+// writing anything.
+export function conflictEscalations(archDir, { board, now = new Date().toISOString(), includeDerived = false } = {}) {
+  const state = board || sessionState(archDir, { now });
+  const out = [];
+  for (const c of state.conflicts || []) {
+    if (!isEscalatableConflict(c, { includeDerived })) continue;
+    const slugs = uniqSorted(c.slugs);
+    const slug = reconcileSlugFor(slugs);
+    let live = null;
+    try { live = loadGoal(archDir, slug); } catch { live = null; }
+    const done = live ? false : isGoalDone(archDir, slug);
+    out.push({
+      reconcileSlug: slug,
+      slugs,
+      files: conflictClaimFiles(c.files),
+      source: c.source || "event",
+      crossLane: c.crossLane ?? null,
+      at: c.at || null,
+      escalated: Boolean(live) || done,
+      status: live ? statusOf(live) : done ? "completed" : null,
+    });
+  }
+  out.sort((a, b) => (a.reconcileSlug < b.reconcileSlug ? -1 : a.reconcileSlug > b.reconcileSlug ? 1 : 0));
+  return out;
+}
+
+// Sweep the board and mint a reconcile CGR for every escalatable conflict that
+// does not have one yet. Idempotent end-to-end: re-running over an already
+// escalated board mints nothing. Returns { minted, skipped, escalations }.
+export function escalateConflicts(archDir, { board, now = new Date().toISOString(), includeDerived = false } = {}) {
+  const escalations = conflictEscalations(archDir, { board, now, includeDerived });
+  const minted = [];
+  const skipped = [];
+  for (const e of escalations) {
+    if (e.escalated) { skipped.push({ ...e, reason: "already-escalated" }); continue; }
+    const res = escalateConflict(archDir, {
+      slugs: e.slugs, files: e.files, source: e.source, at: e.at || now,
+    });
+    if (res.minted) minted.push(res); else skipped.push({ ...e, reason: res.reason });
+  }
+  return { minted, skipped, escalations };
+}
+
+// The WRITE entry the conductor calls when a real collision surfaces: append the
+// `conflict` event (the durable record — the fold is the source of truth) and, by
+// default, escalate it to a merge-reconcile CGR. The event append is intentionally
+// NOT deduped (the log is append-only by contract, ADR 0014); the MINT is what's
+// idempotent, so folding the same conflict twice still yields ONE reconcile CGR.
+export function recordConflict(archDir, {
+  slugs = [], slug, files = [], lane = null, lanes = [], note = "",
+  escalate = true, now = new Date().toISOString(),
+} = {}) {
+  const list = uniqSorted([...(Array.isArray(slugs) ? slugs : []), ...(slug ? [slug] : [])]);
+  if (list.length < 2) {
+    throw new Error("recordConflict requires at least two conflicting slugs");
+  }
+  const fileList = uniqSorted(files);
+  const laneList = uniqSorted([...(Array.isArray(lanes) ? lanes : []), ...(lane ? [lane] : [])]);
+  const event = appendEvent(archDir, {
+    type: "conflict", slugs: list, files: fileList,
+    ...(laneList.length ? { lanes: laneList } : {}),
+    ...(note ? { note } : {}),
+    at: now,
+  });
+  const reconcile = escalate
+    ? escalateConflict(archDir, { slugs: list, files: fileList, lanes: laneList, source: "event", at: now, note })
+    : null;
+  return { slugs: list, files: fileList, lanes: laneList, event, reconcile };
 }
 
 // The deep-review EXCEPTIONS (exit-criterion 1: "deep-review only exceptions").
@@ -700,6 +1514,46 @@ export function conductorExceptions(board, { ownershipFloor = 0.5 } = {}) {
   };
 }
 
+// ── The dispatch CLAIM (ADR 0027 wiring) ─────────────────────────────────────
+//
+// A lane is not dispatched by spawning its worker — it is dispatched by CLAIMING
+// it: archkit_goal_start {slug, worker} called from the CONDUCTOR's session puts
+// the goal in `dispatched` (lease held, Stop-hook guard released HERE because a
+// subagent does the work) and appends the `claimed` event, so a conductor cleared
+// mid-pass rehydrates the dispatch out of session_state.in_flight instead of
+// reading an empty board. Spawn-without-claim leaves the worker to call goal_start
+// from ITS session, which lands `in-progress` and re-arms the guard in the
+// conductor's — the exact failure ADR 0027 exists to close, and the reason
+// conductors reached for archkit_goal_hold (which drops the lease and lies about
+// the lane being deliberately parked).
+//
+// Derives the claim calls one pass owes, grouped by DISPATCH UNIT (a lane, or a
+// solo barrier). Worker ids are DEFAULTS — the conductor should substitute the
+// real subagent id; what matters is that some stable id is passed so the lease
+// names its holder. Pure: no IO, no writes (claiming is the conductor's call).
+export function dispatchWorkerId(key) {
+  const slug = String(key || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `w-${slug || "lane"}`;
+}
+
+export function dispatchClaims({ claimableLanes = {}, barriers = [] } = {}) {
+  const units = [];
+  for (const [lane, slugs] of Object.entries(claimableLanes || {})) {
+    units.push({ key: lane, lane, worker: dispatchWorkerId(lane), slugs: [...(slugs || [])], solo: false });
+  }
+  // A barrier is its OWN dispatch unit (it runs solo), so it is keyed by slug —
+  // two barriers on the same lane must not collide onto one worker id.
+  for (const slug of barriers || []) {
+    units.push({ key: slug, lane: null, worker: dispatchWorkerId(slug), slugs: [slug], solo: true });
+  }
+  const claims = units.flatMap((u) => u.slugs.map((slug) => ({ slug, lane: u.lane, worker: u.worker, solo: u.solo })));
+  const workers = Object.fromEntries(units.map((u) => [u.key, u.worker]));
+  return { tool: "archkit_goal_start", units, claims, workers };
+}
+
 // The full conductor plan — the orchestration view the conductor session reads to
 // drive one loop pass. Assembles the folded board, the dependency-ordered merge
 // queue, the deep-review exceptions, and the claimable frontier grouped BY LANE
@@ -710,7 +1564,22 @@ export function conductorExceptions(board, { ownershipFloor = 0.5 } = {}) {
 export function conductorPlan(archDir, { now = new Date().toISOString(), ownershipFloor = 0.5 } = {}) {
   const board = sessionState(archDir, { now });
   const mergeOrder = mergeQueueOrder(archDir, { now, board });
+  // Lane convergence (ADR 0023): the same ordered queue, grouped into one
+  // integration point per lane with the rebase-onto-tip precondition. mergeOrder
+  // is kept alongside it — existing consumers (session-start digest, the
+  // archkit_conductor tool) still read the flat order; step 5 reads convergence.
+  const convergence = laneConvergence(archDir, { now, board, mergeOrder });
   const review = conductorExceptions(board, { ownershipFloor });
+
+  // Tier 3 escalation status (ADR 0013): which conflicts already have a
+  // merge-reconcile CGR and which are still dead-ending as a bare exception
+  // string. READ-ONLY here — minting is an explicit write step
+  // (archkit_board_conflict / escalateConflicts), never a side effect of planning.
+  // includeDerived stays FALSE: a predicted file-overlap is what tiers 1+2 exist
+  // to handle, and it already surfaces in `conflicts`/`exceptions`. Only a
+  // REPORTED (event) collision counts as an unescalated tier-3 dead-end here.
+  const escalations = conflictEscalations(archDir, { board, now, includeDerived: false });
+  const pendingEscalations = escalations.filter((e) => !e.escalated);
 
   // Claimable = frontier CGRs not already in-flight, grouped by lane. Exclusive
   // ones are solo barriers (their own dispatch unit).
@@ -722,15 +1591,41 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
   }
   for (const k of Object.keys(claimableLanes)) claimableLanes[k].sort();
 
+  // The claim calls this pass owes (ADR 0027): one archkit_goal_start {slug,
+  // worker} per claimable slug, made BEFORE/AS its worker is spawned so the goal
+  // enters `dispatched` rather than in-progress.
+  const dispatch = dispatchClaims({ claimableLanes, barriers });
+
+  // INTEGRATION DEBT (ADR 0024): CGRs that MERGED without a green recorded
+  // verify. Surfaced as its own slice — silence about a merge is not evidence it
+  // was green, and a later pass must be able to see what it inherited.
+  const unverifiedMerges = (board.merged || [])
+    .filter((m) => m.verifyStatus !== "green")
+    .map((m) => ({
+      slug: m.slug,
+      lane: m.lane,
+      at: m.at,
+      branch: m.branch,
+      status: m.verifyStatus,
+      command: m.verifyCommand,
+      reason: m.verification?.reason || "verify-not-run",
+    }));
+
   const counts = {
     frontier: board.frontier.length,
     claimableLanes: Object.keys(claimableLanes).length,
     barriers: barriers.length,
+    dispatch_claims: dispatch.claims.length,
     in_flight: board.in_flight.length,
     merge_queue: mergeOrder.length,
+    convergenceGroups: convergence.counts.groups,
+    unverifiableGroups: convergence.counts.unverifiableGroups,
+    merged: (board.merged || []).length,
+    unverified_merges: unverifiedMerges.length,
     blocked: board.blocked.length,
     exceptions: review.exceptions.length,
     leases_expired: board.leases_expired.length,
+    escalations_pending: pendingEscalations.length,
   };
 
   return {
@@ -738,11 +1633,17 @@ export function conductorPlan(archDir, { now = new Date().toISOString(), ownersh
     board,
     claimableLanes,
     barriers: barriers.sort(),
+    dispatch,
     inFlight: board.in_flight,
     mergeOrder,
+    convergence,
+    merged: board.merged || [],
+    unverifiedMerges,
     exceptions: review.exceptions,
     clean: review.clean,
     conflicts: review.conflicts,
+    conflictEscalations: escalations,
+    pendingEscalations,
     leasesExpired: board.leases_expired,
     blocked: board.blocked,
     counts,

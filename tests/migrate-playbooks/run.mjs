@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   listPlaybookIds,
   resolvePlaybookPath,
@@ -26,7 +27,11 @@ import {
   playbookWriteDir,
 } from "../../src/lib/playbooks.mjs";
 
-const ARCHKIT = path.resolve("bin/archkit.mjs");
+// Resolve the bin relative to THIS FILE, not process.cwd(). Every spawn below
+// runs with `cwd` set to a temp project (as it must be — see the cwd audit), so
+// a cwd-relative bin path would point into that temp dir and not exist.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ARCHKIT = path.resolve(__dirname, "..", "..", "bin", "archkit.mjs");
 let passed = 0, failed = 0;
 const failures = [];
 

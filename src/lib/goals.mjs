@@ -10,7 +10,7 @@
 // Storage layout (cgr-queue-folder-layout — symmetric queue·testing·done map):
 //   .arch/goals/queue/<slug>.md            — pending (queued) goals
 //   .arch/goals/queue/<project>/<slug>.md  — pending goals grouped by feature set
-//   .arch/goals/<slug>.md                  — in-progress / on-hold (live, root)
+//   .arch/goals/<slug>.md                  — in-progress / dispatched / on-hold (live, root)
 //   .arch/goals/testing/<slug>.md          — edits applied, verification pending
 //   .arch/goals/done/<slug>.md             — completed goals (kept for history)
 //
@@ -26,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createArchReader, loadGraphCluster } from "./parsers.mjs";
 import { archkitError } from "./errors.mjs";
+import { toPosixPath } from "./shared.mjs";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
 // Copy-paste ceiling: the `archkit goal payload` / `/goal` fallback path pastes
@@ -170,9 +171,9 @@ export function quarantineDir(archDir) {
 // read each file's status, and re-file it into the folder that status dictates.
 //
 // Canonical folder per (normalized) status:
-//   pending                 → queue/  (or queue/<project>/ when project-tagged)
-//   in-progress | on-hold   → goals/ root   (live work; status distinguishes them)
-//   testing                 → testing/
+//   pending                             → queue/  (or queue/<project>/ when project-tagged)
+//   in-progress | dispatched | on-hold  → goals/ root (live work; status distinguishes them)
+//   testing                             → testing/
 //   completed | abandoned   → done/   (a copy already under done/archive/ counts as placed)
 // Any other/unknown-but-present status is left where it is (conservative — only
 // the states we own are re-filed). A file with NO status is not a goal → quarantined.
@@ -196,6 +197,7 @@ function canonicalDirFor(archDir, status, project) {
     case STATUS_PENDING:
       return project ? path.join(queueDir(archDir), slugify(project)) : queueDir(archDir);
     case STATUS_ACTIVE:
+    case STATUS_DISPATCHED:
     case STATUS_ON_HOLD:
       return goalsDir(archDir);
     case STATUS_TESTING:
@@ -249,6 +251,17 @@ function walkGoalMarkdownFiles(archDir) {
   return out;
 }
 
+// Every path VALUE this section reports, and every path it COMPARES, goes
+// through here first. path.relative / path.join / readdir all hand back
+// native separators, so on Windows the report reads `goals\testing\dup.md`
+// while every consumer (tests, MCP JSON, the `/`-delimited spec conventions)
+// speaks forward slashes — a divergence that is invisible on the ubuntu CI leg
+// and only ever surfaces on windows-latest. It also makes the duplicate
+// keeper tie-break platform-stable: raw byte-compares of paths order
+// `testing/` against `testing5/` differently depending on whether the
+// separator is `/` (0x2F) or `\` (0x5C). No-op on POSIX.
+const relGoalPath = (archDir, file) => toPosixPath(path.relative(archDir, file));
+
 // Park a file in quarantine/ (never delete). Keeps the basename, disambiguating
 // on collision so two junk `notes.md` files don't clobber each other. Tolerant —
 // a hiccup skips the file rather than throwing.
@@ -267,7 +280,7 @@ function quarantineFile(archDir, file) {
       fs.writeFileSync(dest, fs.readFileSync(file, "utf8"));
       fs.rmSync(file, { force: true });
     }
-    return path.relative(archDir, dest);
+    return relGoalPath(archDir, dest);
   } catch { return null; }
 }
 
@@ -284,7 +297,7 @@ function quarantineFile(archDir, file) {
 // health signal a startup auto-fix keys off of.
 export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
   const report = { moved: [], duplicates: [], quarantined: [], outOfPlaceCount: 0 };
-  const rel = (f) => path.relative(archDir, f);
+  const rel = (f) => relGoalPath(archDir, f);
 
   let files;
   try { files = walkGoalMarkdownFiles(archDir); } catch { return report; }
@@ -311,6 +324,10 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
     }
     goals.push({
       file,
+      // Separator-normalized copy of `file`, used for every ORDERING compare
+      // below so the duplicate keeper tie-break is the same on Windows as on
+      // POSIX (see relGoalPath). Equality checks keep using path.resolve.
+      sortKey: toPosixPath(file),
       dir: path.dirname(file),
       slug: String(meta.slug || path.basename(file).replace(/\.md$/, "")).trim(),
       status,
@@ -328,7 +345,7 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
   const survivors = [];
   for (const [slug, group] of bySlug) {
     if (group.length === 1) { survivors.push(group[0]); continue; }
-    const byPath = [...group].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+    const byPath = [...group].sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
     const placed = byPath.filter((g) => isPlacedCorrectly(archDir, g));
     const keeper = placed[0] || byPath[0];
     for (const g of byPath) {
@@ -352,8 +369,13 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
     // SessionStart. Refuse any slug that isn't a safe single path segment and
     // park the file in quarantine/ instead of writing to a traversed path.
     const dest = path.join(canonical, `${g.slug}.md`);
+    // The single-segment check runs against the POSIX-normalized slug so BOTH
+    // separators are rejected on BOTH platforms: `path.basename` treats `\` as
+    // a separator on Windows only, so `slug: sub\evil` would otherwise be
+    // refused on windows-latest and quietly accepted on the ubuntu leg.
+    const posixSlug = toPosixPath(g.slug);
     const unsafeSlug =
-      g.slug !== path.basename(g.slug) ||
+      posixSlug !== path.posix.basename(posixSlug) ||
       g.slug.includes("..") ||
       !path.resolve(dest).startsWith(path.resolve(canonical) + path.sep);
     if (unsafeSlug) {
@@ -390,16 +412,66 @@ export function slugify(s) {
     .slice(0, 60) || "goal";
 }
 
+// ── YAML-ambiguity quoting (frontmatter-colon-escaping) ──────────────────────
+//
+// The frontmatter is hand-rolled (no YAML dep), but the VALUES are author text:
+// exit criteria routinely read "X is preserved: a lane containing…". Emitted bare,
+// a colon-space turns a list item into a `key: value` map — the scalar pass below
+// then harvests it as a bogus top-level key, and the next write re-emits it as a
+// stray unindented line right after the block, where the following read swallows
+// it back as a PHANTOM DUPLICATE criterion. So every value that YAML (or this
+// parser) would read as anything but a plain scalar is quoted on write and
+// unquoted on read. This applies to EVERY frontmatter value — scalars and every
+// block-list item alike (exit-criteria, files-to-touch, owns, required-reading,
+// depends-on) — because they all share the defect.
+const YAML_LEADING_INDICATOR = /^[-?:,[\]{}#&*!|>'"%@`]/;
+function needsYamlQuote(s) {
+  if (s === "") return false;
+  if (/^\s|\s$/.test(s)) return true;            // leading/trailing space is lost bare
+  if (YAML_LEADING_INDICATOR.test(s)) return true; // dash, hash, ampersand, asterisk, brackets…
+  if (/:(\s|$)/.test(s)) return true;             // colon-space (or trailing colon) → map
+  if (s.includes(" #")) return true;              // inline comment
+  if (/[\n\r]/.test(s)) return true;              // newlines can't survive a bare scalar
+  return false;
+}
+function quoteYamlScalar(v) {
+  const s = String(v);
+  // JSON string syntax is a subset of YAML's double-quoted scalar, so
+  // JSON.stringify/JSON.parse is a safe, dependency-free quote/unquote pair.
+  return needsYamlQuote(s) ? JSON.stringify(s) : s;
+}
+function unquoteYamlScalar(raw) {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try { return JSON.parse(raw); } catch { return raw.slice(1, -1); }
+  }
+  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.slice(1, -1).replace(/''/g, "'");
+  }
+  return raw;
+}
+function isQuotedScalar(raw) {
+  return raw.length >= 2 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")));
+}
+
 export function parseGoal(content) {
   const m = content.match(FRONTMATTER_RE);
   if (!m) return { meta: {}, body: content, elapsedMs: null };
   const meta = {};
   for (const line of m[1].split("\n")) {
+    // List items are NOT key:value lines — an item carrying a colon ("… is
+    // preserved: a lane …") must never register as a top-level key. Skipping
+    // them here is also what makes an ALREADY-CORRUPTED file (stray unindented
+    // `- text: more` lines from the pre-fix writer) parse without re-seeding the
+    // corruption instead of throwing.
+    if (/^\s*-\s/.test(line)) continue;
     const colon = line.indexOf(":");
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim();
     const raw = line.slice(colon + 1).trim();
-    if (raw.startsWith("[") && raw.endsWith("]")) {
+    if (isQuotedScalar(raw)) {
+      // Explicitly quoted → a literal scalar, never an inline list.
+      meta[key] = unquoteYamlScalar(raw);
+    } else if (raw.startsWith("[") && raw.endsWith("]")) {
       // Bare inline list — for arrays we prefer block form (handled below)
       meta[key] = raw.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
     } else {
@@ -415,7 +487,11 @@ export function parseGoal(content) {
   let currentKey = null;
   let buffer = [];
   const flush = () => {
-    if (currentKey && buffer.length > 0) meta[currentKey] = buffer;
+    // De-dupe exact repeats: a file corrupted by the pre-fix writer carries the
+    // colon-bearing criterion twice (once indented, once as the stray line the
+    // block pass re-absorbs). Dropping the exact repeat heals the phantom
+    // duplicate on read; distinct items are untouched.
+    if (currentKey && buffer.length > 0) meta[currentKey] = [...new Set(buffer)];
     currentKey = null;
     buffer = [];
   };
@@ -423,7 +499,7 @@ export function parseGoal(content) {
     const keyMatch = line.match(/^(\w[\w-]*):\s*$/);
     if (keyMatch) { flush(); currentKey = keyMatch[1]; continue; }
     if (currentKey && line.match(/^\s*-\s+/)) {
-      const item = line.replace(/^\s*-\s+/, "").trim();
+      const item = unquoteYamlScalar(line.replace(/^\s*-\s+/, "").trim());
       if (item) buffer.push(item);
     } else if (currentKey && !line.startsWith(" ")) {
       flush();
@@ -439,11 +515,15 @@ export function parseGoal(content) {
 function emitFrontmatter(meta) {
   const lines = [];
   for (const [k, v] of Object.entries(meta)) {
+    // A key that isn't a plain identifier can only have come from a corrupted
+    // read (a list item harvested as a key by the pre-fix parser). Never re-emit
+    // it — that's exactly how the stray unindented lines propagated.
+    if (!/^[\w][\w.-]*$/.test(String(k))) continue;
     if (Array.isArray(v)) {
       lines.push(`${k}:`);
-      for (const item of v) lines.push(`  - ${item}`);
+      for (const item of v) lines.push(`  - ${quoteYamlScalar(item)}`);
     } else if (v != null) {
-      lines.push(`${k}: ${v}`);
+      lines.push(`${k}: ${quoteYamlScalar(v)}`);
     }
   }
   return lines.join("\n");
@@ -939,6 +1019,20 @@ export function acceptGraphProposal(archDir, slug, { file, line } = {}) {
 // Render a tight, copy-pasteable payload for the user to paste after `/goal`
 // in a fresh /clear'ed session. Stays under PAYLOAD_BUDGET — the full goal
 // context lives on disk; the payload just points to it.
+// A goal file's path as the agent will type it: relative to the PROJECT ROOT
+// (the parent of .arch/), forward-slashed so a Windows path is still a valid
+// Read argument. Falls back to the legacy root-level shape only if the path
+// can't be expressed relative to the project (never in practice — every goal
+// path is built from archDir).
+export function goalRelPath(archDir, filepath, slug) {
+  try {
+    const root = path.dirname(path.resolve(archDir));
+    const rel = toPosixPath(path.relative(root, path.resolve(filepath)));
+    if (rel && !rel.startsWith("..")) return rel;
+  } catch {}
+  return `${toPosixPath(path.join(path.basename(archDir), "goals"))}/${slug}.md`;
+}
+
 export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
@@ -953,7 +1047,12 @@ export function renderPayload(archDir, slug, { budget = PAYLOAD_BUDGET } = {}) {
   lines.push(`Title: ${m.title || slug}`);
   lines.push("");
   lines.push(`Read first:`);
-  lines.push(`- .arch/goals/${slug}.md`);
+  // The goal's REAL on-disk path (payload-goal-path). A goal lives in one of four
+  // canonical places — queue/, queue/<project>/, goals/ root (live), testing/ —
+  // so a reconstructed `.arch/goals/<slug>.md` guess was wrong for every queued
+  // goal, and this is the FIRST action a fresh worker takes with no other way to
+  // find its own goal file. Derived from the path loadGoal actually resolved.
+  lines.push(`- ${goalRelPath(archDir, goal.filepath, slug)}`);
   for (const r of required) lines.push(`- ${r}`);
   lines.push("");
   lines.push(`Then run: archkit resolve warmup`);
@@ -1161,10 +1260,21 @@ export const STATUS_TESTING = "testing";
 // stop, so the Stop hook lets the session end. It lives in goals/ root (status
 // is the source of truth, not a folder) and is resumed via startGoal.
 export const STATUS_ON_HOLD = "on-hold";
+// Claimed ON BEHALF OF another session (ADR 0027). Under CGR 2.0 the conductor
+// dispatches one worker subagent per lane; the claim is made in the CONDUCTOR's
+// session but the work happens in the WORKER's. `dispatched` names exactly that
+// split: the goal is live, leased, and in_flight — but the Stop-hook relay guard
+// is scoped to the session that would have to do the work, so a dispatched goal
+// releases it. Distinct from `on-hold` (parked, lease dropped, no one working it)
+// and from `in-progress` (the calling session IS the working session). Lives in
+// goals/ root like in-progress; the LEASE, not the status, is what a TTL expiry
+// reclaims, so an orphaned dispatch is reclaimed exactly as in-progress is.
+export const STATUS_DISPATCHED = "dispatched";
 // States that keep the relay guard engaged — the goal is live work the Stop
 // hook must not let the session walk away from. `testing` is guarded precisely
 // because it is NOT done; `on-hold` is deliberately EXCLUDED (parking releases
-// the guard).
+// the guard) and so is `dispatched` (the working session is a subagent, so
+// guarding the calling session would tell it to duplicate a worker's edits).
 const GUARDED_STATUSES = [STATUS_ACTIVE, STATUS_TESTING];
 
 export function isGoalDone(archDir, slug) {
@@ -1456,11 +1566,33 @@ export function forkSuccessor(archDir, slug, { successorSlug, unmet, handoff } =
 // `testing` (verification pending) — both keep the Stop-hook relay engaged. In
 // fresh-context relay there should be at most one; prefer an in-progress goal,
 // then a testing goal, by listGoals order.
+//
+// `dispatched` is NOT guarded (ADR 0027): the claim was made on behalf of a
+// worker subagent, so the calling session has nothing to work — guarding it
+// would tell the conductor to duplicate a worker's edits in the wrong tree.
 export function getActiveGoal(archDir) {
   const goals = listGoals(archDir);
   return goals.find((g) => statusOf(g) === STATUS_ACTIVE)
     || goals.find((g) => statusOf(g) === STATUS_TESTING)
     || null;
+}
+
+// Every goal currently DISPATCHED to a worker subagent (ADR 0027), each with the
+// worker it was dispatched to and its outstanding lease. The Stop hook reads this
+// to explain WHY it isn't guarding: the lanes are live, just not in this session.
+// Tolerant — an unreadable/malformed .arch/ yields [] rather than throwing.
+export function dispatchedGoals(archDir) {
+  let goals;
+  try { goals = listGoals(archDir); } catch { return []; }
+  return goals
+    .filter((g) => statusOf(g) === STATUS_DISPATCHED)
+    .map((g) => ({
+      slug: g.slug,
+      lane: laneOf(g),
+      worker: String(g?.meta?.["dispatched-to"] || "").trim() || leaseOf(g)?.worker || null,
+      lease: leaseOf(g),
+      since: g?.meta?.["dispatched-since"] || null,
+    }));
 }
 
 // ── Status-line segment (statusline-archkit-context) ─────────────────────────
@@ -1519,10 +1651,11 @@ export function statuslineSegment(archDir, { glyph = "⛏", testingGlyph = "🧪
 // when a goal would edit a file another LIVE goal is also editing — the reliable
 // backbone for parallel work. "Live" = in-progress OR testing (the set the Stop
 // hook guards): a goal can only collide with yours while it's actually being
-// worked; pending/on-hold/completed/abandoned goals can't. This is the same set
-// as GUARDED_STATUSES by definition, kept as its own constant so the conflict
-// scope is self-documenting and won't drift if the guard set ever diverges.
-const LIVE_STATUSES = [STATUS_ACTIVE, STATUS_TESTING];
+// worked; pending/on-hold/completed/abandoned goals can't. The guard set and the
+// conflict set HAVE now diverged (this constant existed for exactly that reason):
+// `dispatched` is live — a worker subagent is editing its files right now — but
+// it is NOT guarded in the dispatching session (ADR 0027).
+const LIVE_STATUSES = [STATUS_ACTIVE, STATUS_DISPATCHED, STATUS_TESTING];
 
 // A goal's declared files-to-touch, normalized for overlap comparison (strip a
 // leading ./, trim, drop blanks, dedupe). Tolerant of a missing/scalar/empty
@@ -1891,7 +2024,7 @@ export function readChatBoard(archDir, { limit = 20 } = {}) {
 // If the goal was sitting in goals/testing/ (resumed for verification), it is
 // relocated back to goals/ root so an in-progress goal never lingers in the
 // testing drawer — status frontmatter and folder stay consistent.
-export function startGoal(archDir, slug) {
+export function startGoal(archDir, slug, { reclaim = false } = {}) {
   // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
   // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
   // the root path, migration would move it, and the relocate-write below would
@@ -1900,7 +2033,18 @@ export function startGoal(archDir, slug) {
   ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
-  goal.meta.status = STATUS_ACTIVE;
+  // A DISPATCHED goal keeps its state (ADR 0027). The worker subagent it was
+  // dispatched to calls goal_start from its own session, which only CONFIRMS it
+  // is working the goal — the working session still isn't the guarded foreground
+  // one, so flipping to in-progress here would re-trap the conductor on work it
+  // must not do. `reclaim` is the explicit escape: the conductor taking the goal
+  // back after a failed or expired dispatch.
+  const dispatched = statusOf(goal) === STATUS_DISPATCHED && !reclaim;
+  goal.meta.status = dispatched ? STATUS_DISPATCHED : STATUS_ACTIVE;
+  if (reclaim) {
+    delete goal.meta["dispatched-since"];
+    delete goal.meta["dispatched-to"];
+  }
   if (!goal.meta.started) goal.meta.started = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
@@ -1916,7 +2060,58 @@ export function startGoal(archDir, slug) {
   // renderPayload reads this AFTER (the relay renders before starting), so the
   // first queue goal sees "create -c" and every later one sees "switch".
   if (!String(goal.meta.project || "").trim()) ensureQueueBranch(archDir);
-  return { slug, status: STATUS_ACTIVE };
+  return { slug, status: goal.meta.status };
+}
+
+// The CGR 2.0 "dispatch" transition (ADR 0027): claim a goal ON BEHALF OF a
+// worker subagent that will work it in another session/worktree. Unlike startGoal
+// this does NOT engage the Stop-hook relay guard in the calling session — the
+// caller is the conductor, and the only correct action for it is to wait — but it
+// is emphatically not a park: the goal stays LIVE and keeps a LEASE, so it still
+// counts for file-conflict detection, bucket drain, and (with the companion
+// `claimed` board event) session_state.in_flight.
+//
+// Stamps `dispatched-since`, `dispatched-to` (the worker), and a `lease`
+// ({worker, expires}) minted from cgr.leaseTtlHours — unless the goal already
+// carries one, in which case the existing claim is preserved verbatim so a
+// conductor-side claimFrontier and this transition can be composed in either
+// order without one clobbering the other's expiry. TTL reclaim keys off that
+// lease, exactly as it does for an orphaned in-progress goal.
+//
+// Like on-hold, the file lives in goals/ root (status, not folder, is the source
+// of truth) and the turn-cap counter is cleared. Idempotent.
+export function dispatchGoal(archDir, slug, { worker = null, ttlHours, now = new Date() } = {}) {
+  ensureGoalsLayout(archDir);
+  const goal = loadGoal(archDir, slug);
+  if (!goal) throw new Error(`unknown goal: ${slug}`);
+  const workerId = String(worker || "").trim() || null;
+  goal.meta.status = STATUS_DISPATCHED;
+  const at = now instanceof Date ? now : new Date(now);
+  if (!goal.meta["dispatched-since"]) goal.meta["dispatched-since"] = at.toISOString();
+  if (workerId) goal.meta["dispatched-to"] = workerId;
+  // Hold the lease. An existing claim wins so we never shorten or extend someone
+  // else's TTL; otherwise mint one from the configured (or supplied) window.
+  let lease = leaseOf(goal);
+  if (!lease) {
+    const ttl = Number.isFinite(Number(ttlHours)) && Number(ttlHours) > 0
+      ? Number(ttlHours)
+      : leaseTtlHours(archDir);
+    lease = {
+      worker: workerId,
+      expires: new Date(at.getTime() + ttl * 3600 * 1000).toISOString(),
+    };
+    goal.meta.lease = JSON.stringify(lease);
+  }
+  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+  const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
+  fs.writeFileSync(targetPath, out);
+  if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
+    fs.rmSync(goal.filepath, { force: true });
+  }
+  // Dispatching releases the guard in THIS session — drop any turn-cap counter.
+  const state = readLoopState(archDir);
+  if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
+  return { slug, status: STATUS_DISPATCHED, worker: workerId, lease, filepath: targetPath };
 }
 
 // The relay "verification" transition: move an active goal into `testing` —
@@ -2084,9 +2279,10 @@ export function leaseTtlHours(archDir) {
 // ── CGR finalization (cgr.finalize) ──────────────────────────────────────────
 // A configurable wrap-up goal auto-appended to every intake batch so a sprawling
 // ask always ends with the release chores done in a fresh, focused context:
-// update the changelog, refresh docs, finalize commits with notes, push, set up a
-// release, deploy to development. Each step is opt-in/out per project. The
-// outward-facing steps (push / release / deployDev) default OFF so they are a
+// bump the release version, update the changelog, refresh docs, finalize commits
+// with notes, push, set up a release, deploy to development. Each step is
+// opt-in/out per project. The outward-facing steps (version / push / release /
+// deployDev) default OFF so they are a
 // deliberate choice, never a surprise the agent takes on its own. Persisted under
 // .arch/config.json → cgr.finalize so the one-time setup isn't re-asked.
 //
@@ -2094,6 +2290,12 @@ export function leaseTtlHours(archDir) {
 // the finalize goal carries the steps as exit-criteria; the agent executes the
 // local ones (changelog/docs/commit) and instructs the user for push/release/deploy.
 export const FINALIZE_STEPS = [
+  // `version` is FIRST on purpose: the changelog entry and the commit message both
+  // describe the version being cut, so the bump has to land before either of them
+  // runs. Default OFF like the other outward-facing steps — cutting a version is a
+  // deliberate act, never something the wrap-up does on its own.
+  { key: "version", label: "Bump the release version", default: false,
+    criterion: "Release version bumped in every file the project's version check covers" },
   { key: "changelog", label: "Update the changelog", default: true,
     criterion: "CHANGELOG updated with an entry covering this batch's changes" },
   { key: "docs", label: "Update documentation", default: true,
@@ -2177,15 +2379,117 @@ export function writeFinalizeConfig(archDir, patch = {}) {
 // barrier, so the lane partition schedules it LAST and SOLO — correct, because it
 // touches changelog/docs/git across the whole batch. Exit-criteria are exactly the
 // enabled steps (so a project that only wants changelog+docs gets a 2-line goal).
+// The `project` the batch UNANIMOUSLY belongs to, or "" when the batch spans
+// several projects (or none). Inheriting it is what keeps the finalize barrier on
+// the same branch as the work it documents (finalize-project-inheritance): without
+// it the synthesized goal carried no project, so its payload instructed
+// `git switch -c cgr-queue-<date>` while every goal it depends on lived on
+// feat/<project> — the CHANGELOG/commit/push step would have run on a different
+// branch than the work. Unanimity is required precisely so a mixed batch FALLS
+// BACK to the shared dated queue branch instead of guessing one of the projects.
+// The project also decides the goal's on-disk home (writeGoal files a projected
+// goal under queue/<project>/), so inheriting keeps goal reconcile from
+// immediately relocating it.
+function inheritedBatchProject(archDir, batchSlugs) {
+  const seen = new Set();
+  for (const slug of batchSlugs) {
+    let p = "";
+    try { p = String(loadGoal(archDir, slug)?.meta?.project || "").trim(); } catch { p = ""; }
+    seen.add(p);
+    if (seen.size > 1) return ""; // mixed batch → no inheritance
+  }
+  const only = seen.size === 1 ? [...seen][0] : "";
+  return only;
+}
+
+// ── Version-sync detection (the `version` finalize step) ─────────────────────
+// A release only publishes when the git tag matches the version in the project's
+// manifests, and most projects enforce that with their own check script. The
+// finalize goal therefore must name the ACTUAL files that check compares rather
+// than guess one manifest: archkit reads the project's version-check script and
+// the manifests that exist on disk, so the criteria say "bump these two files and
+// re-run this command" instead of "bump the version somehow".
+//
+// Detection is best-effort and never throws — with nothing detected the step still
+// carries its generic criterion, which is strictly better than no step at all.
+const VERSION_FILE_CANDIDATES = [
+  "package.json",
+  ".claude-plugin/plugin.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "composer.json",
+  "manifest.json",
+  "VERSION",
+  "version.txt",
+];
+
+// The package.json script that verifies version consistency ("check:versions",
+// "version:sync", …). Must mention a version AND an act of checking, so ordinary
+// scripts like `version` (npm's own lifecycle hook) don't get mistaken for one.
+function versionCheckScript(pkg) {
+  const scripts = pkg && typeof pkg.scripts === "object" && pkg.scripts ? pkg.scripts : {};
+  const name = Object.keys(scripts).find((n) => /version/i.test(n) && /check|sync|verify/i.test(n));
+  return name ? { name, script: String(scripts[name] || ""), command: `npm run ${name}` } : null;
+}
+
+// The manifest paths a check script actually reads — pulled from the script file
+// the npm script invokes. This is what makes the criteria match the project's own
+// definition of "in sync" rather than archkit's guess.
+function versionFilesReferencedBy(root, script) {
+  const m = /([\w./-]+\.(?:mjs|cjs|js|ts|sh|py))\b/.exec(String(script || ""));
+  if (!m) return [];
+  let src = "";
+  try { src = fs.readFileSync(path.join(root, m[1]), "utf8"); } catch { return []; }
+  const out = [];
+  for (const lit of src.match(/["'`][^"'`\n]+\.(?:json|toml|txt|ya?ml)["'`]/g) || []) {
+    const p = lit.slice(1, -1);
+    if (!out.includes(p) && fs.existsSync(path.join(root, p))) out.push(p);
+  }
+  return out;
+}
+
+// { command, files, version } for the project owning archDir. Exported so the
+// finalize criteria and tests read the same detection.
+export function detectVersionSync(archDir) {
+  const root = path.dirname(archDir);
+  let pkg = null;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")); } catch { pkg = null; }
+  const check = versionCheckScript(pkg);
+  const files = [];
+  for (const p of VERSION_FILE_CANDIDATES) if (fs.existsSync(path.join(root, p))) files.push(p);
+  for (const p of versionFilesReferencedBy(root, check?.script)) if (!files.includes(p)) files.push(p);
+  return {
+    command: check ? check.command : "",
+    files,
+    version: pkg && typeof pkg.version === "string" ? pkg.version : "",
+  };
+}
+
+// The `version` step expands to TWO criteria: bump every covered file, then re-run
+// the check — the re-run is the part that catches a half-done bump before the
+// commit step freezes it into history.
+function versionExitCriteria(archDir, base) {
+  const { command, files, version } = detectVersionSync(archDir);
+  const where = files.length ? `: ${files.join(", ")}` : "";
+  const cur = version ? ` (currently ${version})` : "";
+  const cmd = command ? ` (\`${command}\`)` : "";
+  return [
+    `${base}${where}${cur}`,
+    `Version sync re-verified${cmd} and green BEFORE the commit step`,
+  ];
+}
+
 export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk = "" } = {}) {
   const cfg = readFinalizeConfig(archDir);
   if (!cfg.enabled) return null;
   const enabled = FINALIZE_STEPS.filter((s) => cfg.steps[s.key]);
   if (enabled.length === 0) return null;
   const outward = cfg.steps.push || cfg.steps.release || cfg.steps.deployDev;
-  const exitCriteria = enabled.map((s) => {
-    if (s.key === "deployDev" && cfg.deployCommand) return `${s.criterion} (\`${cfg.deployCommand}\`)`;
-    return s.criterion;
+  // flatMap: most steps are one criterion, but `version` expands to bump + re-check.
+  const exitCriteria = enabled.flatMap((s) => {
+    if (s.key === "deployDev" && cfg.deployCommand) return [`${s.criterion} (\`${cfg.deployCommand}\`)`];
+    if (s.key === "version") return versionExitCriteria(archDir, s.criterion);
+    return [s.criterion];
   });
   const ciCdNote = cfg.ciCd && cfg.ciCd !== "none" ? ` CI/CD: ${cfg.ciCd}.` : "";
   const why =
@@ -2193,14 +2497,21 @@ export function buildFinalizeGoal(archDir, { batchSlugs = [], order, sourceAsk =
     enabled.map((s) => s.label.toLowerCase()).join(", ") + `.` + ciCdNote +
     ` archkit never runs git/deploy itself — do the local steps and instruct the user for push/release/deploy. ` +
     `Adjust or opt out with archkit_finalize_config (or \`archkit finalize\`).`;
+  const project = inheritedBatchProject(archDir, batchSlugs);
   return {
     slug: FINALIZE_SLUG,
     title: outward ? "Finalize: changelog, docs, commits + release" : "Finalize: changelog, docs, commits",
     exitCriteria,
     dependsOn: batchSlugs.slice(),
+    // Inherited so the barrier lands on the branch it documents; absent for a
+    // mixed/ungrouped batch, which keeps the shared dated queue branch.
+    ...(project ? { project } : {}),
     exclusive: true,
     feature: "finalize",
-    owns: ["CHANGELOG.md", "CHANGELOG", "README.md", "docs/**"],
+    // The version step edits the project's manifests, so the barrier must own them
+    // too — otherwise it writes files no lane declared.
+    owns: ["CHANGELOG.md", "CHANGELOG", "README.md", "docs/**",
+      ...(cfg.steps.version ? detectVersionSync(archDir).files : [])],
     order,
     why,
     sourceAsk,
@@ -2303,12 +2614,15 @@ export function nextEligibleGoal(archDir) {
     return !deps.some((d) => !isGoalDone(archDir, d));
   };
 
-  // Eligible = not done, not parked (on-hold), and deps satisfied. `on-hold`
-  // goals are deliberately set aside, so they are NOT auto-selected ahead of
-  // real pending/testing work — they only surface as a last-resort resume below.
+  // Eligible = not done, not parked (on-hold), not dispatched, and deps
+  // satisfied. `on-hold` goals are deliberately set aside, so they are NOT
+  // auto-selected ahead of real pending/testing work — they only surface as a
+  // last-resort resume below. `dispatched` goals are already claimed by a worker
+  // subagent under a live lease (ADR 0027), so offering one would hand the same
+  // work to two sessions; they are excluded outright, not deferred.
   const eligible = goals.filter((g) => {
     const s = statusOf(g);
-    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD) return false;
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_DISPATCHED) return false;
     return depsSatisfied(g);
   });
   const testing = eligible.filter((g) => statusOf(g) === STATUS_TESTING);
@@ -2363,11 +2677,11 @@ export function routeNextGoal(archDir) {
     const deps = ensureArray(g.meta["depends-on"]);
     return !deps.some((d) => !isGoalDone(archDir, d));
   };
-  // Eligible = not done, not parked, deps satisfied — the same gate
-  // nextEligibleGoal applies before its threshold ordering.
+  // Eligible = not done, not parked, not dispatched, deps satisfied — the same
+  // gate nextEligibleGoal applies before its threshold ordering.
   const eligible = preferContinuations(goals.filter((g) => {
     const s = statusOf(g);
-    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD) return false;
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_DISPATCHED) return false;
     return depsSatisfied(g);
   }));
   const projectOf = (g) => String(g?.meta?.project || "").trim();
@@ -2474,11 +2788,12 @@ export function triageNextGoal(archDir) {
     const deps = ensureArray(g.meta["depends-on"]);
     return !deps.some((d) => !isGoalDone(archDir, d));
   };
-  // Eligible = not done, not parked (on-hold), deps satisfied — the same gate
-  // nextEligibleGoal / routeNextGoal apply. Continuations float to the front.
+  // Eligible = not done, not parked (on-hold), not dispatched to a worker,
+  // deps satisfied — the same gate nextEligibleGoal / routeNextGoal apply.
+  // Continuations float to the front.
   const eligible = preferContinuations(goals.filter((g) => {
     const s = statusOf(g);
-    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_ACTIVE) return false;
+    if (s === STATUS_COMPLETED || s === STATUS_ON_HOLD || s === STATUS_ACTIVE || s === STATUS_DISPATCHED) return false;
     return depsSatisfied(g);
   }));
   const projectOf = (g) => String(g?.meta?.project || "").trim();
@@ -2634,11 +2949,12 @@ export function clearQueueBranchIfDrained(archDir) {
 // (instruct-not-act, ADR 0010) — the agent presents the choice and the user runs
 // the commands on 'merge'.
 //
-// "Live" for drain purposes = pending | in-progress | testing (the states that
-// represent unfinished work). on-hold (deliberately parked), completed, and
-// abandoned do NOT keep a bucket alive — a bucket holding only parked/terminal
-// goals counts as drained.
-const DRAIN_LIVE_STATUSES = [STATUS_PENDING, STATUS_ACTIVE, STATUS_TESTING];
+// "Live" for drain purposes = pending | in-progress | dispatched | testing (the
+// states that represent unfinished work — a goal dispatched to a worker subagent
+// is unfinished work someone is actively doing, ADR 0027). on-hold (deliberately
+// parked), completed, and abandoned do NOT keep a bucket alive — a bucket holding
+// only parked/terminal goals counts as drained.
+const DRAIN_LIVE_STATUSES = [STATUS_PENDING, STATUS_ACTIVE, STATUS_DISPATCHED, STATUS_TESTING];
 
 // PURE: does completing `slug` drain the last live goal of its bucket? `goals` is
 // the full live goal set (as from listGoals, INCLUDING the goal being completed,
@@ -2714,11 +3030,60 @@ export function bucketBranch(archDir, { bucket, project } = {}) {
   return readQueueBranch(archDir) || queueBranchName();
 }
 
+// ── How a drained bucket LANDS (pr-based-landing) ────────────────────────────
+//
+// The terminal step of a CGR batch used to be a DIRECT merge to mainline
+// (`git switch main && git merge <branch>`). But a project with CI has a
+// `pull_request` trigger, and its own release docs promise "open a PR, merge to
+// main (CI runs on the PR)" — so the direct merge bypassed the very gate the
+// project documents. Landing is now CI-AWARE: with a CI provider configured
+// (.arch/config.json → cgr.finalize.ciCd) the guidance is push + open-a-PR +
+// WAIT for the required checks; with no provider it stays the direct merge, so
+// CI-less projects are unaffected.
+//
+// archkit still runs no git (instruct-not-act, ADR 0010) — only the EMITTED
+// string and its config gating change.
+
+export const LANDING_DIRECT = "direct-merge";
+export const LANDING_PR = "pull-request";
+
+// Does this cgr.finalize.ciCd value name an actual CI provider? "none"/""/absent
+// mean no CI; anything else (github-actions, custom, a provider name) means the
+// merge is gated by checks the PR runs.
+export function hasCiProvider(ciCd) {
+  const s = String(ciCd == null ? "" : ciCd).trim().toLowerCase();
+  return Boolean(s) && s !== "none" && s !== "false";
+}
+
+// The landing STRATEGY for a bucket, resolved from the finalize config. Split out
+// from the guidance string so callers can branch on the decision without parsing
+// prose. Tolerant — an unreadable config resolves to the direct merge.
+export function bucketLandingStrategy(archDir) {
+  let ciCd = "none";
+  try { ciCd = readFinalizeConfig(archDir).ciCd; } catch { ciCd = "none"; }
+  const ci = hasCiProvider(ciCd);
+  return { strategy: ci ? LANDING_PR : LANDING_DIRECT, ciCd: ciCd || "none", ci };
+}
+
 // Git guidance to LAND a drained bucket's branch into mainline. archkit only
 // EMITS this string — it never runs git (instruct-not-act, ADR 0010). Withheld
 // entirely on the archive-only path.
-export function bucketMergeGuidance({ branch, mainline }) {
-  return `git switch ${mainline} && git merge ${branch}`;
+//
+// With no `ciCd` (or ciCd "none") this is the historical direct merge, byte for
+// byte. With a CI provider it becomes push + open-a-PR, and the trailing shell
+// comment carries the WAIT instruction so the whole thing stays one copy-pasteable
+// line even when a caller relays only this string.
+export function bucketMergeGuidance({ branch, mainline, ciCd } = {}) {
+  if (!hasCiProvider(ciCd)) return `git switch ${mainline} && git merge ${branch}`;
+  const provider = String(ciCd).trim();
+  const wait =
+    `WAIT for the required ${provider} checks to pass on the PR before merging it — ` +
+    `do NOT merge to ${mainline} locally, the PR IS the gate`;
+  // GitHub Actions implies the gh CLI can open the PR; any other provider gets
+  // the push plus an instruction to open the PR however that provider does it.
+  return provider.toLowerCase() === "github-actions"
+    ? `git push -u origin ${branch} && gh pr create --base ${mainline} --head ${branch}  # then ${wait}`
+    : `git push -u origin ${branch}  # then open a PR from ${branch} into ${mainline}, and ${wait}`;
 }
 
 // Compose the end-of-bucket merge-or-archive choice for a completing goal, or
@@ -2732,13 +3097,19 @@ export function bucketCompletion(archDir, goals, slug) {
   if (!drain || !drain.drained) return null;
   const branch = bucketBranch(archDir, drain);
   const { mainline, source: mainlineSource } = detectMainline(archDir);
+  // CI-aware landing (pr-based-landing): a project with a CI provider lands
+  // through a PR so the pull_request-triggered checks actually gate the merge;
+  // one without keeps the direct merge.
+  const landing = bucketLandingStrategy(archDir);
   return {
     bucket: drain.bucket,          // 'project' | 'queue'
     project: drain.project,        // <slug> | null
     branch,
     mainline,
     mainlineSource,                // 'config' | 'detected' | 'default'
-    mergeGuidance: bucketMergeGuidance({ branch, mainline }),
+    landing: landing.strategy,     // 'pull-request' | 'direct-merge'
+    ciCd: landing.ciCd,            // the resolved cgr.finalize.ciCd
+    mergeGuidance: bucketMergeGuidance({ branch, mainline, ciCd: landing.ciCd }),
   };
 }
 

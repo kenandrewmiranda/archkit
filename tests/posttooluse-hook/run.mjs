@@ -33,12 +33,17 @@ function setupArch(dir) {
   fs.writeFileSync(path.join(dir, ".arch", "SYSTEM.md"), "# system\n");
 }
 
+// The event carries `cwd`, but so must the child process: a spawn without an
+// explicit `cwd` inherits the runner's, so a hook that falls back to
+// `process.cwd()` (malformed/empty stdin) would resolve archkit's OWN live
+// .arch/. Pass the temp project both ways. Never spawn the hook without one.
+function spawnHook({ cwd, input, timeout = 8000 }) {
+  if (!cwd) throw new Error("spawnHook requires an explicit cwd (never inherit the repo root)");
+  return spawnSync(process.execPath, [HOOK], { cwd, input, encoding: "utf8", timeout });
+}
+
 function runHook(event) {
-  return spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify(event),
-    encoding: "utf8",
-    timeout: 8000,
-  });
+  return spawnHook({ cwd: event?.cwd, input: JSON.stringify(event) });
 }
 
 function cleanupSession(sessionId) {
@@ -165,13 +170,14 @@ test("non-edit tool (Read) → counter only, no review", () => {
   });
 });
 
+// No parseable `cwd` in the payload — so the child's own cwd is the only thing
+// standing between the hook and whatever .arch/ it can walk up to. Run it from
+// a temp project, never from wherever the suite happens to have been launched.
 test("survives malformed stdin without crashing", () => {
-  const r = spawnSync(process.execPath, [HOOK], {
-    input: "{not json",
-    encoding: "utf8",
-    timeout: 4000,
+  withTempProject((dir) => {
+    const r = spawnHook({ cwd: dir, input: "{not json", timeout: 4000 });
+    assert.equal(r.status, 0);
   });
-  assert.equal(r.status, 0);
 });
 
 test("survives Edit with missing file_path", () => {

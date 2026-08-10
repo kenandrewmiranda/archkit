@@ -1,9 +1,10 @@
 ---
 slug: finalize-release
-title: Finalize: changelog, docs, commits + release
+title: "Finalize: changelog, docs, commits + release"
 status: completed
-created: 2026-07-19
-order: 10
+created: 2026-08-02
+order: 19
+project: lane-integration
 exit-criteria:
   - CHANGELOG updated with an entry covering this batch's changes
   - Docs (README / docs/) updated to match the changes
@@ -12,10 +13,7 @@ exit-criteria:
 files-to-touch: 
 required-reading: 
 depends-on:
-  - api-registry-lib
-  - api-detect-lib
-  - api-registry-tools
-  - api-doc-gate-hook
+  - conductor-dispatch-claim-wiring
 owns:
   - CHANGELOG.md
   - CHANGELOG
@@ -24,11 +22,11 @@ owns:
 feature: finalize
 exclusive: true
 verify-command: 
-source-ask: If an API is involved, the user must validate whether an API doc or SDK exists and whether it's provided. This is a hard gate (no-op): archkit blocks further development/direction until the API doc/SDK is given OR the API documentation is referenced properly before coding starts. The user must explicitly override to proceed without docs; otherwise it stays gated.
+source-ask: file the conductor-wiring follow-up — ADR 0027's `dispatched` state is implemented and tested but never reached in practice, because archkit_conductor's dispatch step still doesn't tell the conductor to claim each lane with archkit_goal_start {worker}. Until that wiring lands, conductors keep falling back to the archkit_goal_hold workaround, which misrepresents an actively-worked lane as deliberately parked. Observed six times across two sessions.
 lane: barrier-finalize-release
-started: 2026-07-20T01:14:09.184Z
-completed: 2026-07-20T01:18:26.211Z
-completion-notes: Documented the api-doc-gate batch (ADR 0022): CHANGELOG Unreleased section headlines the API-doc hard gate alongside the goals-layout reconcile; README gains an API-doc gate section, a highlight bullet, the three new MCP tools (archkit_api_register/override/list), and a tool-count bump 32->35. Committed (2288451) with the Co-Authored-By trailer and pushed to origin/main (901f91c..2288451). 69/69 suites green. Finalize itself touched no external API, so the API-doc hard gate was not triggered.
+started: 2026-08-03T01:19:54.489Z
+completed: 2026-08-10T00:08:08.249Z
+completion-notes: "All four exit-criteria met. CHANGELOG gained a third Unreleased body of work covering ADRs 0023-0029 (lane convergence, per-lane verify, PR-gated landing, graph output contract, dispatched state, claim-is-the-dispatch, gated completed event) plus the finalize version-bump step and the intake/test-isolation fixes. README corrected from a stale 35 tools to 49 with the 14 missing CGR 2.0 orchestration tools added, `dispatched` documented in the lifecycle, and a new dispatch->converge->verify->land section. Committed as 4bc5fee with the project trailer; branch pushed and landed through PR #29 per ADR 0025 (github-actions is configured, so the PR is the gate). 77/77 suites green."
 ---
 
 

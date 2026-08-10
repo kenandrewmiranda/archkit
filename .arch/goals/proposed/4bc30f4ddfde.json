@@ -1,0 +1,16 @@
+{
+  "hash": "4bc30f4ddfde",
+  "title": "Make the Stop-hook relay guard aware that a goal is owned by a subagent, not the current context",
+  "why": "In a conductor session the Stop hook loops indefinitely: it sees in-progress goals and demands the current context work them to their exit criteria, but those goals are claimed by worktree-isolated worker subagents. The conductor cannot complete them (workers haven't returned) and must not code them (that clobbers the very lanes it dispatched), so every turn ends by re-triggering the guard with no way to satisfy it.",
+  "exitCriteria": [
+    "A goal claimed on behalf of a subagent is distinguishable from one claimed by the current context — e.g. a worker/owner field on the claim event that the Stop hook reads",
+    "When every in-progress goal is subagent-owned, the Stop hook does not demand the current context work the exit criteria; it reports the in-flight lanes and permits the turn to end",
+    "A conductor session with N dispatched workers and zero returned handoffs can end cleanly without archkit_goal_hold misrepresenting in-flight work as deliberately parked",
+    "The guard still blocks normally when the CURRENT context holds an in-progress goal, so worker sessions are unaffected",
+    "A test covers the conductor case: goals in-progress, all subagent-owned, guard releases"
+  ],
+  "contextExcerpt": "Observed live during the lane-integration dispatch pass on 2026-08-02: the guard fired 5+ consecutive times on lane-reconcile-stage while worker agent-a59b0a4d743b38efb held src/lib/board.mjs and src/mcp/prompts.mjs in an isolated worktree with uncommitted edits on disk.",
+  "patternName": null,
+  "source": "goal-defer",
+  "createdAt": "2026-08-02T17:51:27.894Z"
+}

@@ -21,6 +21,7 @@ import {
   doneDir,
   archiveDir,
 } from "../../src/lib/goals.mjs";
+import { toPosixPath } from "../../src/lib/shared.mjs";
 import { runGoalReconcile } from "../../src/commands/goal.mjs";
 
 let passed = 0;
@@ -138,8 +139,11 @@ test("a duplicate slug collapses to the copy whose location matches its status",
     const report = reconcileGoalsLayout(archDir, { apply: true });
     assert.equal(report.duplicates.length, 1);
     assert.equal(report.duplicates[0].slug, "dup");
-    assert.ok(report.duplicates[0].kept.endsWith("testing/dup.md"), report.duplicates[0].kept);
-    assert.ok(report.duplicates[0].removed.endsWith(path.join("queue", "sub", "dup.md")));
+    // Reported paths are `/`-delimited on EVERY platform (see the separator
+    // portability guards below) — so these are exact, not endsWith(path.join(…)),
+    // which would just re-encode whatever separator the host happens to use.
+    assert.equal(report.duplicates[0].kept, "goals/testing/dup.md");
+    assert.equal(report.duplicates[0].removed, "goals/queue/sub/dup.md");
     assert.ok(fs.existsSync(keep), "in-place copy survives");
     assert.ok(!exists(queueDir(archDir), "sub", "dup.md"), "zombie removed");
   });
@@ -290,6 +294,96 @@ test("legacy status aliases (planned/done) reconcile by their normalized status"
     assert.ok(exists(queueDir(archDir), "lp.md"), "planned alias filed to queue/");
     assert.ok(exists(doneDir(archDir), "ld.md"), "done alias filed to done/");
   });
+});
+
+// ── Windows separator portability ───────────────────────────────────────────
+//
+// The reconcile report is consumed as `/`-delimited text (assertions, MCP JSON,
+// spec-style path conventions), but every path it derives comes from
+// path.relative / path.join / readdir, which hand back NATIVE separators. A raw
+// path.relative therefore reads `goals\testing\dup.md` on windows-latest and
+// `goals/testing/dup.md` on the ubuntu leg — a divergence the ubuntu CI run
+// cannot see, which is exactly how it reached main. These guards fail on EVERY
+// platform, so the Windows-only variant can't come back unnoticed.
+console.log("\n  cgr-reconcile — Windows separator portability");
+
+const GOALS_SRC = fs.readFileSync(new URL("../../src/lib/goals.mjs", import.meta.url), "utf8");
+
+// The reconcile section of goals.mjs: quarantineDir/quarantineFile/
+// isPlacedCorrectly/walkGoalMarkdownFiles/reconcileGoalsLayout, ending where
+// slugify starts.
+function reconcileSource() {
+  const start = GOALS_SRC.indexOf("export function quarantineDir");
+  const end = GOALS_SRC.indexOf("export function slugify");
+  assert.ok(start > 0 && end > start, "reconcile region located in src/lib/goals.mjs");
+  return GOALS_SRC.slice(start, end);
+}
+
+test("every path-derived value in the report is separator-normalized", () => {
+  withArchDir(({ archDir }) => {
+    // One tree exercising all three report arrays, each nested deep enough that
+    // a native separator would show up in the reported path.
+    plant(archDir, "a/b/deep.md", { slug: "deep", status: "pending" });
+    plant(archDir, "x/y/proj.md", { slug: "proj", status: "pending", project: "lane-integration" });
+    plant(archDir, "testing/dup.md", { slug: "dup", status: "testing" });
+    plant(archDir, "queue/sub/dup.md", { slug: "dup", status: "testing" });
+    fs.mkdirSync(path.join(goalsDir(archDir), "deep", "junk"), { recursive: true });
+    fs.writeFileSync(path.join(goalsDir(archDir), "deep", "junk", "notes.md"), "not a goal\n");
+
+    const report = reconcileGoalsLayout(archDir, { apply: false });
+    const paths = [
+      ...report.moved.flatMap((m) => [m.from, m.to]),
+      ...report.duplicates.flatMap((d) => [d.kept, d.removed]),
+      ...report.quarantined.map((q) => q.file),
+    ];
+    assert.ok(paths.length >= 6, `report exercised all three arrays (got ${paths.length} paths)`);
+    for (const p of paths) {
+      assert.ok(!p.includes("\\"), `no backslash in reported path: ${p}`);
+      assert.equal(p, toPosixPath(p), `reported path already normalized: ${p}`);
+      assert.ok(p.startsWith("goals/"), `reported path is archDir-relative POSIX: ${p}`);
+    }
+  });
+});
+
+test("quarantineFile returns a separator-normalized archDir-relative path", () => {
+  withArchDir(({ archDir }) => {
+    // Exercised through the public surface: a status-less .md buried in a
+    // subdirectory is parked in quarantine/, and its reported path must be POSIX.
+    fs.mkdirSync(path.join(goalsDir(archDir), "nested", "deeper"), { recursive: true });
+    fs.writeFileSync(path.join(goalsDir(archDir), "nested", "deeper", "junk.md"), "garbage\n");
+    const report = reconcileGoalsLayout(archDir, { apply: true });
+    assert.equal(report.quarantined.length, 1);
+    assert.equal(report.quarantined[0].file, "goals/nested/deeper/junk.md");
+    assert.ok(exists(quarantineDir(archDir), "junk.md"), "parked in quarantine/");
+  });
+});
+
+test("SECURITY: a backslash in the slug is refused on POSIX too, not only on Windows", () => {
+  withArchDir(({ archDir }) => {
+    // path.basename treats `\` as a separator on Windows ONLY, so an unnormalized
+    // single-segment check quarantines this on windows-latest and silently honors
+    // it on ubuntu — writing a `sub\evil.md` file the relay can never find again.
+    plant(archDir, "winslug.md", { slug: "sub\\evil", status: "pending" });
+    const report = reconcileGoalsLayout(archDir, { apply: true });
+    assert.ok(report.quarantined.some((q) => q.reason === "unsafe slug"), "reported as unsafe slug");
+    assert.ok(!report.moved.some((m) => m.from.endsWith("winslug.md")), "not reported as a move");
+    assert.ok(exists(quarantineDir(archDir), "winslug.md"), "parked in quarantine/");
+    assert.ok(!exists(queueDir(archDir), "sub\\evil.md"), "no backslash filename written");
+  });
+});
+
+test("AUDIT: no path.relative in the reconcile region escapes toPosixPath", () => {
+  const bare = [...reconcileSource().matchAll(/(.{0,13})path\.relative\(/g)]
+    .filter((m) => !m[1].endsWith("toPosixPath("))
+    .map((m) => m[0].trim());
+  assert.deepEqual(bare, [], `wrap these in toPosixPath (Windows-only regression otherwise): ${bare.join(" | ")}`);
+});
+
+test("AUDIT: the duplicate keeper tie-break orders on the normalized path, not the raw one", () => {
+  const region = reconcileSource();
+  assert.ok(region.includes("sortKey"), "goal records carry a normalized sortKey");
+  const rawOrdering = [...region.matchAll(/\w+\.file\s*[<>]/g)].map((m) => m[0]);
+  assert.deepEqual(rawOrdering, [], `order on sortKey, not the native path: ${rawOrdering.join(" | ")}`);
 });
 
 console.log("\n  cgr-reconcile — runGoalReconcile handler (MCP wiring)");
