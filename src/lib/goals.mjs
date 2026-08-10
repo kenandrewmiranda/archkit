@@ -251,6 +251,17 @@ function walkGoalMarkdownFiles(archDir) {
   return out;
 }
 
+// Every path VALUE this section reports, and every path it COMPARES, goes
+// through here first. path.relative / path.join / readdir all hand back
+// native separators, so on Windows the report reads `goals\testing\dup.md`
+// while every consumer (tests, MCP JSON, the `/`-delimited spec conventions)
+// speaks forward slashes — a divergence that is invisible on the ubuntu CI leg
+// and only ever surfaces on windows-latest. It also makes the duplicate
+// keeper tie-break platform-stable: raw byte-compares of paths order
+// `testing/` against `testing5/` differently depending on whether the
+// separator is `/` (0x2F) or `\` (0x5C). No-op on POSIX.
+const relGoalPath = (archDir, file) => toPosixPath(path.relative(archDir, file));
+
 // Park a file in quarantine/ (never delete). Keeps the basename, disambiguating
 // on collision so two junk `notes.md` files don't clobber each other. Tolerant —
 // a hiccup skips the file rather than throwing.
@@ -269,7 +280,7 @@ function quarantineFile(archDir, file) {
       fs.writeFileSync(dest, fs.readFileSync(file, "utf8"));
       fs.rmSync(file, { force: true });
     }
-    return path.relative(archDir, dest);
+    return relGoalPath(archDir, dest);
   } catch { return null; }
 }
 
@@ -286,7 +297,7 @@ function quarantineFile(archDir, file) {
 // health signal a startup auto-fix keys off of.
 export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
   const report = { moved: [], duplicates: [], quarantined: [], outOfPlaceCount: 0 };
-  const rel = (f) => path.relative(archDir, f);
+  const rel = (f) => relGoalPath(archDir, f);
 
   let files;
   try { files = walkGoalMarkdownFiles(archDir); } catch { return report; }
@@ -313,6 +324,10 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
     }
     goals.push({
       file,
+      // Separator-normalized copy of `file`, used for every ORDERING compare
+      // below so the duplicate keeper tie-break is the same on Windows as on
+      // POSIX (see relGoalPath). Equality checks keep using path.resolve.
+      sortKey: toPosixPath(file),
       dir: path.dirname(file),
       slug: String(meta.slug || path.basename(file).replace(/\.md$/, "")).trim(),
       status,
@@ -330,7 +345,7 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
   const survivors = [];
   for (const [slug, group] of bySlug) {
     if (group.length === 1) { survivors.push(group[0]); continue; }
-    const byPath = [...group].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+    const byPath = [...group].sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
     const placed = byPath.filter((g) => isPlacedCorrectly(archDir, g));
     const keeper = placed[0] || byPath[0];
     for (const g of byPath) {
@@ -354,8 +369,13 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
     // SessionStart. Refuse any slug that isn't a safe single path segment and
     // park the file in quarantine/ instead of writing to a traversed path.
     const dest = path.join(canonical, `${g.slug}.md`);
+    // The single-segment check runs against the POSIX-normalized slug so BOTH
+    // separators are rejected on BOTH platforms: `path.basename` treats `\` as
+    // a separator on Windows only, so `slug: sub\evil` would otherwise be
+    // refused on windows-latest and quietly accepted on the ubuntu leg.
+    const posixSlug = toPosixPath(g.slug);
     const unsafeSlug =
-      g.slug !== path.basename(g.slug) ||
+      posixSlug !== path.posix.basename(posixSlug) ||
       g.slug.includes("..") ||
       !path.resolve(dest).startsWith(path.resolve(canonical) + path.sep);
     if (unsafeSlug) {
