@@ -56,7 +56,7 @@ archkit solves this by compiling your architecture into structured files the age
 - **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
 - **Live runtime signal** — `preflight` surfaces recent commits, scoped gotchas, active drift, and **related ADRs** per feature/layer, so agents see current state and prior decisions, not yesterday's snapshot.
 - **Institutional memory** — log architectural decisions (`archkit_log_decision`) and read them back (`archkit_decisions_search`) so settled choices survive context resets.
-- **Lean footprint** — 1 runtime dependency (`inquirer`), 98 source modules, 77 integration test suites.
+- **Lean footprint** — 3 runtime dependencies (`inquirer` for the wizard, `@modelcontextprotocol/sdk` + `zod` for the MCP server), pure ESM with no build step, 98 source modules, 77 integration test suites.
 
 ---
 
