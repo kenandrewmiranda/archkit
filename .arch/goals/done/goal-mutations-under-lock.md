@@ -1,7 +1,7 @@
 ---
 slug: goal-mutations-under-lock
 title: Route every goal-file mutation through the lock and atomic write
-status: dispatched
+status: completed
 created: 2026-08-10
 order: 3
 project: state-safety
@@ -30,7 +30,13 @@ started: 2026-08-11T02:52:13.065Z
 lease: "{\"worker\":\"worker-goal-lock\",\"expires\":\"2026-08-12T02:52:13.067Z\"}"
 dispatched-since: 2026-08-11T02:52:13.069Z
 dispatched-to: worker-goal-lock
+completed: 2026-08-11T03:19:39.101Z
+completion-notes: "Landed as merge 39b523a on feat/state-safety (worker commit c8f9975, clean rebase onto the archdir tip). stampGoalFields is now lock-then-load with an atomic write, so a concurrent stamp of a different field can no longer be lost; completeGoal's archive and reconcileGoalsLayout's apply pass are locked; reclaimExpiredLeases re-checks lease expiry inside the lock and gates the lease-expired EVENT as well as the stamp, closing the re-dispatch TOCTOU. Twelve mutation sites converted in total. Both races are proved with real spawned processes on temp fixtures against verbatim pre-fix negative controls, and non-vacuity was demonstrated by reverting each fix and observing the failure. 80/80 suites, exit 0, verified independently by the conductor on the integration branch. Fail-open on lock timeout is retained per ADR 0030 section 7 but is now loud via process.emitWarning on stderr. Residuals filed separately: the .arch/board/ loop and queue-branch JSON plus appendChatEntry are still lock-free RMW."
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-11
 ---
+
 
 
 

@@ -3,7 +3,7 @@ slug: finalize-release
 title: "Finalize: changelog, docs, commits + release"
 status: pending
 created: 2026-08-11
-order: 10
+order: 12
 project: state-safety
 exit-criteria:
   - CHANGELOG updated with an entry covering this batch's changes
@@ -13,7 +13,7 @@ exit-criteria:
 files-to-touch: 
 required-reading: 
 depends-on:
-  - hooks-status-archdir-alignment
+  - board-json-mutations-under-lock
 owns:
   - CHANGELOG.md
   - CHANGELOG
@@ -22,7 +22,7 @@ owns:
 feature: finalize
 exclusive: true
 verify-command: 
-source-ask: "Conductor follow-up from the archdir-command-walker-residual lane: the worker disclosed that src/lib/hooks-status.mjs projectClaudeDir is a genuine sibling of the retired private walkers — it walks up looking for .arch/.claude as a root marker and ignores ARCHKIT_ARCH_DIR. It returns a .claude/ path rather than an archDir, so it was allowlisted in the new anti-regression guard with that reason rather than silently changed, since src/lib/hooks-status.mjs was outside that lane's ownership. Filed so the exception is revisited deliberately instead of hardening into permanent cover."
+source-ask: "Conductor follow-up from the goal-mutations-under-lock lane: that lane routed every goal-FILE mutation through the ADR 0030 lock, but disclosed three lock-free read-modify-writes it did not own — writeLoopState/bumpLoopBlock and ensureQueueBranch over the JSON under .arch/board/, and appendChatEntry over the gitignored coordination board. ADR 0030's scope names the loop/queue JSON, but that lane's exit criteria did not, and half-fixing them (atomic write without the lock) would not close their lost-update window. Filed so the remaining exposure is closed deliberately rather than assumed closed."
 lane: barrier-finalize-release
 ---
 
