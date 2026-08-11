@@ -1,7 +1,7 @@
 ---
 slug: explicit-archdir-resolution
 title: Make archDir an explicit contract instead of inherited cwd
-status: dispatched
+status: completed
 created: 2026-08-10
 order: 5
 project: state-safety
@@ -34,7 +34,13 @@ started: 2026-08-10T21:10:25.109Z
 lease: "{\"worker\":\"worker-archdir\",\"expires\":\"2026-08-11T21:10:25.109Z\"}"
 dispatched-since: 2026-08-10T21:10:25.110Z
 dispatched-to: worker-archdir
+completed: 2026-08-11T02:26:57.300Z
+completion-notes: "Landed as merge e3a65c8 on feat/state-safety (worker commit 94e1056), 79/79 exit 0. src/lib/archdir.mjs is now the single resolver (resolveArchDir/requireArchDir/resolveArchDirForHook) with precedence explicit-arg > ARCHKIT_ARCH_DIR > cwd-walked-to-root; the env var wins outright with no walk, relative resolves against cwd, whitespace reads as unset, and set-but-nonexistent throws invalid_arch_dir. 8 duplicate walkers deleted (tools.mjs, 6 hook bins, a shared.mjs loop body); tools.mjs went from 49 private-walker calls to 49 shared-resolver calls with 0 handlers re-deriving archDir. The dispatch step now renders a SPAWN-env line carrying the conductor's real .arch path, and archkit_conductor returns archDir + dispatch.env structurally. Back-compat proved by diffing the resolver against verbatim reproductions of both pre-ADR walkers across a layout matrix with positive controls. One intended divergence: the old 10-parent walk bound is gone (walk-to-root), per ADR 0031. RESIDUAL, tracked separately: decisions.mjs and prd.mjs keep private CLI-mode walkers that do not honor the variable."
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-11
 ---
+
 
 
 
