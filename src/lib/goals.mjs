@@ -3413,12 +3413,144 @@ function digestEntry(goal) {
   return lines.join("\n");
 }
 
+// ── the digest is a LOG, so it is written like one (ADR 0030) ────────────────
+//
+// consolidateGoals runs from bin/archkit-stop-hook.mjs — a separate process
+// spawned at every turn-end, in every open session. It used to read the whole
+// digest, delete the source goal files, and write the digest back: a
+// read-modify-write of an append-only record, with the only other copy of the
+// data destroyed in the middle of it. Two sessions ending a turn together both
+// drained done/ and the second write clobbered the first's entries, which could
+// not be rebuilt because the goals they described were already gone.
+//
+// The lock alone cannot fix this. `withGoalsLock` FAILS OPEN after
+// LOCK_WAIT_MS (ADR 0030 §2) — deliberately, because failing closed on the Stop
+// hook's hot path turns one stuck lockfile into a hung turn-end in every
+// session. So the lock is the optimisation and the STRUCTURE is the guarantee:
+//
+//   CLAIM BY RENAME. The move of the raw goal into done/archive/ is a single
+//     atomic rename, which is both the archival and the claim. Exactly one
+//     process can win it; the losers get ENOENT and skip the goal, so an entry
+//     is emitted by exactly one writer and duplicates are impossible. It also
+//     closes two holes the old copy-then-unlink had: the source is never read
+//     after the scan (the old code threw ENOENT when a peer deleted a goal
+//     mid-pass), and a crash can no longer leave a half-written archive copy,
+//     because rename cannot tear.
+//
+//   APPEND, NEVER REWRITE. New entries go on with O_APPEND, which makes the
+//     seek-to-EOF and the write one atomic step: a concurrent appender lands
+//     entirely before or entirely after, never on top. Nothing already in the
+//     file is ever re-read in order to be written back, so there is no window
+//     in which another process's entries can be clobbered — locked or not.
+//
+// The bytes are unchanged. A digest this writes is character-for-character what
+// the old writer produced, and an old digest is extended in place, so
+// listDigests / parseDigestEntries / archkit_goal_list read both without
+// knowing which wrote them.
+
+// Create the digest with its header exactly once, however many processes race
+// to do it. "wx" is O_CREAT|O_EXCL — the same atomic create-if-absent the
+// advisory lock itself is built on. The loser sees EEXIST and just appends
+// after the winner's header.
+//
+// The header ends in a single newline and every record is written as
+// `\n<entry>\n`, which reproduces the old `header + entries.join("\n\n") + "\n"`
+// byte for byte while remaining a pure append.
+function ensureDigestHeader(digestPath, day) {
+  const header =
+    `# CGR digest — ${day}\n` +
+    `\n` +
+    `Consolidated summary of CGR goals finished on ${day}. The raw goal files\n` +
+    `are preserved verbatim under goals/done/archive/ for full-context recovery.\n`;
+  let fd;
+  try {
+    fd = fs.openSync(digestPath, "wx");
+  } catch (err) {
+    if (err.code === "EEXIST") return false; // someone else got there first
+    throw err;
+  }
+  try {
+    fs.writeSync(fd, header, null, "utf8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return true;
+}
+
+// Append entries to the dated digest. ONE buffer, ONE write, under O_APPEND —
+// that is what makes a concurrent consolidation unable to clobber this one. The
+// loop only ever runs on a short write (which a local filesystem does not do for
+// a buffer this size); it exists so a short write completes the record rather
+// than truncating it.
+function appendDigestEntries(digestPath, day, entries) {
+  ensureDigestHeader(digestPath, day);
+  const buf = Buffer.from(entries.map((entry) => `\n${entry}\n`).join(""), "utf8");
+  const fd = fs.openSync(digestPath, "a");
+  try {
+    let written = 0;
+    while (written < buf.length) written += fs.writeSync(fd, buf, written, buf.length - written);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Best-effort durability barrier on a DIRECTORY, so a rename survives a power
+// loss and not merely a process crash. Windows has no portable equivalent and
+// fails here; the rename ordering is already correct without it, so this never
+// escalates — the guarantee it adds is strictly extra.
+function fsyncDir(dir) {
+  let fd;
+  try { fd = fs.openSync(dir, "r"); } catch { return false; }
+  try { fs.fsyncSync(fd); return true; }
+  catch { return false; }
+  finally { fs.closeSync(fd); }
+}
+
+// Take exclusive ownership of one terminal goal by MOVING it into done/archive/.
+// Returns false when another consolidation already claimed it.
+//
+// The content is fsynced BEFORE the rename, so the raw copy is on disk before
+// the only directory entry pointing at it moves — the "never removed before its
+// raw copy is durable" rule, expressed as an ordering rather than a hope. The
+// goal file is never *removed* at all: at every instant its bytes are reachable
+// at done/<slug>.md or at done/archive/<slug>.md, and never at neither.
+function claimTerminalGoal(srcPath, destPath) {
+  let fd;
+  try { fd = fs.openSync(srcPath, "r"); }
+  catch (err) { if (err.code === "ENOENT") return false; throw err; }
+  try { fs.fsyncSync(fd); } catch { /* content durability is best-effort */ }
+  finally { fs.closeSync(fd); }
+
+  try { fs.renameSync(srcPath, destPath); }
+  catch (err) { if (err.code === "ENOENT") return false; throw err; }
+
+  fsyncDir(path.dirname(srcPath));
+  fsyncDir(path.dirname(destPath));
+  return true;
+}
+
+function digestedSlugs(digestPath) {
+  const already = new Set();
+  let existing = "";
+  try { existing = fs.readFileSync(digestPath, "utf8"); } catch { return already; }
+  for (const mm of existing.matchAll(DIGEST_SLUG_RE)) already.add(mm[1]);
+  return already;
+}
+
 // Drain every terminal goal currently at the top level of done/ into the dated
 // digest and preserve each raw file verbatim under done/archive/. Idempotent:
 // once drained, the raw files are gone from the top level so a re-run is a
-// no-op. Pass `date` to pin the digest day (tests / deterministic runs).
+// no-op, and a slug already named in the digest never gets a second entry even
+// if its file reappears. Pass `date` to pin the digest day (tests /
+// deterministic runs).
 export function consolidateGoals(archDir, { date } = {}) {
   const day = date || new Date().toISOString().slice(0, 10);
+  return withGoalsLock(archDir, "consolidateGoals", () => consolidateGoalsLocked(archDir, day));
+}
+
+function consolidateGoalsLocked(archDir, day) {
   const terminal = listTerminalGoals(archDir);
   if (terminal.length === 0) {
     return { date: day, consolidated: 0, archived: [], slugs: [], digestPath: null };
@@ -3430,45 +3562,33 @@ export function consolidateGoals(archDir, { date } = {}) {
   fs.mkdirSync(dDir, { recursive: true });
 
   const digestPath = path.join(dDir, `${day}.md`);
-  let existing = "";
-  try { existing = fs.readFileSync(digestPath, "utf8"); } catch { /* new digest */ }
-  const already = new Set();
-  for (const mm of existing.matchAll(DIGEST_SLUG_RE)) already.add(mm[1]);
+  // Read INSIDE the lock, and only ever to DEDUPE — never to re-emit. What comes
+  // back is a set of slugs, not the file's bytes, so there is nothing here that
+  // could be written back over a peer's work.
+  const already = digestedSlugs(digestPath);
 
   const newEntries = [];
   const archived = [];
   const slugs = [];
   for (const goal of terminal) {
-    // Preserve the raw CGR verbatim BEFORE removing the top-level copy:
-    // copy-then-unlink so a crash mid-consolidation can't lose content.
     const target = path.join(aDir, `${goal.slug}.md`);
-    const raw = fs.readFileSync(goal.filepath, "utf8");
-    fs.writeFileSync(target, raw);
-    fs.rmSync(goal.filepath, { force: true });
+    // Archive and claim in one atomic step. A peer that already took this goal
+    // leaves us nothing to do — and, crucially, no entry to write for it.
+    if (!claimTerminalGoal(goal.filepath, target)) continue;
     archived.push(path.relative(archDir, target));
     slugs.push(goal.slug);
-    if (!already.has(goal.slug)) newEntries.push(digestEntry(goal));
+    // The frontmatter was captured by the scan above, so the entry is built
+    // without re-reading a file that has just moved.
+    if (already.has(goal.slug)) continue;
+    already.add(goal.slug);
+    newEntries.push(digestEntry(goal));
   }
 
-  if (newEntries.length > 0) {
-    let content;
-    if (existing.trim()) {
-      content = existing.trimEnd() + "\n\n" + newEntries.join("\n\n") + "\n";
-    } else {
-      const header = [
-        `# CGR digest — ${day}`,
-        ``,
-        `Consolidated summary of CGR goals finished on ${day}. The raw goal files`,
-        `are preserved verbatim under goals/done/archive/ for full-context recovery.`,
-        ``,
-        ``,
-      ].join("\n");
-      content = header + newEntries.join("\n\n") + "\n";
-    }
-    fs.writeFileSync(digestPath, content);
-  }
+  if (newEntries.length > 0) appendDigestEntries(digestPath, day, newEntries);
 
-  return { date: day, consolidated: terminal.length, archived, slugs, digestPath };
+  // `consolidated` counts what THIS pass actually claimed, not what it saw — a
+  // peer's share is that peer's to report.
+  return { date: day, consolidated: slugs.length, archived, slugs, digestPath };
 }
 
 // Read-side for digests — discoverable surface, sibling to listDecisions.
