@@ -39,6 +39,8 @@ import {
   resolveArchDirForHook,
 } from "../../src/lib/archdir.mjs";
 import { findArchDir } from "../../src/lib/shared.mjs";
+import { projectClaudeDir, gatherHooksStatus } from "../../src/lib/hooks-status.mjs";
+import { renderGuardrailHooks, ARCHKIT_GUARDRAIL_HOOKS } from "../../src/lib/claude-settings.mjs";
 import { conductorGraph } from "../../src/lib/format.mjs";
 import { writeGoal } from "../../src/lib/goals.mjs";
 import { listDecisions } from "../../src/lib/decisions.mjs";
@@ -793,7 +795,31 @@ const RECURSIVE_STEP = /return\s+[A-Za-z_$][\w$]*\s*\(\s*path\.dirname\s*\(/;
 // so the list cannot be padded in advance to pre-authorise a future walker.
 const WALKER_EXCEPTIONS = new Map([
   ["src/lib/archdir.mjs", "the ONE resolver — this is the walk every other surface routes through"],
-  ["src/lib/hooks-status.mjs", "projectClaudeDir: resolves a .claude/ dir, using .arch/ only as a project-root marker; never returns an archDir"],
+  // NOT a grandfathered survivor — a DECIDED exception, ADR 0032. The reason it
+  // may legitimately diverge from the ARCHKIT_ARCH_DIR-named .arch/, in full:
+  //
+  //   ADR 0031's contract governs which `.arch/` a call READS AND WRITES.
+  //   projectClaudeDir neither reads nor writes one. It returns a `.claude/`
+  //   path belonging to a Claude Code CHECKOUT, and touches `.arch/` only as one
+  //   of two marker files ('.arch' or '.claude') for "is this a project root?".
+  //
+  //   ARCHKIT_ARCH_DIR promises nothing about its PARENT directory — it names
+  //   the .arch dir itself, which need not sit inside a checkout or beside a
+  //   .claude/ at all. So following it here would not move the answer to a
+  //   different PROJECT, it would move it to a NON-project: a settings.json no
+  //   Claude Code session will ever load, which doctor would report on and which
+  //   archkit_install_hooks(apply:true) would create and write into — that
+  //   function takes its write target straight from status.projectSettingsPath.
+  //
+  //   And the question D-HOOKS asks is "will the guardrails fire FOR ME?", whose
+  //   answer is fixed by the checkout the session is in, not by the spec dir the
+  //   caller named. A worktree worker pointed at the conductor's .arch/ shares
+  //   the conductor's STATE (board, goals, locks); it does not inherit the
+  //   conductor's hook CONFIG.
+  //
+  // §9 below pins that divergence as intended: those tests fail if anyone routes
+  // projectClaudeDir through the resolver, so this entry cannot rot into cover.
+  ["src/lib/hooks-status.mjs", "projectClaudeDir: resolves a .claude/ dir for the CHECKOUT (cwd), using .arch/ only as a project-root marker; never returns an archDir and deliberately ignores ARCHKIT_ARCH_DIR per ADR 0032 — see §9"],
   ["scripts/test.mjs", "sandbox safety assertion: refuses to run if the temp sandbox sits UNDER a real project — a filesystem check, not a resolution"],
 ]);
 
@@ -970,6 +996,276 @@ test("GUARD: every exception still matches the rule — the list cannot be padde
       `${rel} no longer matches the walker shape — drop it from WALKER_EXCEPTIONS (${reason})`,
     );
   }
+});
+
+// ── 9. the DECIDED exception: hooks-status stays cwd-scoped (ADR 0032) ───────
+//
+// src/lib/hooks-status.mjs `projectClaudeDir` matches the walker shape above and
+// is allowlisted in WALKER_EXCEPTIONS. ADR 0032 settles that this is CORRECT
+// rather than a survivor: ADR 0031's contract governs which `.arch/` a call
+// reads and writes, and this function returns a `.claude/` belonging to a
+// CHECKOUT, using `.arch/` only as a project-root marker.
+//
+// These tests exist so the exception cannot rot into cover. They FAIL if anyone
+// routes projectClaudeDir through the resolver or teaches it to read
+// ARCHKIT_ARCH_DIR — the divergence is pinned as INTENDED, not accidental.
+
+// The projectClaudeDir body EXACTLY as it stood before ADR 0032 (which changed
+// comments only). Reproduced verbatim, like the legacy walkers in §2, so the
+// back-compat claim is DIFFED rather than asserted by eye — and so any future
+// edit to the shipped one shows up here as a divergence instead of silently.
+function preAdr0032ProjectClaudeDir(cwd) {
+  let dir = cwd;
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, ".arch")) || fs.existsSync(path.join(dir, ".claude"))) {
+      return path.join(dir, ".claude");
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.join(cwd, ".claude");
+}
+
+function claudeDir(dir) {
+  const p = path.join(dir, ".claude");
+  fs.mkdirSync(p, { recursive: true });
+  return p;
+}
+
+function writeWiredSettings(dir) {
+  fs.writeFileSync(path.join(claudeDir(dir), "settings.json"), JSON.stringify(renderGuardrailHooks(), null, 2) + "\n");
+}
+
+// Same shape as §4/§7: a REAL worktree with a REAL post-cut divergence. Here the
+// divergence is deliberately TWO-SIDED — the conductor gains a goal (archDir
+// state, which ARCHKIT_ARCH_DIR SHOULD move) and gains the guardrail hooks
+// (checkout config, which it should NOT). One fixture, both halves.
+function buildHooksWorktreePair() {
+  const base = tempDir("hooks-wt");
+  const conductor = path.join(base, "conductor");
+  fs.mkdirSync(conductor, { recursive: true });
+
+  git(["init", "-q", "-b", "main", "."], conductor);
+  git(["config", "user.email", "test@archkit.invalid"], conductor);
+  git(["config", "user.name", "archkit test"], conductor);
+
+  const conductorArch = project(conductor);
+  writeGoal(conductorArch, { slug: "shared-goal", title: "in both trees", exitCriteria: ["x"] });
+  git(["add", "-A"], conductor);
+  git(["commit", "-qm", "init"], conductor); // NOTE: no .claude/ committed…
+
+  const worker = path.join(base, "worker");
+  git(["worktree", "add", "-q", worker, "-b", "cgr/lane-hooks"], conductor);
+
+  // …so the worktree has NO .claude/ at all, while the conductor is fully wired.
+  writeWiredSettings(conductor);
+  writeGoal(conductorArch, { slug: "conductor-only", title: "minted after the cut", exitCriteria: ["x"] });
+
+  // An isolated HOME so neither the real ~/.claude/settings.json nor a real
+  // enabledPlugins entry can decide the answer for us.
+  const home = path.join(base, "home");
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+
+  return { base, conductor, conductorArch, worker, home };
+}
+
+// Run a callback with ARCHKIT_ARCH_DIR forced to `value` (null = definitively
+// unset), restoring whatever the runner had afterwards.
+function withArchDirEnv(value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, ARCH_DIR_ENV);
+  const prev = process.env[ARCH_DIR_ENV];
+  if (value === null) delete process.env[ARCH_DIR_ENV];
+  else process.env[ARCH_DIR_ENV] = value;
+  try { return fn(); }
+  finally {
+    if (had) process.env[ARCH_DIR_ENV] = prev;
+    else delete process.env[ARCH_DIR_ENV];
+  }
+}
+
+test("HOOKS-STATUS: the fixture diverges on BOTH axes — goals and hook wiring", () => {
+  const { conductor, conductorArch, worker } = buildHooksWorktreePair();
+  assert.ok(fs.existsSync(path.join(worker, ".arch", "SYSTEM.md")), "the worktree has its OWN tracked .arch/");
+  assert.ok(fs.existsSync(path.join(conductorArch, "goals", "queue", "conductor-only.md")));
+  assert.equal(fs.existsSync(path.join(worker, ".arch", "goals", "queue", "conductor-only.md")), false);
+  assert.ok(fs.existsSync(path.join(conductor, ".claude", "settings.json")), "the conductor is fully wired");
+  assert.equal(fs.existsSync(path.join(worker, ".claude")), false, "…and the worktree has no .claude/ at all");
+});
+
+test("HOOKS-STATUS: ARCHKIT_ARCH_DIR does not move projectClaudeDir (ADR 0032)", () => {
+  const { conductorArch, worker } = buildHooksWorktreePair();
+  const deep = nested(worker, "src", "features", "auth");
+  const expected = path.join(worker, ".claude");
+
+  const unset = withArchDirEnv(null, () => [projectClaudeDir(worker), projectClaudeDir(deep)]);
+  const set = withArchDirEnv(conductorArch, () => [projectClaudeDir(worker), projectClaudeDir(deep)]);
+
+  assert.deepEqual(unset, [expected, expected], "control: the cwd answer");
+  assert.deepEqual(
+    set, [expected, expected],
+    "the explicit signal is INERT here — it names a spec dir, and this resolves a checkout's .claude/",
+  );
+  // The variable is not being ignored globally: it really would move an archDir
+  // resolution from the same cwd. That is the divergence, side by side.
+  assert.equal(resolveArchDir({ cwd: deep, requireFile: "SYSTEM.md", env: { [ARCH_DIR_ENV]: conductorArch } }), conductorArch);
+  assert.notEqual(path.dirname(conductorArch), worker, "…and it points at a genuinely different tree");
+});
+
+test("HOOKS-STATUS: gatherHooksStatus answers about the CHECKOUT even with the variable set", () => {
+  const { conductor, conductorArch, worker, home } = buildHooksWorktreePair();
+
+  const fromWorker = withArchDirEnv(conductorArch, () => gatherHooksStatus(worker, { home }));
+  assert.equal(
+    fromWorker.projectSettingsPath, path.join(worker, ".claude", "settings.json"),
+    "the worktree's own settings.json — NOT the one beside the named .arch/",
+  );
+  assert.equal(fromWorker.installed, false, "the worktree is genuinely unwired, and that is what it reports");
+  assert.deepEqual(fromWorker.missing.sort(), [...ARCHKIT_GUARDRAIL_HOOKS.map((h) => h.event)].sort());
+
+  // Control: the conductor really IS wired, so the assertion above is a genuine
+  // difference and not both trees happening to be empty.
+  const fromConductor = withArchDirEnv(null, () => gatherHooksStatus(conductor, { home }));
+  assert.equal(fromConductor.installed, true);
+  assert.equal(fromConductor.via, "settings");
+  assert.notEqual(fromWorker.projectSettingsPath, fromConductor.projectSettingsPath);
+});
+
+test("HOOKS-STATUS: a named .arch/ need not have a checkout around it at all", () => {
+  // The decisive case (ADR 0032 reason 1): ARCHKIT_ARCH_DIR promises nothing
+  // about its PARENT. Following it would not relocate the answer to a different
+  // PROJECT — it would relocate it to a NON-project.
+  const specRoot = tempDir("spec-only");
+  const specArch = project(specRoot); // a bare spec dir; no .claude/, no checkout
+
+  const checkout = tempDir("real-checkout");
+  project(checkout);
+  writeWiredSettings(checkout);
+  const home = nested(tempDir("spec-home"), "home");
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+
+  const status = withArchDirEnv(specArch, () => gatherHooksStatus(checkout, { home }));
+  assert.equal(status.projectSettingsPath, path.join(checkout, ".claude", "settings.json"));
+  assert.equal(status.installed, true, "it read the settings.json that will actually fire");
+
+  // What a contract-following projectClaudeDir would have produced instead:
+  const phantom = path.join(path.dirname(specArch), ".claude", "settings.json");
+  assert.equal(fs.existsSync(phantom), false, "a settings.json no Claude Code session would ever load…");
+  assert.notEqual(status.projectSettingsPath, phantom, "…and archkit_install_hooks(apply) would have CREATED it");
+});
+
+test("HOOKS-STATUS: install's write target IS status.projectSettingsPath, so the pin covers the write", () => {
+  // Not only a reporting path: runHooksInstallJson takes its write target
+  // straight off the payload asserted above, so pinning the path pins the write.
+  const src = fs.readFileSync(path.join(ROOT, "src/commands/hooks.mjs"), "utf8");
+  assert.match(src, /const settingsPath = status\.projectSettingsPath;/);
+  assert.match(src, /writeClaudeSettings\(settingsPath, settings\)/);
+  assert.match(src, /const projectDir = path\.dirname\(path\.dirname\(settingsPath\)\);/);
+});
+
+test("HOOKS-STATUS: the module never imports the resolver and never reads the env (ADR 0032)", () => {
+  const src = fs.readFileSync(path.join(ROOT, "src/lib/hooks-status.mjs"), "utf8");
+  assert.equal(
+    /from\s+["'][^"']*archdir\.mjs["']/.test(src), false,
+    "routing projectClaudeDir through the resolver is a behaviour change that SUPERSEDES ADR 0032 — write that ADR first",
+  );
+  assert.equal(
+    /process\.env/.test(src), false,
+    "the only env this module could plausibly grow is ARCHKIT_ARCH_DIR, which ADR 0032 says it must not read",
+  );
+  // …and the decision is discoverable AT the definition site, not only in the ADR.
+  const defSite = src.slice(0, src.indexOf("export function projectClaudeDir"));
+  assert.match(defSite, /ADR 0032/, "the definition site cites the decision");
+  assert.match(defSite, /ARCHKIT_ARCH_DIR/, "…and names the variable it deliberately ignores");
+});
+
+test("HOOKS-STATUS: the decision is written down durably in .arch/decisions/", () => {
+  // Number-blind on purpose: an ADR renumbered during integration still passes.
+  const dir = path.join(ROOT, ".arch", "decisions");
+  const hit = fs.readdirSync(dir).find((f) => /^\d{4}-hooks-status-is-cwd-scoped/.test(f));
+  assert.ok(hit, "no ADR settling the hooks-status / ARCHKIT_ARCH_DIR scope question");
+  const body = fs.readFileSync(path.join(dir, hit), "utf8");
+  for (const needle of ["projectClaudeDir", "ARCHKIT_ARCH_DIR", "## Decision", "## Consequences"]) {
+    assert.ok(body.includes(needle), `${hit} does not mention ${needle}`);
+  }
+});
+
+test("BACK-COMPAT: projectClaudeDir is byte-identical to the pre-decision walker, set OR unset", () => {
+  const { conductorArch, worker } = buildHooksWorktreePair();
+
+  const both = tempDir("pcd-both");                 // .arch/ AND .claude/
+  project(both); claudeDir(both);
+  const archOnly = tempDir("pcd-arch"); project(archOnly);
+  const claudeOnly = tempDir("pcd-claude"); claudeDir(claudeOnly);
+  const neither = tempDir("pcd-none");
+
+  const cases = [
+    both,
+    nested(both, "src"),
+    nested(both, "src", "features", "auth"),
+    nested(both, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"), // past the 10-parent bound
+    archOnly,
+    nested(archOnly, "src"),
+    claudeOnly,
+    nested(claudeOnly, "src", "x"),
+    neither,
+    nested(neither, "a", "b"),
+    worker,                                          // the worktree root…
+    nested(worker, "src", "features"),               // …and inside it
+  ];
+
+  for (const cwd of cases) {
+    const legacy = preAdr0032ProjectClaudeDir(cwd);
+    assert.equal(withArchDirEnv(null, () => projectClaudeDir(cwd)), legacy, `unset diverged at ${cwd}`);
+    assert.equal(withArchDirEnv(conductorArch, () => projectClaudeDir(cwd)), legacy, `set diverged at ${cwd}`);
+  }
+
+  // The matrix is not vacuous: it contains a real walk-UP, a real cwd FALLBACK,
+  // and both marker files exercised on their own.
+  assert.equal(preAdr0032ProjectClaudeDir(nested(both, "src", "features", "auth")), path.join(both, ".claude"),
+    "walk-up case really walks up");
+  assert.equal(preAdr0032ProjectClaudeDir(nested(both, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l")),
+    path.join(both, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", ".claude"),
+    "past 10 parents it still gives up and returns cwd/.claude — unchanged, 10-parent bound and all");
+  assert.equal(preAdr0032ProjectClaudeDir(nested(archOnly, "src")), path.join(archOnly, ".claude"),
+    ".arch alone is a root marker");
+  assert.equal(preAdr0032ProjectClaudeDir(nested(claudeOnly, "src", "x")), path.join(claudeOnly, ".claude"),
+    ".claude alone is a root marker");
+  assert.equal(preAdr0032ProjectClaudeDir(neither), path.join(neither, ".claude"), "no marker → cwd/.claude");
+  assert.equal(new Set(cases.map(preAdr0032ProjectClaudeDir)).size > 1, true, "…and the answers are not all the same path");
+});
+
+test("HOOKS-STATUS: the real CLI — one `archkit doctor` run, goals MOVE and hooks DO NOT", () => {
+  // The end-to-end half. Same command, same cwd, one variable flipped: the
+  // archDir-backed check follows it, D-HOOKS does not. If someone "fixes"
+  // projectClaudeDir, D-HOOKS flips to pass here and this goes red.
+  const { conductor, conductorArch, worker, home } = buildHooksWorktreePair();
+
+  const doctorJson = (cwd, env) => {
+    const r = spawnSync(process.execPath, [CLI, "doctor", "--json"], { cwd, env, encoding: "utf8" });
+    assert.ok(r.stdout.trim(), `archkit doctor produced no stdout in ${cwd}: ${r.stderr}`);
+    return JSON.parse(r.stdout); // exit code is the doctor VERDICT, not a spawn failure
+  };
+  const hooksCheck = (j) => j.checks.find((c) => c.id === "D-HOOKS");
+
+  const unset = doctorJson(worker, envWithout({ HOME: home }));
+  const set = doctorJson(worker, envWithout({ HOME: home, [ARCH_DIR_ENV]: conductorArch }));
+  const control = doctorJson(conductor, envWithout({ HOME: home }));
+
+  // The archDir-backed half MOVES with the variable — proving it reached the CLI.
+  assert.equal(unset.summary.goalsTotal, 1, "the worktree's own stale goal tree");
+  assert.equal(set.summary.goalsTotal, 2, "…and with the variable set, the conductor's");
+
+  // The hooks half does NOT move — same warn, same count, both runs.
+  assert.equal(hooksCheck(unset).status, "warn");
+  assert.equal(hooksCheck(set).status, "warn", "D-HOOKS still describes the checkout the command ran in");
+  assert.equal(hooksCheck(set).detail, hooksCheck(unset).detail, "byte-identical: the variable is inert for hooks");
+  assert.match(hooksCheck(set).detail, /6\/6 guardrail hook\(s\) not wired/);
+
+  // Control: the conductor's tree really does report PASS, so "warn" above is a
+  // genuine difference rather than doctor being unable to see hooks at all.
+  assert.equal(hooksCheck(control).status, "pass");
+  assert.equal(control.summary.goalsTotal, 2);
 });
 
 // ── done ─────────────────────────────────────────────────────────────────────

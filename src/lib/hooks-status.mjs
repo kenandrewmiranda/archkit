@@ -17,6 +17,44 @@ import {
 
 // The project's .claude dir: walk up from cwd for a dir that has .arch/ or
 // .claude/ (the project root Claude Code is operating in), else cwd/.claude.
+//
+// THIS WALK IS DELIBERATELY NOT ROUTED THROUGH src/lib/archdir.mjs, AND IT DOES
+// NOT READ ARCHKIT_ARCH_DIR. That is ADR 0032, a scope clarification of ADR
+// 0031 — not an oversight, and not an exemption. Do not "fix" it; §9 of
+// tests/archdir-resolution/run.mjs will go red, naming this comment.
+//
+// ADR 0031's contract governs which `.arch/` a call READS AND WRITES. This
+// function neither reads nor writes an `.arch/` — it returns a `.claude/` path,
+// and touches `.arch/` only as one of two marker files for "is this a project
+// root?". The two resolutions answer different questions and may disagree.
+//
+// Why cwd wins here, shortest first:
+//
+//   1. ARCHKIT_ARCH_DIR promises nothing about its PARENT. It names the .arch
+//      directory itself; nothing requires it to sit inside a checkout, beside a
+//      .claude/, or inside anything Claude Code ever opened. Deriving a root
+//      from it would turn ARCHKIT_ARCH_DIR=/shared/specs/.arch into
+//      /shared/specs/.claude — a settings file no session will ever load, that
+//      doctor would report on and that archkit_install_hooks(apply) would
+//      CREATE and write hook config into.
+//   2. The question being asked is "will the guardrails fire FOR ME?" What
+//      fires is the settings.json Claude Code loaded next to this checkout,
+//      plus the user file and plugin registry (both read from $HOME below —
+//      also not archDir-scoped). Re-pointing at the named spec dir would report
+//      the wiring of a session that is not running. A worktree worker sharing
+//      the conductor's board shares STATE; it does not inherit the conductor's
+//      hook CONFIG, and the hooks that fire in it are its own.
+//   3. Following the variable would ADD an implicit coupling rather than remove
+//      one: it would give ARCHKIT_ARCH_DIR a second, undocumented meaning —
+//      "which repo's .claude/settings.json archkit may write to" — which bites
+//      hardest when the variable is merely left exported in a shell. That is
+//      the class of bug ADR 0031 removes, one level up.
+//
+// The accepted cost (ADR 0032 Consequences): `archkit doctor` in a worktree
+// with the variable set can report the conductor's goals beside this checkout's
+// hook wiring. Every path involved is already in the returned payload
+// (projectSettingsPath, userSettingsPath, perSource[].path), so the cure is
+// disclosure in doctor's output, not forced alignment here.
 export function projectClaudeDir(cwd) {
   let dir = cwd;
   for (let i = 0; i < 10; i++) {
