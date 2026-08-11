@@ -27,6 +27,7 @@ import path from "node:path";
 import { createArchReader, loadGraphCluster } from "./parsers.mjs";
 import { archkitError } from "./errors.mjs";
 import { toPosixPath } from "./shared.mjs";
+import { withArchLock, atomicWriteFileSync } from "./fslock.mjs";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
 // Copy-paste ceiling: the `archkit goal payload` / `/goal` fallback path pastes
@@ -40,6 +41,54 @@ export const PAYLOAD_BUDGET = 3800;
 // slice + untruncated exit-criteria/source-ask. Kept finite so an injected goal
 // stays a compact pointer-into-.arch/, not a context dump.
 export const RELAY_PAYLOAD_BUDGET = 9000;
+
+// ── The shared-state write contract (ADR 0030) ───────────────────────────────
+//
+// Goal frontmatter is the declared source of truth (ADR 0003) and it is reached
+// by more than one process at a time: the conductor spawns parallel worktree
+// workers (ADR 0013), several sessions can be open on one tree, and the Stop
+// hook is a fresh process at every turn-end in every session. Every mutation
+// below that reads goal state and writes a value DERIVED from it — or that
+// touches more than one file — therefore runs inside `withGoalsLock` and does
+// its read INSIDE the lock (ADR 0030 §4). Read-then-lock is the bug; lock-then-
+// read is the fix, and it is the whole reason a concurrent stamp of a different
+// field survives. Individual writes go through `atomicWriteFileSync` so a
+// concurrent READER (which stays lock-free, by design) sees the old bytes or the
+// new ones, never a truncated file.
+//
+// ACQUISITION FAILS OPEN (§7). After the bounded wait the mutation runs
+// UNLOCKED. These sit on the Stop hook and the MCP request path, so failing
+// closed would turn one stale lockfile into a hung turn-end in every session —
+// trading a rare lost update for a total outage, and goal frontmatter is
+// git-tracked so a lost update is recoverable from history. Unlocked is exactly
+// the pre-ADR status quo, so fail-open degrades to today rather than inventing a
+// new failure mode. What it must NOT be is SILENT: a fail-open and a stale-lock
+// break are both surfaced as process warnings (stderr, never stdout — the MCP
+// transport owns stdout), which is what makes "best-effort" auditable instead of
+// invisible. The atomic WRITE never fails open; it throws.
+//
+// Nesting is the normal case, not an edge case (completeGoal -> stampGoalFields,
+// ensureGoalsLayout -> migratePendingGoalsToQueue): the lock is depth-counted
+// per process, so a nested acquire re-enters and only the outermost release
+// unlinks.
+export function withGoalsLock(archDir, op, fn) {
+  return withArchLock(archDir, fn, {
+    meta: { op },
+    onEvent: (e) => {
+      if (e.type === "fail-open") {
+        process.emitWarning(
+          `${op} proceeded WITHOUT the .arch lock after ${e.waitedMs}ms (held by pid ${e.holder?.pid ?? "?"}) — a concurrent mutation of the same goal could be lost.`,
+          "ArchkitLockWarning",
+        );
+      } else if (e.type === "stale-broken") {
+        process.emitWarning(
+          `${op} broke a stale .arch lock held by pid ${e.pid ?? "?"} for ${e.ageMs}ms (TTL ${e.ttlMs}ms).`,
+          "ArchkitLockWarning",
+        );
+      }
+    },
+  }).value;
+}
 
 export function goalsDir(archDir) {
   return path.join(archDir, "goals");
@@ -125,30 +174,54 @@ function queueGoalFiles(archDir) {
 // queue/<project>/. Safe to call repeatedly: once moved, root holds no pending .md
 // so re-runs are a no-op readdir, and a name already present in the destination is
 // not overwritten. Never throws — a migration hiccup must not block the relay.
+//
+// LOOK BEFORE YOU LOCK. ensureGoalsLayout runs this on every write path, and in
+// the steady state (no legacy root pending goals) it has nothing to do — taking
+// the coarse archDir lock just to discover that would put an O_EXCL create +
+// unlink on every single mutation. So the scan runs UNLOCKED first, and only a
+// non-empty result takes the lock; the scan is then REDONE from disk inside it
+// (ADR 0030 §4), so the unlocked look is a hint, never the thing acted on.
 export function migratePendingGoalsToQueue(archDir) {
+  if (pendingRootGoalFiles(archDir).length === 0) return { moved: [] };
+  return withGoalsLock(archDir, "migratePendingGoalsToQueue", () => {
+    const moved = [];
+    for (const name of pendingRootGoalFiles(archDir)) {
+      const src = path.join(goalsDir(archDir), name);
+      try {
+        const raw = fs.readFileSync(src, "utf8");
+        if (statusOf(parseGoal(raw)) !== STATUS_PENDING) continue; // re-check under the lock
+        const project = String(parseGoal(raw).meta.project || "").trim();
+        const destDir = project ? path.join(queueDir(archDir), project) : queueDir(archDir);
+        const dest = path.join(destDir, name);
+        if (fs.existsSync(dest)) { fs.rmSync(src, { force: true }); continue; } // already migrated
+        fs.mkdirSync(destDir, { recursive: true });
+        atomicWriteFileSync(dest, raw);
+        fs.rmSync(src, { force: true });
+        moved.push(name.replace(/\.md$/, ""));
+      } catch { /* skip this file, keep going */ }
+    }
+    return { moved };
+  });
+}
+
+// Basenames of the legacy root-level PENDING goal files — the migration's input,
+// factored out so the pre-lock look and the under-lock re-read are the same scan.
+function pendingRootGoalFiles(archDir) {
   const root = goalsDir(archDir);
   let names;
-  try { names = fs.readdirSync(root); } catch { return { moved: [] }; }
-  const moved = [];
+  try { names = fs.readdirSync(root); } catch { return []; }
+  const out = [];
   for (const name of names) {
     if (!name.endsWith(".md")) continue;
     if (name === CHAT_BOARD_FILENAME) continue;
     const src = path.join(root, name);
     try {
       if (!fs.statSync(src).isFile()) continue;
-      const raw = fs.readFileSync(src, "utf8");
-      if (statusOf(parseGoal(raw)) !== STATUS_PENDING) continue; // only pending migrates
-      const project = String(parseGoal(raw).meta.project || "").trim();
-      const destDir = project ? path.join(queueDir(archDir), project) : queueDir(archDir);
-      const dest = path.join(destDir, name);
-      if (fs.existsSync(dest)) { fs.rmSync(src, { force: true }); continue; } // already migrated
-      fs.mkdirSync(destDir, { recursive: true });
-      fs.writeFileSync(dest, raw);
-      fs.rmSync(src, { force: true });
-      moved.push(name.replace(/\.md$/, ""));
+      if (statusOf(parseGoal(fs.readFileSync(src, "utf8"))) !== STATUS_PENDING) continue;
+      out.push(name);
     } catch { /* skip this file, keep going */ }
   }
-  return { moved };
+  return out;
 }
 
 // The quarantine drawer: where reconcileGoalsLayout parks .md files it can't
@@ -277,7 +350,7 @@ function quarantineFile(archDir, file) {
       n++;
     }
     if (path.resolve(dest) !== path.resolve(file)) {
-      fs.writeFileSync(dest, fs.readFileSync(file, "utf8"));
+      atomicWriteFileSync(dest, fs.readFileSync(file, "utf8"));
       fs.rmSync(file, { force: true });
     }
     return relGoalPath(archDir, dest);
@@ -295,7 +368,20 @@ function quarantineFile(archDir, file) {
 //     quarantined:[{file,reason}], outOfPlaceCount }
 // where outOfPlaceCount is the number of misfiled goals (== moved.length) — the
 // health signal a startup auto-fix keys off of.
+//
+// The APPLY pass is a multi-file mutation — it parses the whole tree, then moves
+// and deletes across it — so it runs as one critical section under the archDir
+// lock (ADR 0030 §2/§3), with its parse done INSIDE the lock so it never acts on
+// a tree snapshot taken before acquisition. A dry run writes nothing and is
+// therefore left lock-free: reads stay uncoordinated and tolerant by design, and
+// warmup calls this on a hot path where a needless O_EXCL round-trip would buy
+// nothing.
 export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
+  if (!apply) return reconcilePass(archDir, false);
+  return withGoalsLock(archDir, "reconcileGoalsLayout", () => reconcilePass(archDir, true));
+}
+
+function reconcilePass(archDir, apply) {
   const report = { moved: [], duplicates: [], quarantined: [], outOfPlaceCount: 0 };
   const rel = (f) => relGoalPath(archDir, f);
 
@@ -393,7 +479,7 @@ export function reconcileGoalsLayout(archDir, { apply = false } = {}) {
           report.duplicates.push({ slug: g.slug, kept: rel(dest), removed: rel(g.file) });
           fs.rmSync(g.file, { force: true });
         } else {
-          fs.writeFileSync(dest, fs.readFileSync(g.file, "utf8"));
+          atomicWriteFileSync(dest, fs.readFileSync(g.file, "utf8"));
           if (path.resolve(dest) !== path.resolve(g.file)) fs.rmSync(g.file, { force: true });
         }
       } catch { /* skip this file, keep going */ }
@@ -575,7 +661,11 @@ export function writeGoal(archDir, goal) {
   };
   const body = goal.body || defaultBody(goal);
   const content = `---\n${emitFrontmatter(meta)}\n---\n\n${body}\n`;
-  fs.writeFileSync(filepath, content);
+  // Atomic, but deliberately NOT locked: the content is built entirely from the
+  // caller's input, so this is a single indivisible write and not a read-modify-
+  // write — there is no earlier read for a concurrent mutation to invalidate.
+  // (ensureGoalsLayout above takes the lock if it actually has files to migrate.)
+  atomicWriteFileSync(filepath, content);
   return { slug, filepath };
 }
 
@@ -704,7 +794,17 @@ export function loadGoal(archDir, slug) {
   return null;
 }
 
-export function completeGoal(archDir, slug, { notes = "", extraMeta = {}, timeSpent = "" } = {}) {
+// The ARCHIVE transition (runGoalComplete's back half): the whole
+// migrate → load → write-to-done/ → remove-source sequence is one critical
+// section (ADR 0030 §2), and the load happens inside it so the archived bytes
+// are the goal as it stands NOW — a lease stamp or a handoff pointer landing
+// between a pre-lock read and the archive would otherwise be dropped from the
+// permanent record.
+export function completeGoal(archDir, slug, opts = {}) {
+  return withGoalsLock(archDir, `completeGoal:${slug}`, () => completeGoalLocked(archDir, slug, opts));
+}
+
+function completeGoalLocked(archDir, slug, { notes = "", extraMeta = {}, timeSpent = "" } = {}) {
   // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
   // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
   // the root path, migration would move it, and the relocate-write below would
@@ -730,7 +830,7 @@ export function completeGoal(archDir, slug, { notes = "", extraMeta = {}, timeSp
   }
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(doneDir(archDir), `${slug}.md`);
-  fs.writeFileSync(targetPath, out);
+  atomicWriteFileSync(targetPath, out);
   fs.rmSync(goal.filepath, { force: true });
   // If completing this goal drains the ungrouped queue, drop the recorded
   // cgr-queue-<date> branch so the next batch mints a fresh dated branch.
@@ -1432,18 +1532,28 @@ const EXTENDED_JSON_FIELDS = new Set(["lease", "lineage"]);
 // lineage) are serialized to inline JSON so the no-YAML frontmatter round-trips.
 // This is how the conductor records lane/owns/depends_on/lease/lineage onto a CGR
 // — the board itself stays derived (it only READS these via the accessors above).
+//
+// THE lost-update funnel (ADR 0030 §4): every lifecycle transition stamps
+// through here, and the mutation is a read-modify-write of the WHOLE file, so
+// two concurrent stamps of DIFFERENT fields — a lease renewal and a status
+// transition, say — used to be last-writer-wins over the entire frontmatter and
+// one field vanished. The load is now inside the lock, which is the part that
+// actually fixes it: the delta is applied to what is on disk at that instant,
+// never to a snapshot read before acquisition.
 export function stampGoalFields(archDir, slug, fields = {}) {
-  const goal = loadGoal(archDir, slug);
-  if (!goal) throw new Error(`unknown goal: ${slug}`);
-  for (const [inputKey, metaKey] of Object.entries(EXTENDED_FIELD_MAP)) {
-    if (!(inputKey in fields)) continue;
-    const val = fields[inputKey];
-    if (val == null) { delete goal.meta[metaKey]; continue; }
-    goal.meta[metaKey] = EXTENDED_JSON_FIELDS.has(metaKey) ? JSON.stringify(val) : val;
-  }
-  const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
-  fs.writeFileSync(goal.filepath, out);
-  return { slug, filepath: goal.filepath };
+  return withGoalsLock(archDir, `stampGoalFields:${slug}`, () => {
+    const goal = loadGoal(archDir, slug);
+    if (!goal) throw new Error(`unknown goal: ${slug}`);
+    for (const [inputKey, metaKey] of Object.entries(EXTENDED_FIELD_MAP)) {
+      if (!(inputKey in fields)) continue;
+      const val = fields[inputKey];
+      if (val == null) { delete goal.meta[metaKey]; continue; }
+      goal.meta[metaKey] = EXTENDED_JSON_FIELDS.has(metaKey) ? JSON.stringify(val) : val;
+    }
+    const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
+    atomicWriteFileSync(goal.filepath, out);
+    return { slug, filepath: goal.filepath };
+  });
 }
 
 // ── Fission: partial-complete split (fission-transition, ADR 0014/0015) ──
@@ -2024,7 +2134,11 @@ export function readChatBoard(archDir, { limit = 20 } = {}) {
 // If the goal was sitting in goals/testing/ (resumed for verification), it is
 // relocated back to goals/ root so an in-progress goal never lingers in the
 // testing drawer — status frontmatter and folder stay consistent.
-export function startGoal(archDir, slug, { reclaim = false } = {}) {
+export function startGoal(archDir, slug, opts = {}) {
+  return withGoalsLock(archDir, `startGoal:${slug}`, () => startGoalLocked(archDir, slug, opts));
+}
+
+function startGoalLocked(archDir, slug, { reclaim = false } = {}) {
   // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
   // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
   // the root path, migration would move it, and the relocate-write below would
@@ -2048,7 +2162,7 @@ export function startGoal(archDir, slug, { reclaim = false } = {}) {
   if (!goal.meta.started) goal.meta.started = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
-  fs.writeFileSync(targetPath, out);
+  atomicWriteFileSync(targetPath, out);
   if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
     fs.rmSync(goal.filepath, { force: true });
   }
@@ -2080,7 +2194,11 @@ export function startGoal(archDir, slug, { reclaim = false } = {}) {
 //
 // Like on-hold, the file lives in goals/ root (status, not folder, is the source
 // of truth) and the turn-cap counter is cleared. Idempotent.
-export function dispatchGoal(archDir, slug, { worker = null, ttlHours, now = new Date() } = {}) {
+export function dispatchGoal(archDir, slug, opts = {}) {
+  return withGoalsLock(archDir, `dispatchGoal:${slug}`, () => dispatchGoalLocked(archDir, slug, opts));
+}
+
+function dispatchGoalLocked(archDir, slug, { worker = null, ttlHours, now = new Date() } = {}) {
   ensureGoalsLayout(archDir);
   const goal = loadGoal(archDir, slug);
   if (!goal) throw new Error(`unknown goal: ${slug}`);
@@ -2104,7 +2222,7 @@ export function dispatchGoal(archDir, slug, { worker = null, ttlHours, now = new
   }
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
-  fs.writeFileSync(targetPath, out);
+  atomicWriteFileSync(targetPath, out);
   if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
     fs.rmSync(goal.filepath, { force: true });
   }
@@ -2120,6 +2238,10 @@ export function dispatchGoal(archDir, slug, { worker = null, ttlHours, now = new
 // Persistent across /clear: the goal stays guarded (see getActiveGoal) until a
 // session runs verify green and completes it. Idempotent.
 export function markTesting(archDir, slug) {
+  return withGoalsLock(archDir, `markTesting:${slug}`, () => markTestingLocked(archDir, slug));
+}
+
+function markTestingLocked(archDir, slug) {
   // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
   // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
   // the root path, migration would move it, and the relocate-write below would
@@ -2132,7 +2254,7 @@ export function markTesting(archDir, slug) {
   if (!goal.meta["testing-since"]) goal.meta["testing-since"] = new Date().toISOString();
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(testingDir(archDir), `${slug}.md`);
-  fs.writeFileSync(targetPath, out);
+  atomicWriteFileSync(targetPath, out);
   if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
     fs.rmSync(goal.filepath, { force: true });
   }
@@ -2148,6 +2270,10 @@ export function markTesting(archDir, slug) {
 // parked from goals/testing/, it is relocated back to goals/ root so an on-hold
 // goal never lingers in the verification drawer.
 export function markOnHold(archDir, slug) {
+  return withGoalsLock(archDir, `markOnHold:${slug}`, () => markOnHoldLocked(archDir, slug));
+}
+
+function markOnHoldLocked(archDir, slug) {
   // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
   // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
   // the root path, migration would move it, and the relocate-write below would
@@ -2160,7 +2286,7 @@ export function markOnHold(archDir, slug) {
   if (!goal.meta["on-hold-since"]) goal.meta["on-hold-since"] = new Date().toISOString().slice(0, 10);
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(goalsDir(archDir), `${slug}.md`);
-  fs.writeFileSync(targetPath, out);
+  atomicWriteFileSync(targetPath, out);
   if (path.resolve(goal.filepath) !== path.resolve(targetPath)) {
     fs.rmSync(goal.filepath, { force: true });
   }
@@ -3116,7 +3242,11 @@ export function bucketCompletion(archDir, goals, slug) {
 // Drop a goal without marking it done — archived to done/ with status
 // "abandoned" (kept for history, distinguishable from completed). Releases the
 // relay guard by clearing the active goal + its turn-cap counter.
-export function abandonGoal(archDir, slug, { reason = "" } = {}) {
+export function abandonGoal(archDir, slug, opts = {}) {
+  return withGoalsLock(archDir, `abandonGoal:${slug}`, () => abandonGoalLocked(archDir, slug, opts));
+}
+
+function abandonGoalLocked(archDir, slug, { reason = "" } = {}) {
   // ensureGoalsLayout FIRST so its lazy migration relocates any legacy root
   // pending goal into queue/ BEFORE we load it — otherwise loadGoal would capture
   // the root path, migration would move it, and the relocate-write below would
@@ -3130,7 +3260,7 @@ export function abandonGoal(archDir, slug, { reason = "" } = {}) {
   if (reason) goal.meta["abandon-reason"] = reason;
   const out = `---\n${emitFrontmatter(goal.meta)}\n---\n\n${goal.body || ""}`;
   const targetPath = path.join(doneDir(archDir), `${slug}.md`);
-  fs.writeFileSync(targetPath, out);
+  atomicWriteFileSync(targetPath, out);
   fs.rmSync(goal.filepath, { force: true });
   const state = readLoopState(archDir);
   if (state[slug]) { delete state[slug]; writeLoopState(archDir, state); }
