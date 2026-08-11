@@ -20,6 +20,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The ONE archDir resolver (ADR 0031): ARCHKIT_ARCH_DIR when set (so a worker
+// spawned into a worktree still answers against the .arch/ it was pointed at),
+// else the walk up from the harness-supplied event.cwd. Hook-shaped variant — a
+// bad explicit value is reported on stderr and read as "no project", never
+// thrown, so the hook still exits 0.
+import { resolveArchDirForHook } from "../src/lib/archdir.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // import() of an absolute path needs a file:// URL on Windows
@@ -31,17 +37,6 @@ const { isEditTool, evaluateProposedEdit, formatBlockReason } = await importPath
 // API-doc hard gate — a second, independent guardrail layered onto the same
 // PreToolUse hook: block edits that touch an uncleared external API surface.
 const { evaluateApiGate } = await importPath(path.join(HOOKS, "pretooluse.mjs"));
-
-function findArchDir(start) {
-  let dir = start;
-  while (true) {
-    const candidate = path.join(dir, ".arch");
-    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
 
 // Allow: stay silent, exit 0. Claude Code proceeds with the tool call.
 function allow() {
@@ -72,7 +67,7 @@ async function main() {
   if (!isEditTool(toolName)) return allow();
 
   const cwd = event.cwd || process.cwd();
-  const archDir = findArchDir(cwd);
+  const archDir = resolveArchDirForHook("archkit-pretooluse-hook", { cwd, requireFile: "SYSTEM.md" });
   if (!archDir) return allow();
 
   const projectRoot = path.dirname(archDir);

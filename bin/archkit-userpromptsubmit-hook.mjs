@@ -26,6 +26,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The ONE archDir resolver (ADR 0031): ARCHKIT_ARCH_DIR when set (so a worker
+// spawned into a worktree still answers against the .arch/ it was pointed at),
+// else the walk up from the harness-supplied event.cwd. Hook-shaped variant — a
+// bad explicit value is reported on stderr and read as "no project", never
+// thrown, so the hook still exits 0.
+import { resolveArchDirForHook } from "../src/lib/archdir.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,17 +51,6 @@ const MIN_KEYWORD_HITS = 2;
 const STOPWORDS = new Set([
   "the","a","an","is","are","was","were","be","been","to","of","in","on","at","by","for","with","and","or","but","if","then","this","that","these","those","i","you","we","it","do","does","did","can","could","should","would","will","my","your","our","their","what","which","when","where","how","why","let","make","add","update","remove","check","please","help",
 ]);
-
-function findArchDir(start) {
-  let dir = start;
-  while (true) {
-    const candidate = path.join(dir, ".arch");
-    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
 
 function tokenize(prompt) {
   return [
@@ -115,7 +110,7 @@ async function main() {
   try { event = JSON.parse(raw); } catch { /* ignore */ }
 
   const cwd = event.cwd || process.cwd();
-  const archDir = findArchDir(cwd);
+  const archDir = resolveArchDirForHook("archkit-userpromptsubmit-hook", { cwd, requireFile: "SYSTEM.md" });
   if (!archDir) process.exit(0);
 
   const sessionId = event.session_id;

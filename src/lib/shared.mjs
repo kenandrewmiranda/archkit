@@ -1,6 +1,6 @@
-import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "node:url";
+import { resolveArchDir } from "./archdir.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TERMINAL COLORS & ICONS
@@ -68,25 +68,22 @@ export const ICONS = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Walk up the directory tree looking for a .arch/ directory.
+ * Resolve the .arch/ directory for a CLI command.
+ *
+ * ADR 0031: this is now a thin adapter onto the ONE resolver in
+ * src/lib/archdir.mjs — ARCHKIT_ARCH_DIR wins when set, otherwise it walks up
+ * from process.cwd() exactly as before. Two deliberate collapses come with it:
+ * the walk now runs to the filesystem root instead of stopping after 10 parents
+ * (matching what the MCP and hook copies always did), and a set-but-nonexistent
+ * ARCHKIT_ARCH_DIR THROWS rather than degrading to cwd. bin/archkit.mjs renders
+ * that throw as a one-line CLI error.
+ *
  * @param {Object} [opts] - Options
  * @param {string} [opts.requireFile] - A file that must exist inside .arch/ (e.g. "SYSTEM.md", "skills")
  * @returns {string|null} Path to .arch/ directory, or null if not found
  */
 export function findArchDir(opts = {}) {
-  let dir = process.cwd();
-  for (let i = 0; i < 10; i++) {
-    const archPath = path.join(dir, ".arch");
-    if (opts.requireFile) {
-      if (fs.existsSync(path.join(archPath, opts.requireFile))) return archPath;
-    } else {
-      if (fs.existsSync(archPath)) return archPath;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
+  return resolveArchDir({ requireFile: opts.requireFile || null });
 }
 
 /**

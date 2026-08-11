@@ -7,18 +7,23 @@
 // Static:    archkit://system, archkit://index, archkit://boundaries
 // Templated: archkit://playbook/{id} (alias archkit://skill/{id}), archkit://decision/{number}
 //
-// archDir is resolved at read time from the server's cwd (the project Claude
-// Code launched it in); resources degrade gracefully when there's no .arch/.
+// archDir is resolved at read time through the one resolver (ADR 0031):
+// ARCHKIT_ARCH_DIR when the server was launched with it, else a walk up from the
+// server's cwd (the project Claude Code launched it in). Resources degrade
+// gracefully when there's no .arch/.
 
 import fs from "node:fs";
 import path from "node:path";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { findArchDir } from "../lib/shared.mjs";
+import { resolveArchDirForHook } from "../lib/archdir.mjs";
 import { listDecisions } from "../lib/decisions.mjs";
 import { listPlaybooks, resolvePlaybookPath } from "../lib/playbooks.mjs";
 
 function archDir() {
-  return findArchDir({ requireFile: "SYSTEM.md" });
+  // ADR 0031: ARCHKIT_ARCH_DIR wins when set, else the walk up from the server's
+  // cwd. A bad explicit value degrades to the graceful "no .arch/" content
+  // (reported on stderr) — a resource read must never throw at the transport.
+  return resolveArchDirForHook("archkit-mcp", { requireFile: "SYSTEM.md" });
 }
 
 function fileContent(uriHref, filePath, mimeType = "text/markdown") {

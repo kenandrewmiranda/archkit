@@ -18,7 +18,7 @@
 // here to guard the goal's exit-criteria until archkit_goal_complete is called.
 
 import fs from "node:fs";
-import { findArchDir } from "../lib/shared.mjs";
+import { resolveArchDirForHook } from "../lib/archdir.mjs";
 import { conductorPlan } from "../lib/board.mjs";
 // The MCP output contract (ADR 0026): every prompt below renders through the
 // shared graph/symbol vocabulary in format.mjs — never hand-rolled prose, never
@@ -41,8 +41,12 @@ import {
 } from "../lib/goals.mjs";
 
 function archDirOrNull() {
-  // The stdio server runs with cwd = the project Claude Code launched it in.
-  return findArchDir({ requireFile: "SYSTEM.md" });
+  // ADR 0031: ARCHKIT_ARCH_DIR when the server was launched with it, else the
+  // walk up from cwd (the project Claude Code launched the stdio server in). A
+  // bad explicit value is reported on stderr — the server's log — and read as
+  // "no project" rather than thrown, so a prompt still renders its NO_ARCH text
+  // instead of failing the slash command.
+  return resolveArchDirForHook("archkit-mcp", { requireFile: "SYSTEM.md" });
 }
 
 function textMessage(text) {
@@ -292,7 +296,9 @@ export const prompts = {
       // path-extract fallback, emitted once as a substitution template rather
       // than repeated per lane), step 6 the INTEGRATION DEBT ledger (ADR 0024).
       // prompts.mjs contributes no prose of its own: one contract, one renderer.
-      return textMessage(conductorGraph(plan).join("\n"));
+      // archDir rides along so the dispatch step can name the exact .arch/ each
+      // worker must be pointed at (ADR 0031) — format.mjs does no IO of its own.
+      return textMessage(conductorGraph({ ...plan, archDir }).join("\n"));
     },
   },
 
