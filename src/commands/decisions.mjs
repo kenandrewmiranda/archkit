@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { archkitError } from "../lib/errors.mjs";
 import { isMainModule, C, ICONS as I } from "../lib/shared.mjs";
+import { resolveArchDir } from "../lib/archdir.mjs";
 import { searchDecisions, listDecisions } from "../lib/decisions.mjs";
 
 const VALID_STATUS = new Set(["proposed", "accepted", "superseded", "deprecated"]);
@@ -195,23 +196,18 @@ export function runDecisionsSearchJson({ archDir, query, status, tags, limit } =
 
 // ── CLI mode ──────────────────────────────────────────────────────────────
 
-function findArchDir(start) {
-  let dir = start;
-  while (true) {
-    const candidate = path.join(dir, ".arch");
-    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
+// ADR 0031: no private walker here. This CLI path used to carry its own copy of
+// findArchDir, so `archkit decisions list/search` resolved from cwd and silently
+// ignored ARCHKIT_ARCH_DIR — a worktree worker answered against the wrong .arch/.
+// The one resolver keeps the fallback byte-identical when the variable is unset:
+// same SYSTEM.md check, same walk from cwd to the filesystem root.
 
 async function cliMode(args) {
   const sub = args[0];
   const jsonMode = args.includes("--json");
 
   if (sub === "list" || sub === "search") {
-    const archDir = findArchDir(process.cwd());
+    const archDir = resolveArchDir({ requireFile: "SYSTEM.md" });
     if (!archDir) {
       const msg = "No .arch/ directory found.";
       console.log(jsonMode ? JSON.stringify({ error: msg }) : `${C.red}  ${I.warn} ${msg}${C.reset}`);
@@ -258,7 +254,7 @@ async function cliMode(args) {
     process.exit(sub ? 1 : 0);
   }
 
-  const archDir = findArchDir(process.cwd());
+  const archDir = resolveArchDir({ requireFile: "SYSTEM.md" });
   if (!archDir) {
     if (jsonMode) {
       console.log(JSON.stringify({ error: "No .arch/ directory found" }));

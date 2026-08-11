@@ -41,6 +41,7 @@ import {
 import { findArchDir } from "../../src/lib/shared.mjs";
 import { conductorGraph } from "../../src/lib/format.mjs";
 import { writeGoal } from "../../src/lib/goals.mjs";
+import { listDecisions } from "../../src/lib/decisions.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
@@ -134,6 +135,21 @@ function legacySharedFindArchDir(start, opts = {}) {
     dir = parent;
   }
   return null;
+}
+
+// src/commands/decisions.mjs + src/commands/prd.mjs carried a THIRD copy — the
+// residual the first pass missed, because the archdir lane did not own
+// src/commands/. Identical bodies, deleted by the follow-up; reproduced here so
+// their back-compat is diffed too rather than assumed from a family resemblance.
+function legacyCommandFindArchDir(start) {
+  let dir = start;
+  while (true) {
+    const candidate = path.join(dir, ".arch");
+    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 console.log("\narchdir resolution — ARCHKIT_ARCH_DIR is the explicit signal (ADR 0031)\n");
@@ -567,6 +583,393 @@ test("DISPATCH: a plan with no archDir still renders a usable placeholder, never
   };
   const line = conductorGraph(plan).find((l) => l.includes("ARCHKIT_ARCH_DIR"));
   assert.ok(line && !line.includes("undefined"), `got: ${line}`);
+});
+
+// ── 7. the command residual: `decisions list/search` and `prd check` ─────────
+//
+// The first pass collapsed the MCP server, the six hook bins and the CLI
+// mainline onto the resolver, but src/commands/decisions.mjs and
+// src/commands/prd.mjs each kept a private walker in their CLI branch. So
+// `archkit decisions list --json` and `archkit prd check --json` resolved from
+// cwd and ignored the variable outright — a worktree worker asking either of
+// them a question got an answer about the wrong project, with no error to hint
+// at it. Same fixture shape as section 4: a REAL worktree, a REAL divergence,
+// the REAL CLI.
+
+const PRD_SAAS = `# Product
+
+A multi-tenant SaaS with subscriptions and billing via Stripe. Each organization
+gets a workspace; users sign up, log in, and land on a dashboard.
+`;
+
+function writeAdr(archDir, number, title) {
+  const dir = path.join(archDir, "decisions");
+  fs.mkdirSync(dir, { recursive: true });
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const file = path.join(dir, `${String(number).padStart(4, "0")}-${slug}.md`);
+  fs.writeFileSync(
+    file,
+    `# ${number}. ${title}\n\n- **Date**: 2026-08-10\n- **Status**: accepted\n- **Tags**: archdir\n\n` +
+    `## Context\n\ncontext\n\n## Decision\n\ndecision body\n\n## Consequences\n\nconsequences\n`,
+  );
+  return file;
+}
+
+// The declared archetype is the discriminator for `prd check`: the PRD is
+// identical in both trees (committed before the cut) so the ONLY thing that can
+// change the answer is WHICH SYSTEM.md it is diffed against.
+function declaredTypeOf(archDir) {
+  const m = fs.readFileSync(path.join(archDir, "SYSTEM.md"), "utf8").match(/^##\s*Type:\s*(.+)$/im);
+  return m ? m[1].trim() : null;
+}
+
+function buildCommandTrees() {
+  const base = tempDir("commands");
+  const conductor = path.join(base, "conductor");
+  fs.mkdirSync(conductor, { recursive: true });
+
+  git(["init", "-q", "-b", "main", "."], conductor);
+  git(["config", "user.email", "test@archkit.invalid"], conductor);
+  git(["config", "user.name", "archkit test"], conductor);
+
+  const conductorArch = project(conductor);
+  fs.writeFileSync(path.join(conductorArch, "SYSTEM.md"), "# System\n\n## Type: content\n");
+  writeAdr(conductorArch, 1, "in both trees");
+  fs.writeFileSync(path.join(conductor, "PRD.md"), PRD_SAAS);
+  git(["add", "-A"], conductor);
+  git(["commit", "-qm", "init"], conductor);
+
+  const worker = path.join(base, "worker");
+  git(["worktree", "add", "-q", worker, "-b", "cgr/lane-commands"], conductor);
+
+  // THE DIVERGENCE, minted after the cut and uncommitted so the worktree
+  // provably cannot see it: one extra ADR, and a re-declared archetype.
+  writeAdr(conductorArch, 2, "conductor only");
+  fs.writeFileSync(path.join(conductorArch, "SYSTEM.md"), "# System\n\n## Type: saas\n");
+
+  return { conductor, conductorArch, worker, workerArch: path.join(worker, ".arch") };
+}
+
+function cliJson(args, cwd, env) {
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd, env, encoding: "utf8" });
+  assert.equal(r.status, 0, `archkit ${args.join(" ")} failed in ${cwd}: ${r.stderr || r.stdout}`);
+  return JSON.parse(r.stdout);
+}
+
+test("COMMANDS: the fixture diverges — the worktree's .arch/ lacks the conductor's ADR and archetype", () => {
+  const { conductorArch, workerArch } = buildCommandTrees();
+  assert.equal(declaredTypeOf(conductorArch), "saas");
+  assert.equal(declaredTypeOf(workerArch), "content", "the worktree kept the committed declaration");
+  assert.ok(fs.existsSync(path.join(conductorArch, "decisions", "0002-conductor-only.md")));
+  assert.equal(
+    fs.existsSync(path.join(workerArch, "decisions", "0002-conductor-only.md")), false,
+    "…and cannot see the ADR minted after the cut — that is the whole problem",
+  );
+});
+
+test("COMMANDS: `decisions list --json` from a worktree honours ARCHKIT_ARCH_DIR", () => {
+  const { conductor, conductorArch, worker } = buildCommandTrees();
+  const fromConductor = cliJson(["decisions", "list", "--json"], conductor, envWithout());
+  const fromWorker = cliJson(["decisions", "list", "--json"], worker, envWithout({ [ARCH_DIR_ENV]: conductorArch }));
+
+  assert.equal(fromConductor.total, 2, "control: the conductor's tree really has two ADRs");
+  assert.equal(fromWorker.total, 2, "the worktree answered against the NAMED .arch/, not its own");
+  assert.deepEqual(
+    fromWorker.decisions.map((d) => d.title).sort(),
+    ["conductor only", "in both trees"],
+    "including the ADR its own checkout does not contain",
+  );
+});
+
+test("COMMANDS: `decisions list --json` with the variable unset still answers from cwd", () => {
+  const { conductor, worker } = buildCommandTrees();
+  const fromWorker = cliJson(["decisions", "list", "--json"], worker, envWithout());
+  assert.equal(fromWorker.total, 1, "only what its checkout carries — the documented fallback, unchanged");
+  assert.deepEqual(fromWorker.decisions.map((d) => d.title), ["in both trees"]);
+  // …and the difference is real, not an artefact of an empty fixture.
+  assert.notEqual(fromWorker.total, cliJson(["decisions", "list", "--json"], conductor, envWithout()).total);
+});
+
+test("COMMANDS: `prd check --json` from a worktree diffs against the NAMED .arch/", () => {
+  const { conductorArch, worker } = buildCommandTrees();
+  const r = cliJson(["prd", "check", "--json"], worker, envWithout({ [ARCH_DIR_ENV]: conductorArch }));
+
+  assert.equal(r.prdFound, true, "the PRD is still located from cwd — it belongs to the tree you stand in");
+  assert.equal(r.prdRelativePath, "PRD.md");
+  assert.equal(r.recommendedArchetype, "saas", "control: the PRD's own signal is unambiguous");
+  assert.equal(r.declaredArchetype, "saas", "checked against the conductor's SYSTEM.md, not the worktree's");
+  assert.equal(
+    r.findings.some((f) => f.type === "archetype_mismatch"), false,
+    "…so PRD and system agree, which is only true of the conductor's declaration",
+  );
+});
+
+test("COMMANDS: `prd check --json` with the variable unset still diffs against the cwd project", () => {
+  const { worker } = buildCommandTrees();
+  const r = cliJson(["prd", "check", "--json"], worker, envWithout());
+  assert.equal(r.declaredArchetype, "content", "the worktree's own SYSTEM.md — the documented fallback");
+  assert.ok(
+    r.findings.some((f) => f.type === "archetype_mismatch"),
+    "and the mismatch it always reported is still reported",
+  );
+});
+
+test("BACK-COMPAT: unset → identical to the DELETED private command walker, every layout", () => {
+  const root = tempDir("compat-cmd");
+  const arch = project(root);
+  const bareRoot = tempDir("compat-cmd-bare");
+  project(bareRoot, { system: false });          // bare .arch/ → the command copy said null
+  const noProject = tempDir("compat-cmd-none");
+
+  const cases = [
+    root,
+    nested(root, "src"),
+    nested(root, "src", "features", "auth", "deep", "deeper", "deepest", "further", "onward", "still", "more", "yet"),
+    bareRoot,
+    nested(bareRoot, "src"),
+    noProject,
+    nested(noProject, "a", "b", "c"),
+  ];
+  for (const cwd of cases) {
+    assert.equal(
+      resolveArchDir({ cwd, requireFile: "SYSTEM.md", env: {} }),
+      legacyCommandFindArchDir(cwd),
+      `divergence at ${cwd}`,
+    );
+  }
+  assert.equal(legacyCommandFindArchDir(nested(root, "src")), arch, "…and the matrix is not all-null");
+});
+
+test("BACK-COMPAT: unset, both CLIs answer against exactly the deleted walker's pick", () => {
+  // The end-to-end half: not "the resolver agrees with the old function" but
+  // "the shipped command produces the answer the old function's archDir gives".
+  const { conductor, conductorArch, worker, workerArch } = buildCommandTrees();
+  const sub = nested(conductor, "src", "features");
+
+  for (const [cwd, expectedArch] of [[conductor, conductorArch], [worker, workerArch], [sub, conductorArch]]) {
+    assert.equal(legacyCommandFindArchDir(cwd), expectedArch, `fixture check for ${cwd}`);
+    const listed = cliJson(["decisions", "list", "--json"], cwd, envWithout());
+    assert.equal(
+      listed.total, listDecisions(legacyCommandFindArchDir(cwd)).length,
+      `decisions list from ${cwd} moved off the old walker's project`,
+    );
+  }
+  // prd check needs a cwd the PRD is findable from, so it runs at the two roots.
+  for (const cwd of [conductor, worker]) {
+    const r = cliJson(["prd", "check", "--json"], cwd, envWithout());
+    assert.equal(
+      r.declaredArchetype, declaredTypeOf(legacyCommandFindArchDir(cwd)),
+      `prd check from ${cwd} moved off the old walker's project`,
+    );
+  }
+});
+
+test("COMMANDS: neither module declares a walker any more; both import the one resolver", () => {
+  for (const rel of ["src/commands/decisions.mjs", "src/commands/prd.mjs"]) {
+    const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    assert.match(src, /import \{ resolveArchDir \} from "\.\.\/lib\/archdir\.mjs";/, `${rel} imports the resolver`);
+    assert.match(src, /resolveArchDir\(\{[^}]*requireFile: "SYSTEM\.md"[^}]*\}\)/, `${rel} keeps the SYSTEM.md check`);
+  }
+});
+
+// ── 8. the guard: a private walker may not come back a third time ────────────
+//
+// This exists because the class of bug regressed twice: 18 copies collapsed,
+// then two survivors, and nothing in the suite would have noticed a nineteenth.
+//
+// THE RULE is deliberately NAME-BLIND — it never looks at `findArchDir`, so
+// renaming the function defeats nothing. A private walker is a SHAPE: code that
+// joins ".arch" onto a directory and then steps to that directory's PARENT,
+// either round a loop or through a self-recursive call. Every one of the 20
+// copies had that shape, and (per the exception list below) nothing else in the
+// shipped tree does.
+
+const JOINS_ARCH = /path\.join\(\s*[^)]*["'`]\.arch["'`]/;
+const STEPS_UP = /path\.dirname\s*\(/;
+const RECURSIVE_STEP = /return\s+[A-Za-z_$][\w$]*\s*\(\s*path\.dirname\s*\(/;
+
+// Files that legitimately match the shape. Each carries its reason, and the
+// guard asserts every entry STILL matches — a stale exception fails the suite,
+// so the list cannot be padded in advance to pre-authorise a future walker.
+const WALKER_EXCEPTIONS = new Map([
+  ["src/lib/archdir.mjs", "the ONE resolver — this is the walk every other surface routes through"],
+  ["src/lib/hooks-status.mjs", "projectClaudeDir: resolves a .claude/ dir, using .arch/ only as a project-root marker; never returns an archDir"],
+  ["scripts/test.mjs", "sandbox safety assertion: refuses to run if the temp sandbox sits UNDER a real project — a filesystem check, not a resolution"],
+]);
+
+// Every loop block in `source`, as text, by brace balance from the loop header.
+function loopBodies(source) {
+  const lines = source.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\b(?:while|for)\s*\(/.test(lines[i])) continue;
+    let depth = 0, opened = false;
+    const body = [];
+    for (let j = i; j < lines.length && j - i <= 80; j++) {
+      body.push(lines[j]);
+      for (const ch of lines[j]) {
+        if (ch === "{") { depth++; opened = true; }
+        else if (ch === "}") depth--;
+      }
+      if (opened && depth <= 0) break;
+    }
+    out.push({ line: i + 1, text: body.join("\n") });
+  }
+  return out;
+}
+
+function privateArchWalkers(source) {
+  const hits = [];
+  for (const loop of loopBodies(source)) {
+    if (JOINS_ARCH.test(loop.text) && STEPS_UP.test(loop.text)) hits.push({ line: loop.line, kind: "loop" });
+  }
+  const lines = source.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!RECURSIVE_STEP.test(lines[i])) continue;
+    const window = lines.slice(Math.max(0, i - 12), i + 13).join("\n");
+    if (JOINS_ARCH.test(window)) hits.push({ line: i + 1, kind: "recursion" });
+  }
+  return hits.sort((a, b) => a.line - b.line);
+}
+
+function scanSources(entries) {
+  const violations = [];
+  for (const { rel, source } of entries) {
+    if (WALKER_EXCEPTIONS.has(rel)) continue;
+    for (const hit of privateArchWalkers(source)) violations.push(`${rel}:${hit.line} (${hit.kind})`);
+  }
+  return violations;
+}
+
+// The shipped tree: src/, bin/, scripts/. tests/ is excluded on purpose — this
+// very file reproduces the deleted walkers verbatim so back-compat can be
+// diffed, and the fixtures below are walkers by construction.
+function shippedSources() {
+  const out = [];
+  const walk = (abs) => {
+    for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+      const p = path.join(abs, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (/\.(mjs|cjs|js)$/.test(entry.name)) out.push({ rel: path.relative(ROOT, p), source: fs.readFileSync(p, "utf8") });
+    }
+  };
+  for (const dir of ["src", "bin", "scripts"]) walk(path.join(ROOT, dir));
+  return out;
+}
+
+// The walker this change deleted, as source, for the reintroduction controls.
+const DELETED_WALKER = `
+function findArchDir(start) {
+  let dir = start;
+  while (true) {
+    const candidate = path.join(dir, ".arch");
+    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+`;
+
+test("GUARD: the shipped tree declares no private archDir walker outside the one resolver", () => {
+  const entries = shippedSources();
+  // The scan is not vacuous: it really did read the two files this change fixed.
+  assert.ok(entries.length > 50, `only ${entries.length} shipped files scanned`);
+  for (const rel of ["src/commands/decisions.mjs", "src/commands/prd.mjs", "src/lib/archdir.mjs"]) {
+    assert.ok(entries.some((e) => e.rel === rel), `${rel} was not scanned`);
+  }
+  assert.deepEqual(scanSources(entries), []);
+});
+
+test("GUARD: it catches the walker being reintroduced into a command module", () => {
+  // The positive control for the test above: put the deleted function back into
+  // the real file's real source and the guard must name it.
+  const source = fs.readFileSync(path.join(ROOT, "src/commands/decisions.mjs"), "utf8") + DELETED_WALKER;
+  const violations = scanSources([{ rel: "src/commands/decisions.mjs", source }]);
+  assert.equal(violations.length, 1, `expected exactly one violation, got ${JSON.stringify(violations)}`);
+  assert.match(violations[0], /^src\/commands\/decisions\.mjs:\d+ \(loop\)$/);
+});
+
+test("GUARD: renaming the function, or changing the loop, defeats nothing", () => {
+  const variants = {
+    "renamed": DELETED_WALKER.replace("findArchDir", "locateProjectContext"),
+    "for(;;) instead of while(true)": DELETED_WALKER.replace("while (true)", "for (;;)"),
+    "arrow assigned to a const": `
+const resolveIt = (start) => {
+  let dir = start;
+  for (;;) {
+    const c = path.join(dir, ".arch");
+    if (fs.existsSync(c)) return c;
+    if (path.dirname(dir) === dir) return null;
+    dir = path.dirname(dir);
+  }
+};`,
+    "recursive, no loop at all": `
+function up(dir) {
+  const candidate = path.join(dir, ".arch");
+  if (fs.existsSync(candidate)) return candidate;
+  const parent = path.dirname(dir);
+  if (parent === dir) return null;
+  return up(path.dirname(dir));
+}`,
+    "an object method": `
+const helpers = {
+  find(start) {
+    let dir = start;
+    while (dir) {
+      const candidate = path.join(dir, ".arch", "SYSTEM.md");
+      if (fs.existsSync(candidate)) return path.dirname(candidate);
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+  },
+};`,
+  };
+  for (const [label, source] of Object.entries(variants)) {
+    assert.ok(privateArchWalkers(source).length > 0, `the guard missed: ${label}`);
+  }
+});
+
+test("GUARD: legitimate walk-ups and .arch reads are NOT flagged", () => {
+  const benign = {
+    "a walk-up for something else entirely": `
+function repoRoot(start) {
+  let dir = start;
+  while (true) {
+    if (fs.existsSync(path.join(dir, "package.json"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}`,
+    "iterating .arch subpaths without walking up": `
+for (const name of ["goals", "board", "decisions"]) {
+  const p = path.join(archDir, ".arch", name);
+  if (fs.existsSync(p)) out.push(p);
+}`,
+    "a caller that uses the one resolver": `
+import { resolveArchDir } from "../lib/archdir.mjs";
+const archDir = resolveArchDir({ requireFile: "SYSTEM.md" });
+const decisions = path.join(archDir, "decisions");`,
+    "path.dirname used far away from an .arch join": `
+const archDir = path.join(root, ".arch");
+${"// filler\n".repeat(20)}
+const parent = path.dirname(somewhereElse);`,
+  };
+  for (const [label, source] of Object.entries(benign)) {
+    assert.deepEqual(privateArchWalkers(source), [], `false positive on: ${label}`);
+  }
+});
+
+test("GUARD: every exception still matches the rule — the list cannot be padded in advance", () => {
+  for (const [rel, reason] of WALKER_EXCEPTIONS) {
+    const source = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    assert.ok(
+      privateArchWalkers(source).length > 0,
+      `${rel} no longer matches the walker shape — drop it from WALKER_EXCEPTIONS (${reason})`,
+    );
+  }
 });
 
 // ── done ─────────────────────────────────────────────────────────────────────
