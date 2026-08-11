@@ -37,6 +37,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The ONE archDir resolver (ADR 0031): ARCHKIT_ARCH_DIR when set (so a worker
+// spawned into a worktree still answers against the .arch/ it was pointed at),
+// else the walk up from the harness-supplied event.cwd. Hook-shaped variant — a
+// bad explicit value is reported on stderr and read as "no project", never
+// thrown, so the hook still exits 0.
+import { resolveArchDirForHook } from "../src/lib/archdir.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,17 +80,6 @@ function looksLikeQuestionToUser(text) {
   const tail = trimmed.slice(-400);
   if (/\b(could you|can you|should i|do you want|would you like|which (one|option|approach))\b[^?]*\?/is.test(tail)) return true;
   return false;
-}
-
-function findArchDir(start) {
-  let dir = start;
-  while (true) {
-    const candidate = path.join(dir, ".arch");
-    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
 }
 
 function compactBoundaries(archDir) {
@@ -138,7 +133,7 @@ async function main() {
   try { event = JSON.parse(raw); } catch { /* ignore */ }
 
   const cwd = event.cwd || process.cwd();
-  const archDir = findArchDir(cwd);
+  const archDir = resolveArchDirForHook("archkit-stop-hook", { cwd, requireFile: "SYSTEM.md" });
   if (!archDir) {
     process.exit(0); // silent on non-archkit projects
   }

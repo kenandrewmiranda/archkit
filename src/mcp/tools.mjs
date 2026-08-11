@@ -43,6 +43,12 @@ import { loadGoal, runFinalizeConfig, reconcileGoalsLayout, dispatchGoal, laneOf
 import { detectStaleGoals } from "../lib/goal-triage.mjs";
 import { sessionState, conductorPlan, recordMerge, recordConflict, claimFrontier } from "../lib/board.mjs";
 import { archkitError } from "../lib/errors.mjs";
+// The ONE archDir resolver (ADR 0031). No handler below re-derives archDir:
+// requireArchDir() honours ARCHKIT_ARCH_DIR when set and otherwise walks up from
+// process.cwd() exactly as the local copy did. Handlers that still need the
+// process cwd for their OWN work (git calls, relative path args) keep it and
+// pass it as the walk root — resolving from an explicit cwd, not inheriting one.
+import { requireArchDir } from "../lib/archdir.mjs";
 
 // ── Warmup goal-hygiene augmentation (warmup-reconcile-surface) ──────────────
 // On top of runWarmupJson's structural checks, the warmup handler (a) auto-fixes
@@ -156,30 +162,6 @@ function surfaceGoalHygiene(archDir, cwd, result) {
   return result;
 }
 
-function findArchDir(cwd) {
-  let dir = cwd;
-  while (true) {
-    const candidate = path.join(dir, ".arch");
-    if (fs.existsSync(candidate) && fs.existsSync(path.join(candidate, "SYSTEM.md"))) {
-      return candidate;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-function requireArchDir(cwd) {
-  const archDir = findArchDir(cwd);
-  if (!archDir) {
-    throw archkitError("no_arch_dir", "No .arch/ directory found", {
-      suggestion: "Run `archkit init` in your project root.",
-      docsUrl: "https://github.com/kenandrewmiranda/archkit#getting-started",
-    });
-  }
-  return archDir;
-}
-
 export const tools = {
   archkit_review: {
     description: "Lint one or more NAMED files against archkit rules and gotchas; returns findings (errors/warnings/infos) keyed by filepath plus pass:boolean. Non-JS files skip JS-ecosystem heuristics. Rule families are disableable per project via .arch/config.json -> review.disable, except the architecture families (import-hierarchy, import-boundary, boundary-violation, reserved-word). Trigger: you edited specific paths and want those checked. To check everything staged for commit instead, use archkit_review_staged.",
@@ -188,7 +170,7 @@ export const tools = {
     }),
     handler: async ({ files }) => {
       const cwd = process.cwd();
-      return runReviewJson({ files, archDir: requireArchDir(cwd), cwd });
+      return runReviewJson({ files, archDir: requireArchDir({ cwd }), cwd });
     },
   },
 
@@ -197,7 +179,7 @@ export const tools = {
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
-      return runReviewJson({ files: [], archDir: requireArchDir(cwd), cwd, staged: true });
+      return runReviewJson({ files: [], archDir: requireArchDir({ cwd }), cwd, staged: true });
     },
   },
 
@@ -208,7 +190,7 @@ export const tools = {
     }),
     handler: async ({ deep }) => {
       const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir({ cwd });
       const result = await runWarmupJson({ archDir, deep });
       // Fold in goal-tree auto-fix (reported, threshold-gated) + advisory cruft
       // scan. Defensive: surfaceGoalHygiene never throws, so warmup stays
@@ -225,7 +207,7 @@ export const tools = {
     }),
     handler: async ({ feature, layer }) => {
       const cwd = process.cwd();
-      return runPreflightJson({ archDir: requireArchDir(cwd), cwd, feature, layer });
+      return runPreflightJson({ archDir: requireArchDir({ cwd }), cwd, feature, layer });
     },
   },
 
@@ -236,7 +218,7 @@ export const tools = {
     }),
     handler: async ({ feature }) => {
       const cwd = process.cwd();
-      return runScaffoldJson({ archDir: requireArchDir(cwd), cwd, feature });
+      return runScaffoldJson({ archDir: requireArchDir({ cwd }), cwd, feature });
     },
   },
 
@@ -246,8 +228,7 @@ export const tools = {
       id: z.string().min(1).describe("Node / playbook / cluster id (e.g. \"auth.service\", \"stripe\", \"billing\")."),
     }),
     handler: async ({ id }) => {
-      const cwd = process.cwd();
-      return runLookupJson({ archDir: requireArchDir(cwd), id });
+      return runLookupJson({ archDir: requireArchDir(), id });
     },
   },
 
@@ -261,8 +242,7 @@ export const tools = {
       appType: z.string().optional().describe("Optional archetype scoping (saas, ecommerce, realtime, data, ai, mobile, internal, content) so the gotcha only fires for matching projects."),
     }),
     handler: async (input) => {
-      const cwd = process.cwd();
-      return runGotchaProposeJson({ archDir: requireArchDir(cwd), ...input });
+      return runGotchaProposeJson({ archDir: requireArchDir(), ...input });
     },
   },
 
@@ -270,8 +250,7 @@ export const tools = {
     description: "List every playbook with its gotcha count and a sample of its wrong-patterns. Trigger: before archkit_gotcha_propose, to avoid duplicating an existing gotcha, or to spot playbooks with zero gotchas that contribute nothing to review. (Returns a `skills` key for back-compat.)",
     inputSchema: z.object({}),
     handler: async () => {
-      const cwd = process.cwd();
-      return runGotchaListJson({ archDir: requireArchDir(cwd) });
+      return runGotchaListJson({ archDir: requireArchDir() });
     },
   },
 
@@ -279,8 +258,7 @@ export const tools = {
     description: "Read-only health dashboard for .arch/: counts of playbooks/clusters/nodes/APIs/decisions, SYSTEM.md and INDEX.md completeness, gotcha density per playbook, and a prioritized `recommendations` list. Trigger: assess setup completeness, pick which playbook to flesh out, or report progress. For staleness against live code, use archkit_sync or archkit_drift.",
     inputSchema: z.object({}),
     handler: async () => {
-      const cwd = process.cwd();
-      return runStatsJson({ archDir: requireArchDir(cwd) });
+      return runStatsJson({ archDir: requireArchDir() });
     },
   },
 
@@ -289,7 +267,7 @@ export const tools = {
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
-      return runDriftJson({ archDir: requireArchDir(cwd), cwd });
+      return runDriftJson({ archDir: requireArchDir({ cwd }), cwd });
     },
   },
 
@@ -304,8 +282,7 @@ export const tools = {
       tags: z.array(z.string().min(1)).optional().describe("Optional categorization, e.g. ['database', 'stack']."),
     }),
     handler: async (input) => {
-      const cwd = process.cwd();
-      return runLogDecisionJson({ archDir: requireArchDir(cwd), ...input });
+      return runLogDecisionJson({ archDir: requireArchDir(), ...input });
     },
   },
 
@@ -318,7 +295,7 @@ export const tools = {
       const cwd = process.cwd();
       // archDir is optional for this tool — we want to be useful on bare projects
       let archDir = null;
-      try { archDir = requireArchDir(cwd); } catch { /* ok — PRD check works without .arch/ */ }
+      try { archDir = requireArchDir({ cwd }); } catch { /* ok — PRD check works without .arch/ */ }
       return runPrdCheckJson({ archDir, cwd, prdPath });
     },
   },
@@ -330,8 +307,7 @@ export const tools = {
       srcDir: z.string().optional().describe("Source directory to scan for implementation evidence. Default 'src'."),
     }),
     handler: async ({ specFile, srcDir = "src" }) => {
-      const cwd = process.cwd();
-      return runAuditSpecJson({ archDir: requireArchDir(cwd), specFile, srcDir });
+      return runAuditSpecJson({ archDir: requireArchDir(), specFile, srcDir });
     },
   },
 
@@ -341,8 +317,7 @@ export const tools = {
       srcDir: z.string().optional().describe("Source directory to compare against .arch/. Default 'src'."),
     }),
     handler: async ({ srcDir = "src" }) => {
-      const cwd = process.cwd();
-      return runSyncJson({ archDir: requireArchDir(cwd), srcDir });
+      return runSyncJson({ archDir: requireArchDir(), srcDir });
     },
   },
 
@@ -352,8 +327,7 @@ export const tools = {
       srcDir: z.string().optional().describe("Source directory to scan for unwired/dead components. Default 'src'."),
     }),
     handler: async ({ srcDir = "src" }) => {
-      const cwd = process.cwd();
-      return runVerifyWiringJson({ archDir: requireArchDir(cwd), srcDir });
+      return runVerifyWiringJson({ archDir: requireArchDir(), srcDir });
     },
   },
 
@@ -370,7 +344,7 @@ export const tools = {
       if (staged) args.push("--staged");
       else if (diff) args.push("--diff");
       else if (files) args.push(...files);
-      return runBoundaryCheckJson({ archDir: requireArchDir(cwd), cwd, args });
+      return runBoundaryCheckJson({ archDir: requireArchDir({ cwd }), cwd, args });
     },
   },
 
@@ -382,8 +356,7 @@ export const tools = {
       why: z.string().optional().describe("Optional short rationale, appended as a parenthetical to the BAN line."),
     }),
     handler: async ({ source, target, why }) => {
-      const cwd = process.cwd();
-      return runBoundaryProposeJson({ archDir: requireArchDir(cwd), source, target, why });
+      return runBoundaryProposeJson({ archDir: requireArchDir(), source, target, why });
     },
   },
 
@@ -395,8 +368,7 @@ export const tools = {
       kind: z.enum(["doc", "sdk"]).optional().describe("How the API is vouched for: \"doc\" (documentation URL/path) or \"sdk\" (SDK package). Default \"doc\"."),
     }),
     handler: async ({ id, ref, kind }) => {
-      const cwd = process.cwd();
-      return runApiRegister({ archDir: requireArchDir(cwd), id, ref, kind });
+      return runApiRegister({ archDir: requireArchDir(), id, ref, kind });
     },
   },
 
@@ -407,8 +379,7 @@ export const tools = {
       reason: z.string().min(1).describe("Justification for proceeding without docs — recorded verbatim in the manifest as the audit trail. Required."),
     }),
     handler: async ({ id, reason }) => {
-      const cwd = process.cwd();
-      return runApiOverride({ archDir: requireArchDir(cwd), id, reason });
+      return runApiOverride({ archDir: requireArchDir(), id, reason });
     },
   },
 
@@ -416,8 +387,7 @@ export const tools = {
     description: "List every API-doc clearance in .arch/apis.json, bucketed into referenced (doc/SDK vouched), overridden (explicit human override), and pending (recorded but still BLOCKED by the gate). Read-only (ADR 0022). Trigger: audit which API surfaces are cleared vs still gated.",
     inputSchema: z.object({}),
     handler: async () => {
-      const cwd = process.cwd();
-      return runApiList({ archDir: requireArchDir(cwd) });
+      return runApiList({ archDir: requireArchDir() });
     },
   },
 
@@ -445,7 +415,7 @@ export const tools = {
     }),
     handler: async ({ sourceAsk, goals }) => {
       const cwd = process.cwd();
-      return runGoalIntake({ archDir: requireArchDir(cwd), cwd, sourceAsk, goals });
+      return runGoalIntake({ archDir: requireArchDir({ cwd }), cwd, sourceAsk, goals });
     },
   },
 
@@ -467,8 +437,7 @@ export const tools = {
       deployCommand: z.string().optional().describe("Command the deploy-to-dev (or custom CI) step should run/instruct, e.g. \"npm run deploy:dev\". Surfaced in the finalize goal's exit-criterion."),
     }),
     handler: async (input) => {
-      const cwd = process.cwd();
-      return runFinalizeConfig({ archDir: requireArchDir(cwd), ...input });
+      return runFinalizeConfig({ archDir: requireArchDir(), ...input });
     },
   },
 
@@ -476,8 +445,7 @@ export const tools = {
     description: "List active and completed CGR goals. Active goals come back in RELAY QUEUE ORDER, so active[0] is what /mcp__archkit__conductor picks next. Also returns `epics` (sequencing groups), `projects` (branch-isolated feature sets living on feat/<project>), `digests` (dated consolidation summaries), and `archived` (count of raw CGRs kept verbatim). Trigger: check what is already in flight before archkit_goal_intake, or find the next goal's slug. For one goal's full content, use archkit_goal_show.",
     inputSchema: z.object({}),
     handler: async () => {
-      const cwd = process.cwd();
-      return runGoalList({ archDir: requireArchDir(cwd) });
+      return runGoalList({ archDir: requireArchDir() });
     },
   },
 
@@ -487,8 +455,7 @@ export const tools = {
       slug: z.string().min(1).describe("Goal slug (matches the filename at .arch/goals/<slug>.md)."),
     }),
     handler: async ({ slug }) => {
-      const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir();
       const goal = loadGoal(archDir, slug);
       if (!goal) {
         const known = runGoalList({ archDir }).active.map(g => g.slug);
@@ -509,8 +476,7 @@ export const tools = {
     description: "CGR board STATE -- the raw folded projection of the parallel-lane board: lanes, frontier (workable now), blocked, in_flight, merge_queue, merged (with recorded verify outcome), conflicts, leases_expired (ADR 0014). Purely derived by folding the append-only event log .arch/board/events.ndjson plus the CGR files, so it survives /clear and cannot drift. Read-only. Trigger: rehydrate what remains in flight after /clear or compaction, or inspect one slice. For the DISPATCH PLAN layered on top -- claimable lanes, merge order, exceptions to review -- use archkit_conductor.",
     inputSchema: z.object({}),
     handler: async () => {
-      const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir();
       const board = sessionState(archDir);
       const counts = {
         lanes: Object.keys(board.lanes).length,
@@ -542,8 +508,7 @@ export const tools = {
     description: "CGR conductor PLAN -- what to do in one orchestration pass (ADR 0013): claimableLanes to claim under a lease, barriers that run SOLO, mergeOrder, convergence (per-lane rebase-onto-tip then a concrete verify command, ADR 0023/0024), unverifiedMerges (integration debt), exceptions to deep-review vs clean to rubber-stamp, and pendingEscalations (collisions not yet escalated -- mint a solo barrier via archkit_board_conflict). `dispatch` = the claims owed: archkit_goal_start {slug, worker} BEFORE spawning each lane's worktree-isolated worker, so it lands `dispatched` (ADR 0027). Read-only: claiming, merging, and escalating are your follow-up calls. Trigger: conductor session start, and after collecting worker handoffs. For the raw board slices underneath, use archkit_session_state.",
     inputSchema: z.object({}),
     handler: async () => {
-      const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir();
       const plan = conductorPlan(archDir);
       const c = plan.counts;
       // Integration debt keeps the conductor NON-idle: a merge with no green
@@ -551,6 +516,17 @@ export const tools = {
       const idle = c.frontier === 0 && c.in_flight === 0 && c.merge_queue === 0
         && c.leases_expired === 0 && c.unverified_merges === 0 && c.escalations_pending === 0;
       const out = { ...plan };
+      // The dispatch ENVIRONMENT (ADR 0031). The structured surface carries the
+      // same requirement the rendered pass states: each spawned worker gets
+      // ARCHKIT_ARCH_DIR pointing HERE, or it resolves to its own worktree —
+      // which has no board (.arch/board/ is gitignored) and a goal tree forked
+      // at its base commit. Sharing this .arch/ is a contract, not an accident.
+      out.archDir = archDir;
+      out.dispatch = {
+        ...plan.dispatch,
+        env: { ARCHKIT_ARCH_DIR: archDir },
+        envNote: `Spawn every worker with ARCHKIT_ARCH_DIR=${archDir} in its environment so it reads and writes THIS board/goal tree regardless of its worktree cwd. Omit it only to give a worker deliberately isolated state.`,
+      };
       if (!c.escalations_pending) {
         out.pendingEscalationsNote = plan.conflictEscalations.length
           ? `No unescalated conflicts — all ${plan.conflictEscalations.length} detected collision(s) already have a merge-reconcile CGR.`
@@ -596,8 +572,7 @@ export const tools = {
       note: z.string().optional().describe("Free-form note carried on the verification payload (e.g. which criteria the run covered)."),
     }),
     handler: async ({ slugs, slug, lane, branch, verifyCommand, verifySource, passed, exitCode, worker, note }) => {
-      const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir();
       const list = [...(slugs || []), ...(slug ? [slug] : [])];
       if (list.length === 0) {
         throw archkitError("missing_slug", "archkit_board_merged requires slugs (or slug)", {
@@ -639,8 +614,7 @@ export const tools = {
       escalate: z.boolean().optional().describe("Set false to record the conflict event WITHOUT minting a reconcile CGR (record-only). Defaults to true — escalation is the point of tier 3."),
     }),
     handler: async ({ slugs, files, lane, lanes, note, escalate }) => {
-      const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir();
       const uniq = [...new Set((slugs || []).map((s) => String(s).trim()).filter(Boolean))];
       if (uniq.length < 2) {
         throw archkitError("missing_slug", "archkit_board_conflict requires at least two DISTINCT conflicting slugs", {
@@ -686,8 +660,7 @@ export const tools = {
       slug: z.string().min(1).describe("Goal slug to render a payload for."),
     }),
     handler: async ({ slug }) => {
-      const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir();
       const goal = loadGoal(archDir, slug);
       if (!goal) {
         const active = runGoalList({ archDir }).active.map(g => g.slug);
@@ -708,8 +681,7 @@ export const tools = {
       worker: z.string().optional().describe("Worker subagent id this claim is made ON BEHALF OF. Supplying it dispatches instead of starting: status becomes `dispatched`, a lease ({worker, expires} from cgr.leaseTtlHours) is stamped, a `claimed` board event is appended so the goal shows in archkit_session_state.in_flight with its lane/worker/lease, and the Stop-hook relay guard is released in THIS session — the conductor must wait for the worker, not work the criteria itself. The goal is NOT offered by frontier/nextEligibleGoal while dispatched, and an abandoned dispatch is reclaimed on lease-TTL expiry exactly like an orphaned in-progress goal. Omit for a normal same-session start."),
     }),
     handler: async ({ slug, worker }) => {
-      const cwd = process.cwd();
-      const archDir = requireArchDir(cwd);
+      const archDir = requireArchDir();
       if (!worker || !String(worker).trim()) return runGoalStart({ archDir, slug });
       // Dispatch path (ADR 0027). runGoalStart renders the payload + validates the
       // slug (unknown_goal), then startGoal marks it in-progress; dispatchGoal
@@ -751,7 +723,7 @@ export const tools = {
     }),
     handler: async ({ slug, done, decisions, remaining, continuationNotes, openQuestions, verificationStatus, actualFiles, successor, model }) => {
       const cwd = process.cwd();
-      return runGoalHandoff({ archDir: requireArchDir(cwd), cwd, slug, done, decisions, remaining, continuationNotes, openQuestions, verificationStatus, actualFiles, successor, model });
+      return runGoalHandoff({ archDir: requireArchDir({ cwd }), cwd, slug, done, decisions, remaining, continuationNotes, openQuestions, verificationStatus, actualFiles, successor, model });
     },
   },
 
@@ -764,7 +736,7 @@ export const tools = {
     }),
     handler: async ({ slug, notes, timeSpent }) => {
       const cwd = process.cwd();
-      return runGoalComplete({ archDir: requireArchDir(cwd), cwd, slug, notes, timeSpent });
+      return runGoalComplete({ archDir: requireArchDir({ cwd }), cwd, slug, notes, timeSpent });
     },
   },
 
@@ -787,7 +759,7 @@ export const tools = {
     }),
     handler: async ({ slug, criteriaMet, verifyCommand, successorSlug, done, decisions, remaining, continuationNotes, openQuestions, actualFiles, model, notes, timeSpent }) => {
       const cwd = process.cwd();
-      return runGoalFission({ archDir: requireArchDir(cwd), cwd, slug, criteriaMet, verifyCommand, successorSlug, done, decisions, remaining, continuationNotes, openQuestions, actualFiles, model, notes, timeSpent });
+      return runGoalFission({ archDir: requireArchDir({ cwd }), cwd, slug, criteriaMet, verifyCommand, successorSlug, done, decisions, remaining, continuationNotes, openQuestions, actualFiles, model, notes, timeSpent });
     },
   },
 
@@ -797,8 +769,7 @@ export const tools = {
       slug: z.string().min(1).describe("Goal slug to move into the testing (verification-pending) state."),
     }),
     handler: async ({ slug }) => {
-      const cwd = process.cwd();
-      return runGoalTesting({ archDir: requireArchDir(cwd), slug });
+      return runGoalTesting({ archDir: requireArchDir(), slug });
     },
   },
 
@@ -808,8 +779,7 @@ export const tools = {
       slug: z.string().min(1).describe("Goal slug to park as on-hold (deliberately set aside, resumable)."),
     }),
     handler: async ({ slug }) => {
-      const cwd = process.cwd();
-      return runGoalHold({ archDir: requireArchDir(cwd), slug });
+      return runGoalHold({ archDir: requireArchDir(), slug });
     },
   },
 
@@ -817,8 +787,7 @@ export const tools = {
     description: "Fold every terminal goal sitting at the top of .arch/goals/done/ into a dated digest (done/digest/<YYYY-MM-DD>.md) and preserve each raw CGR verbatim under done/archive/. Incremental and idempotent -- it only drains what is already terminal, so it is safe while other goals are pending. Fires automatically at queue-drain and session end. Trigger: summarize a finished batch mid-sprint on demand. Digests are discoverable via archkit_goal_list.",
     inputSchema: z.object({}),
     handler: async () => {
-      const cwd = process.cwd();
-      return runGoalConsolidate({ archDir: requireArchDir(cwd) });
+      return runGoalConsolidate({ archDir: requireArchDir() });
     },
   },
 
@@ -828,8 +797,7 @@ export const tools = {
       apply: z.boolean().optional().describe("false/omitted = DRY-RUN: return the proposed moves/dups/quarantine without writing. true = perform them. Default false — inspect before applying."),
     }),
     handler: async ({ apply }) => {
-      const cwd = process.cwd();
-      return runGoalReconcile({ archDir: requireArchDir(cwd), apply });
+      return runGoalReconcile({ archDir: requireArchDir(), apply });
     },
   },
 
@@ -840,8 +808,7 @@ export const tools = {
       to: z.string().optional().describe("End day (ISO YYYY-MM-DD), inclusive. Omit for today. Alone (no `from`), includes everything up to this day."),
     }),
     handler: async ({ from, to }) => {
-      const cwd = process.cwd();
-      return runWorklog({ archDir: requireArchDir(cwd), from, to });
+      return runWorklog({ archDir: requireArchDir(), from, to });
     },
   },
 
@@ -853,8 +820,7 @@ export const tools = {
       file: z.string().optional().describe("Which gap to accept, when the proposal has more than one. The file path as it appears in the proposal's gaps. Omit when the proposal has a single gap."),
     }),
     handler: async ({ slug, line, file }) => {
-      const cwd = process.cwd();
-      return runGraphAccept({ archDir: requireArchDir(cwd), slug, line, file });
+      return runGraphAccept({ archDir: requireArchDir(), slug, line, file });
     },
   },
 
@@ -865,7 +831,7 @@ export const tools = {
     }),
     handler: async ({ slug }) => {
       const cwd = process.cwd();
-      return runGoalVerify({ archDir: requireArchDir(cwd), cwd, slug });
+      return runGoalVerify({ archDir: requireArchDir({ cwd }), cwd, slug });
     },
   },
 
@@ -876,8 +842,7 @@ export const tools = {
       reason: z.string().optional().describe("Optional 1-2 sentence reason (stored on the archived goal)."),
     }),
     handler: async ({ slug, reason }) => {
-      const cwd = process.cwd();
-      return runGoalAbandon({ archDir: requireArchDir(cwd), slug, reason });
+      return runGoalAbandon({ archDir: requireArchDir(), slug, reason });
     },
   },
 
@@ -890,8 +855,7 @@ export const tools = {
       context: z.string().optional().describe("Optional short excerpt of where this came up, stored for backtrace."),
     }),
     handler: async (input) => {
-      const cwd = process.cwd();
-      return runGoalDefer({ archDir: requireArchDir(cwd), ...input });
+      return runGoalDefer({ archDir: requireArchDir(), ...input });
     },
   },
 
@@ -902,8 +866,7 @@ export const tools = {
       all: z.boolean().optional().describe("Promote every pending proposal. Overrides hashes."),
     }),
     handler: async ({ hashes, all }) => {
-      const cwd = process.cwd();
-      return runGoalPromote({ archDir: requireArchDir(cwd), hashes, all });
+      return runGoalPromote({ archDir: requireArchDir(), hashes, all });
     },
   },
 
@@ -914,8 +877,7 @@ export const tools = {
       all: z.boolean().optional().describe("Dismiss every pending proposal."),
     }),
     handler: async ({ hashes, all }) => {
-      const cwd = process.cwd();
-      return runGoalDismiss({ archDir: requireArchDir(cwd), hashes, all });
+      return runGoalDismiss({ archDir: requireArchDir(), hashes, all });
     },
   },
 
@@ -924,7 +886,7 @@ export const tools = {
     inputSchema: z.object({}),
     handler: async () => {
       const cwd = process.cwd();
-      return runDoctorJson({ archDir: requireArchDir(cwd), cwd });
+      return runDoctorJson({ archDir: requireArchDir({ cwd }), cwd });
     },
   },
 
@@ -937,8 +899,7 @@ export const tools = {
       limit: z.number().optional().describe("Max results (default 10, capped at 50)."),
     }),
     handler: async ({ query, status, tags, limit }) => {
-      const cwd = process.cwd();
-      return runDecisionsSearchJson({ archDir: requireArchDir(cwd), query, status, tags, limit });
+      return runDecisionsSearchJson({ archDir: requireArchDir(), query, status, tags, limit });
     },
   },
 
@@ -959,7 +920,7 @@ export const tools = {
     handler: async () => {
       const cwd = process.cwd();
       let archDir = null;
-      try { archDir = requireArchDir(cwd); } catch { /* greenfield — that's fine */ }
+      try { archDir = requireArchDir({ cwd }); } catch { /* greenfield — that's fine */ }
       return runInitJson({ cwd, archDir });
     },
   },
@@ -996,7 +957,7 @@ export const tools = {
     handler: async ({ overwrite, ...answers }) => {
       const cwd = process.cwd();
       let archDir = null;
-      try { archDir = requireArchDir(cwd); } catch { /* greenfield — expected */ }
+      try { archDir = requireArchDir({ cwd }); } catch { /* greenfield — expected */ }
       return runInitGenerateJson({ cwd, archDir, answers, overwrite });
     },
   },

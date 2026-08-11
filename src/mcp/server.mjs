@@ -9,6 +9,7 @@ import { prompts } from "./prompts.mjs";
 import { registerResources } from "./resources.mjs";
 import { toMcpResult, toMcpError, formatZodError } from "./envelope.mjs";
 import { archkitError } from "../lib/errors.mjs";
+import { ARCH_DIR_ENV, archDirFromEnv, resolveArchDirForHook } from "../lib/archdir.mjs";
 
 export async function startMcpServer() {
   const server = new McpServer({
@@ -60,5 +61,10 @@ export async function startMcpServer() {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  process.stderr.write(`[archkit-mcp] ready (stdio, ${Object.keys(tools).length} tools, ${Object.keys(prompts).length} prompts, resources)\n`);
+  // Name the archDir the server will answer against, and where it came from
+  // (ADR 0031). A server launched with ARCHKIT_ARCH_DIR is deliberately pointed
+  // at someone else's .arch/ — that has to be visible in the log, not inferred.
+  const archDir = resolveArchDirForHook("archkit-mcp", { requireFile: "SYSTEM.md" });
+  const source = archDirFromEnv() ? ARCH_DIR_ENV : "cwd";
+  process.stderr.write(`[archkit-mcp] ready (stdio, ${Object.keys(tools).length} tools, ${Object.keys(prompts).length} prompts, resources, archDir=${archDir || "none"} via ${source})\n`);
 }
