@@ -43,6 +43,7 @@ import {
   globsIntersect,
   handoffOf,
   stampGoalFields,
+  withGoalsLock,
   leaseTtlHours,
   STATUS_PENDING,
   triageNextGoal,
@@ -619,15 +620,24 @@ export function claimFrontier(archDir, { slug, worker = null, lane = null, now =
   const ttl = ttlHours != null ? ttlHours : leaseTtlHours(archDir);
   const nowMs = Date.parse(now);
   const expires = Number.isNaN(nowMs) ? null : new Date(nowMs + hoursToMs(ttl)).toISOString();
-  const goal = loadGoal(archDir, slug);
-  const resolvedLane = lane || (goal && laneOf(goal)) || "default";
-  const lease = { worker, expires };
-  // Stamp the live CGR so leaseOf(goal) reflects the claim even before folding.
-  if (goal) stampGoalFields(archDir, slug, { lease });
-  const event = appendEvent(archDir, {
-    type: "claimed", slug, worker, lane: resolvedLane, lease, at: now,
+  // The stamp and the event are ONE claim, so they are taken as one critical
+  // section (ADR 0030 §2): a reclaim pass that interleaved between them would
+  // fold a lease this call has already written onto the CGR. The lock is the
+  // same coarse archDir lock stampGoalFields takes, so the nested acquire below
+  // simply re-enters. The append needs no protection of its own (§8: it is
+  // already safe from concurrent appenders); it is in here for its ORDERING with
+  // the stamp, nothing more.
+  return withGoalsLock(archDir, `claimFrontier:${slug}`, () => {
+    const goal = loadGoal(archDir, slug);
+    const resolvedLane = lane || (goal && laneOf(goal)) || "default";
+    const lease = { worker, expires };
+    // Stamp the live CGR so leaseOf(goal) reflects the claim even before folding.
+    if (goal) stampGoalFields(archDir, slug, { lease });
+    const event = appendEvent(archDir, {
+      type: "claimed", slug, worker, lane: resolvedLane, lease, at: now,
+    });
+    return { slug, lane: resolvedLane, worker, lease, event };
   });
-  return { slug, lane: resolvedLane, worker, lease, event };
 }
 
 // Orphan-lease reclaim (exit-criterion 3): for every in-flight CGR whose lease
@@ -636,19 +646,39 @@ export function claimFrontier(archDir, { slug, worker = null, lane = null, now =
 // reclaimable orphan. Idempotent — a slug already folded to `lease-expired` is
 // skipped, so re-running (e.g. on every SessionStart) never double-appends.
 // Returns { reclaimed:[{slug,worker,expires}], now }.
+//
+// TOCTOU (ADR 0030 §4): the folded board below is a SNAPSHOT — folding the log and
+// parsing every CGR takes real time, and a worker renewing its lease inside that
+// window used to have the renewal thrown away anyway, because the reclaim went
+// on to stamp `lease: null` against an expiry it had read before the renewal
+// existed. Its lane was then re-dispatched under a worker that believed it still
+// held the claim. So the expiry is RE-CHECKED against the live CGR inside the
+// lock, immediately before the mutation: a lease that is no longer expired at
+// that instant means the worker is alive, and the whole reclaim for that slug is
+// skipped — the `lease-expired` event included, since appending one would fold
+// the CGR out of in_flight and cause exactly the re-dispatch we are preventing.
 export function reclaimExpiredLeases(archDir, { now = new Date().toISOString() } = {}) {
   const board = sessionState(archDir, { now });
   const { bySlug } = foldEvents(readEvents(archDir));
+  const nowMs = Date.parse(now);
   const reclaimed = [];
   for (const exp of board.leases_expired) {
     // Skip the ones already recorded as lease-expired (idempotent reclaim).
     if (bySlug.get(exp.slug)?.lifecycle === "lease-expired") continue;
-    appendEvent(archDir, { type: "lease-expired", slug: exp.slug, worker: exp.worker || null, at: now });
-    // Drop the stale lease so the orphan is cleanly re-claimable.
-    if (loadGoal(archDir, exp.slug)) {
-      try { stampGoalFields(archDir, exp.slug, { lease: null }); } catch { /* tolerant */ }
-    }
-    reclaimed.push({ slug: exp.slug, worker: exp.worker || null, expires: exp.expires || null });
+    const record = withGoalsLock(archDir, `reclaimExpiredLeases:${exp.slug}`, () => {
+      const goal = loadGoal(archDir, exp.slug);
+      const lease = goal ? leaseOf(goal) : null;
+      const expiresMs = lease?.expires ? Date.parse(lease.expires) : NaN;
+      // Renewed (or re-claimed) while we were folding — leave the live claim alone.
+      if (!Number.isNaN(expiresMs) && !Number.isNaN(nowMs) && expiresMs >= nowMs) return null;
+      appendEvent(archDir, { type: "lease-expired", slug: exp.slug, worker: exp.worker || null, at: now });
+      // Drop the stale lease so the orphan is cleanly re-claimable.
+      if (goal) {
+        try { stampGoalFields(archDir, exp.slug, { lease: null }); } catch { /* tolerant */ }
+      }
+      return { slug: exp.slug, worker: exp.worker || null, expires: exp.expires || null };
+    });
+    if (record) reclaimed.push(record);
   }
   return { reclaimed: reclaimed.sort(bySlugAsc), now };
 }
