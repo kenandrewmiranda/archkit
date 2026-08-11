@@ -3,7 +3,7 @@ slug: finalize-release
 title: "Finalize: changelog, docs, commits + release"
 status: pending
 created: 2026-08-11
-order: 8
+order: 10
 project: state-safety
 exit-criteria:
   - CHANGELOG updated with an entry covering this batch's changes
@@ -13,7 +13,7 @@ exit-criteria:
 files-to-touch: 
 required-reading: 
 depends-on:
-  - archdir-command-walker-residual
+  - hooks-status-archdir-alignment
 owns:
   - CHANGELOG.md
   - CHANGELOG
@@ -22,7 +22,7 @@ owns:
 feature: finalize
 exclusive: true
 verify-command: 
-source-ask: "Conductor follow-up from the explicit-archdir-resolution lane: the ARCHKIT_ARCH_DIR contract (ADR 0031) landed for the MCP server, all six hook bins and the CLI mainline, but two command modules kept verbatim private walkers in their CLI paths and therefore silently ignore the variable. Filed by the conductor rather than patched into the archdir merge, so the recorded green is not overstated."
+source-ask: "Conductor follow-up from the archdir-command-walker-residual lane: the worker disclosed that src/lib/hooks-status.mjs projectClaudeDir is a genuine sibling of the retired private walkers — it walks up looking for .arch/.claude as a root marker and ignores ARCHKIT_ARCH_DIR. It returns a .claude/ path rather than an archDir, so it was allowlisted in the new anti-regression guard with that reason rather than silently changed, since src/lib/hooks-status.mjs was outside that lane's ownership. Filed so the exception is revisited deliberately instead of hardening into permanent cover."
 lane: barrier-finalize-release
 ---
 
