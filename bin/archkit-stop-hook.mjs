@@ -58,7 +58,7 @@ const { detectDecisions } = await importPath(path.join(LIB, "decision-detector.m
 const { detectDeferredGoals } = await importPath(path.join(LIB, "goal-detector.mjs"));
 const {
   getActiveGoal, exitCriteriaOf, verifyCommandOf, nextEligibleGoal, bumpLoopBlock, resetLoopState,
-  writeGoalProposal, countGoalProposals, consolidateGoals, dispatchedGoals,
+  writeGoalProposal, countGoalProposals, consolidateGoals, dispatchedGoals, withGoalsLock,
 } = await importPath(path.join(LIB, "goals.mjs"));
 const { stopGuardDecision } = await importPath(path.join(LIB, "board.mjs"));
 
@@ -186,8 +186,17 @@ async function main() {
   //     .arch/goals/proposed/ until /mcp__archkit__goal_review promotes them.
   const goalDetections = detectDeferredGoals(assistantResponse);
   let newGoalProposals = 0;
-  for (const d of goalDetections) {
-    if (writeGoalProposal(archDir, d)) newGoalProposals += 1;
+  if (goalDetections.length) {
+    // ONE acquisition for the batch, not one per detection. writeGoalProposal
+    // takes the .arch lock itself (ADR 0030) and the lock is reentrant, so the
+    // inner acquires are free — without this wrapper a turn that defers three
+    // follow-ups would pay the fail-open wait three times over while some other
+    // session held the lock, on the hook that ends every turn.
+    withGoalsLock(archDir, "stop-hook:deferred-goal-proposals", () => {
+      for (const d of goalDetections) {
+        if (writeGoalProposal(archDir, d)) newGoalProposals += 1;
+      }
+    });
   }
   if (newGoalProposals > 0) {
     const totalGoalProposals = countGoalProposals(archDir);

@@ -1001,7 +1001,6 @@ export function writeGraphProposal(archDir, slug, gaps) {
   const list = ensureArray(gaps);
   if (list.length === 0) return null;
   const dir = graphProposalsDir(archDir);
-  fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${slug}.json`);
   const proposal = {
     slug,
@@ -1009,8 +1008,19 @@ export function writeGraphProposal(archDir, slug, gaps) {
     gaps: list,
     note: "Files this goal touched that the node graph does not yet represent. For each undocumented-file: fill the suggestedLine's <role>/<flow> and append it to .arch/clusters/<cluster>.graph. For each unmapped-area: scaffold a new cluster + INDEX node. archkit does not auto-merge graph changes.",
   };
-  fs.writeFileSync(file, JSON.stringify(proposal, null, 2));
-  return { proposalPath: file, count: list.length };
+  // Locked even though this is a whole-file RECORD and not itself a
+  // read-modify-write: acceptGraphProposal rewrites THIS file from a snapshot of
+  // its gap list, so a record that lands between that read and its write is
+  // erased — and the erased gap is unrecoverable, because the goal that detected
+  // it is already completed and nothing re-detects it. Serialising the recorder
+  // against the rewriter is what makes the accept's re-read (ADR 0030 §4) mean
+  // anything. Atomic replace on top, so listGraphProposals (lock-free, by
+  // design) reads whole JSON or none.
+  return withGoalsLock(archDir, `writeGraphProposal:${slug}`, () => {
+    fs.mkdirSync(dir, { recursive: true });
+    atomicWriteFileSync(file, JSON.stringify(proposal, null, 2));
+    return { proposalPath: file, count: list.length };
+  });
 }
 
 // Read-side for graph proposals — sibling to listDigests/listGoalProposals.
@@ -1032,6 +1042,12 @@ export function listGraphProposals(archDir) {
 // throwaway probe cluster, so "parses as a node" means precisely what every read
 // path means by it, and a malformed line can never touch the real .graph. Returns
 // { ok, ... }; on a parse failure ok:false and the target file is left untouched.
+//
+// Read-modify-write of the .graph that DELIBERATELY does not acquire: its one
+// caller (acceptGraphProposal) already holds the lock across the whole
+// read-append-drop-gap sequence, and a second acquire inside it would re-pay the
+// fail-open budget for no added exclusion. Its reachability is pinned by an
+// audit, in the same shape as putLoopState's.
 function appendValidatedNodeLine(archDir, cluster, authoredLine) {
   const dir = path.join(archDir, "clusters");
   const target = path.join(dir, `${cluster}.graph`);
@@ -1047,7 +1063,7 @@ function appendValidatedNodeLine(archDir, cluster, authoredLine) {
   const probePath = path.join(dir, `${probeId}.graph`);
   let probedCount = 0;
   try {
-    fs.writeFileSync(probePath, candidate);
+    atomicWriteFileSync(probePath, candidate);
     const probed = loadGraphCluster(archDir, probeId);
     probedCount = probed ? probed.nodes.length : 0;
   } finally {
@@ -1055,7 +1071,9 @@ function appendValidatedNodeLine(archDir, cluster, authoredLine) {
   }
   if (probedCount !== beforeCount + 1) return { ok: false, beforeCount, probedCount };
 
-  fs.writeFileSync(target, candidate);
+  // Atomic replace, never in place: warmup/preflight read this cluster lock-free
+  // and a truncated .graph would drop nodes from every slice until it is rewritten.
+  atomicWriteFileSync(target, candidate);
   return { ok: true, beforeCount, afterCount: probedCount, clusterPath: target };
 }
 
@@ -1068,52 +1086,61 @@ function appendValidatedNodeLine(archDir, cluster, authoredLine) {
 // gaps (a file under an existing cluster) are appendable. unmapped-area gaps need
 // a whole new cluster + INDEX node, so they are refused here (reason:'unmapped_area')
 // with no silent no-op rather than guessed at. Returns { ok, ... } | { ok:false, reason }.
+//
+// THE read-modify-write of the proposal store (ADR 0030 §2/§4): it loads the gap
+// list, appends to a second file (the cluster .graph), then writes the gap list
+// back minus the one it consumed. Every step of that runs INSIDE the lock and the
+// load happens after acquisition, so the set written back is the set that was on
+// disk a moment ago — not a snapshot taken before a concurrent
+// writeGraphProposal recorded a gap the rewrite would otherwise erase.
 export function acceptGraphProposal(archDir, slug, { file, line } = {}) {
-  const proposalPath = path.join(graphProposalsDir(archDir), `${slug}.json`);
-  if (!fs.existsSync(proposalPath)) return { ok: false, reason: "unknown_proposal" };
-  let proposal;
-  try { proposal = JSON.parse(fs.readFileSync(proposalPath, "utf8")); }
-  catch { return { ok: false, reason: "unreadable_proposal" }; }
-  const gaps = Array.isArray(proposal.gaps) ? proposal.gaps : [];
+  return withGoalsLock(archDir, `acceptGraphProposal:${slug}`, () => {
+    const proposalPath = path.join(graphProposalsDir(archDir), `${slug}.json`);
+    if (!fs.existsSync(proposalPath)) return { ok: false, reason: "unknown_proposal" };
+    let proposal;
+    try { proposal = JSON.parse(fs.readFileSync(proposalPath, "utf8")); }
+    catch { return { ok: false, reason: "unreadable_proposal" }; }
+    const gaps = Array.isArray(proposal.gaps) ? proposal.gaps : [];
 
-  // Pick the gap: by file when given, else the sole gap. Ambiguity is surfaced,
-  // never silently resolved to the first gap.
-  let gap;
-  if (file) gap = gaps.find((g) => g.file === file);
-  else if (gaps.length === 1) gap = gaps[0];
-  if (!gap) {
-    return { ok: false, reason: file ? "gap_not_found" : "ambiguous_gap", gaps };
-  }
+    // Pick the gap: by file when given, else the sole gap. Ambiguity is surfaced,
+    // never silently resolved to the first gap.
+    let gap;
+    if (file) gap = gaps.find((g) => g.file === file);
+    else if (gaps.length === 1) gap = gaps[0];
+    if (!gap) {
+      return { ok: false, reason: file ? "gap_not_found" : "ambiguous_gap", gaps };
+    }
 
-  if (gap.kind === "unmapped-area") return { ok: false, reason: "unmapped_area", gap };
+    if (gap.kind === "unmapped-area") return { ok: false, reason: "unmapped_area", gap };
 
-  const authoredLine = String(line || "").trim();
-  if (!authoredLine) return { ok: false, reason: "missing_line", gap };
+    const authoredLine = String(line || "").trim();
+    if (!authoredLine) return { ok: false, reason: "missing_line", gap };
 
-  const appended = appendValidatedNodeLine(archDir, gap.cluster, authoredLine);
-  if (!appended.ok) return { ok: false, reason: "malformed_line", gap, authoredLine };
+    const appended = appendValidatedNodeLine(archDir, gap.cluster, authoredLine);
+    if (!appended.ok) return { ok: false, reason: "malformed_line", gap, authoredLine };
 
-  // Drop the consumed gap; delete the proposal once nothing is left in it.
-  const remaining = gaps.filter((g) => g.file !== gap.file);
-  let proposalRemoved = false;
-  if (remaining.length === 0) {
-    fs.rmSync(proposalPath, { force: true });
-    proposalRemoved = true;
-  } else {
-    fs.writeFileSync(proposalPath, JSON.stringify({ ...proposal, gaps: remaining }, null, 2));
-  }
+    // Drop the consumed gap; delete the proposal once nothing is left in it.
+    const remaining = gaps.filter((g) => g.file !== gap.file);
+    let proposalRemoved = false;
+    if (remaining.length === 0) {
+      fs.rmSync(proposalPath, { force: true });
+      proposalRemoved = true;
+    } else {
+      atomicWriteFileSync(proposalPath, JSON.stringify({ ...proposal, gaps: remaining }, null, 2));
+    }
 
-  return {
-    ok: true,
-    slug,
-    file: gap.file,
-    cluster: gap.cluster,
-    node: gap.node || `@${gap.cluster}`,
-    appendedLine: authoredLine,
-    clusterPath: path.relative(archDir, appended.clusterPath),
-    remainingGaps: remaining.length,
-    proposalRemoved,
-  };
+    return {
+      ok: true,
+      slug,
+      file: gap.file,
+      cluster: gap.cluster,
+      node: gap.node || `@${gap.cluster}`,
+      appendedLine: authoredLine,
+      clusterPath: path.relative(archDir, appended.clusterPath),
+      remainingGaps: remaining.length,
+      proposalRemoved,
+    };
+  });
 }
 
 // Render a tight, copy-pasteable payload for the user to paste after `/goal`
@@ -2524,32 +2551,44 @@ export function isFinalizeConfigured(archDir) {
 
 // Merge-write cgr.finalize into .arch/config.json, preserving every other config
 // key. Stamps configured:true by default so the one-time setup isn't re-asked.
-// Returns the resolved finalize config. Never partially writes — a single
-// JSON.stringify of the whole file.
+// Returns the resolved finalize config.
+//
+// A read-modify-write of a file that is NOT solely ours: `.arch/config.json`
+// carries review knobs, the api gate, the escalation threshold, the integration
+// branch and the staleness policy, all read by other code paths and all rewritten
+// wholesale here. It is converted rather than argued safe (ADR 0030 §2/§4) — the
+// merge reads the file INSIDE the lock and replaces it atomically, so a knob a
+// concurrent writer set cannot be reverted by this merge's stale snapshot, and a
+// reader (every readCgrConfig caller is lock-free by design) sees the old JSON or
+// the new one, never a truncated file that would silently fall back to defaults.
+// The `cur` read below is a second read of the same file and is deliberately kept
+// inside the lock with the first, so the two cannot disagree.
 export function writeFinalizeConfig(archDir, patch = {}) {
   const fp = path.join(archDir, "config.json");
-  let cfg = {};
-  try { cfg = JSON.parse(fs.readFileSync(fp, "utf8")); } catch { cfg = {}; }
-  if (!cfg || typeof cfg !== "object") cfg = {};
-  if (!cfg.cgr || typeof cfg.cgr !== "object") cfg.cgr = {};
-  const cur = readFinalizeConfig(archDir);
-  const steps = { ...cur.steps };
-  if (patch.steps && typeof patch.steps === "object") {
-    for (const s of FINALIZE_STEPS) {
-      if (patch.steps[s.key] !== undefined) steps[s.key] = patch.steps[s.key] === true;
+  return withGoalsLock(archDir, "writeFinalizeConfig", () => {
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(fp, "utf8")); } catch { cfg = {}; }
+    if (!cfg || typeof cfg !== "object") cfg = {};
+    if (!cfg.cgr || typeof cfg.cgr !== "object") cfg.cgr = {};
+    const cur = readFinalizeConfig(archDir);
+    const steps = { ...cur.steps };
+    if (patch.steps && typeof patch.steps === "object") {
+      for (const s of FINALIZE_STEPS) {
+        if (patch.steps[s.key] !== undefined) steps[s.key] = patch.steps[s.key] === true;
+      }
     }
-  }
-  const next = {
-    enabled: patch.enabled !== undefined ? patch.enabled === true : cur.enabled,
-    configured: patch.configured !== undefined ? patch.configured === true : true,
-    steps,
-    ciCd: patch.ciCd !== undefined ? String(patch.ciCd) : cur.ciCd,
-    deployCommand: patch.deployCommand !== undefined ? String(patch.deployCommand) : cur.deployCommand,
-  };
-  cfg.cgr.finalize = next;
-  fs.mkdirSync(archDir, { recursive: true });
-  fs.writeFileSync(fp, JSON.stringify(cfg, null, 2) + "\n");
-  return next;
+    const next = {
+      enabled: patch.enabled !== undefined ? patch.enabled === true : cur.enabled,
+      configured: patch.configured !== undefined ? patch.configured === true : true,
+      steps,
+      ciCd: patch.ciCd !== undefined ? String(patch.ciCd) : cur.ciCd,
+      deployCommand: patch.deployCommand !== undefined ? String(patch.deployCommand) : cur.deployCommand,
+    };
+    cfg.cgr.finalize = next;
+    fs.mkdirSync(archDir, { recursive: true });
+    atomicWriteFileSync(fp, JSON.stringify(cfg, null, 2) + "\n");
+    return next;
+  });
 }
 
 // Synthesize the finalization goal for a batch, or null when finalize is disabled
@@ -3401,24 +3440,37 @@ export function ensureProposedDir(archDir) {
 
 // Write a proposal. Skips if a file with the same hash already exists
 // (cross-turn dedup). Returns true if newly written.
+//
+// The dedup is a check-then-act, and its writers are the most concurrent in the
+// system: the Stop hook's detector is a fresh process at every turn-end in every
+// open session, and two sessions that surface the SAME follow-up hash together
+// both used to see "absent", both write, and the second replaced the first's
+// record — after the first had already reported it as newly recorded. So the
+// existsSync runs INSIDE the lock (ADR 0030 §4): exactly one caller is told it
+// created the proposal, and the record that survives is that caller's.
+//
+// This function's own pid-tagged tmp+rename is what ADR 0030 §1 promoted into
+// atomicWriteFileSync; it now calls the primitive instead of re-deriving it,
+// which also buys the random suffix (two containers can share a pid) and the
+// win32 replace retry it never had.
 export function writeGoalProposal(archDir, proposal) {
-  const dir = ensureProposedDir(archDir);
-  const file = path.join(dir, `${proposal.hash}.json`);
-  if (fs.existsSync(file)) return false;
-  const record = {
-    hash: proposal.hash,
-    title: proposal.title || proposal.titleHint || "untitled follow-up",
-    why: proposal.why || "",
-    exitCriteria: Array.isArray(proposal.exitCriteria) ? proposal.exitCriteria : [],
-    contextExcerpt: proposal.contextExcerpt || "",
-    patternName: proposal.patternName || null,
-    source: proposal.source || "unknown",
-    createdAt: proposal.createdAt || new Date().toISOString(),
-  };
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(record, null, 2));
-  fs.renameSync(tmp, file);
-  return true;
+  const file = path.join(proposedDir(archDir), `${proposal.hash}.json`);
+  return withGoalsLock(archDir, `writeGoalProposal:${proposal.hash}`, () => {
+    ensureProposedDir(archDir);
+    if (fs.existsSync(file)) return false;
+    const record = {
+      hash: proposal.hash,
+      title: proposal.title || proposal.titleHint || "untitled follow-up",
+      why: proposal.why || "",
+      exitCriteria: Array.isArray(proposal.exitCriteria) ? proposal.exitCriteria : [],
+      contextExcerpt: proposal.contextExcerpt || "",
+      patternName: proposal.patternName || null,
+      source: proposal.source || "unknown",
+      createdAt: proposal.createdAt || new Date().toISOString(),
+    };
+    atomicWriteFileSync(file, JSON.stringify(record, null, 2));
+    return true;
+  });
 }
 
 export function listGoalProposals(archDir) {
@@ -3447,7 +3499,16 @@ export function removeGoalProposal(archDir, hash) {
 
 // Promote a proposal into a planned goal and remove the proposal file.
 // Returns { slug } or null if the hash isn't a known proposal.
+//
+// Two files, one transaction (ADR 0030 §2): the proposal is read, a goal is
+// written from it, and only then is the proposal removed. Locked so a concurrent
+// promote of the same hash cannot read the proposal this call is about to
+// consume — one caller promotes, the other is told the hash is unknown.
 export function promoteGoalProposal(archDir, hash, overrides = {}) {
+  return withGoalsLock(archDir, `promoteGoalProposal:${hash}`, () => promoteGoalProposalLocked(archDir, hash, overrides));
+}
+
+function promoteGoalProposalLocked(archDir, hash, overrides = {}) {
   const file = path.join(proposedDir(archDir), `${hash}.json`);
   if (!fs.existsSync(file)) return null;
   let p;
