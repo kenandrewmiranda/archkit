@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isMainModule, C, ICONS as I, findArchDir as _findArchDir, toPosixPath } from "../lib/shared.mjs";
+import { archDirFromEnv, ARCH_DIR_ENV } from "../lib/archdir.mjs";
 import { commandBanner } from "../lib/banner.mjs";
 import { archkitError } from "../lib/errors.mjs";
 import { parseBoundaries } from "../lib/boundary-parser.mjs";
@@ -153,6 +154,56 @@ function checkWeakGoals(archDir) {
     }
   }
   return { weak, total: goals.length };
+}
+
+// ─── D-HOOKS scope disclosure (ADR 0032 follow-up) ──────────────────────
+
+// Same directory, allowing for symlinked paths. `/var` -> `/private/var` on
+// macOS and per-user symlinked checkouts are common enough that a raw string
+// compare would manufacture a divergence that isn't one — and a FALSE "these
+// are two different projects" notice is worse than no notice at all, because
+// it teaches the reader to ignore the true one.
+function sameDir(a, b) {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  if (ra === rb) return true;
+  try { return fs.realpathSync(ra) === fs.realpathSync(rb); } catch { return false; }
+}
+
+// Every other doctor check answers about the RESOLVED archDir. D-HOOKS answers
+// about the CHECKOUT the command ran in, because hook wiring is a property of
+// a checkout and ARCHKIT_ARCH_DIR names a spec dir that promises nothing about
+// its parent — ADR 0032, which decided that and left this disclosure as its
+// explicit follow-up. Two roots, one report:
+//
+//   they AGREE     — naming the file costs a path segment, not a sentence, so
+//                    the detail carries `.claude/settings.json` and nothing more;
+//   they DIVERGE   — the report is a chimera (goals from one project, hook
+//                    wiring from another). It must SAY so, with both absolute
+//                    paths, or a reader acts on the hook verdict by editing the
+//                    other repository's settings.json.
+//
+// Returns the label to name the settings file by, plus the note to append.
+function hooksScopeDisclosure({ archDir, hooks, env = process.env }) {
+  const projectRoot = path.dirname(path.dirname(hooks.projectSettingsPath));
+  const archProjectRoot = path.dirname(path.resolve(archDir));
+  const diverged = !sameDir(projectRoot, archProjectRoot);
+
+  // Absolute when the reader has two trees to tell apart; relative to the
+  // shared root when there is only one and the path would be pure noise.
+  const settingsLabel = diverged
+    ? toPosixPath(hooks.projectSettingsPath)
+    : toPosixPath(path.relative(projectRoot, hooks.projectSettingsPath)) || toPosixPath(hooks.projectSettingsPath);
+
+  // Name the variable only when it is actually what moved the archDir — a
+  // nested cwd can diverge with the variable unset, and blaming it would send
+  // the reader hunting for an export that was never made.
+  const envNote = archDirFromEnv(env) ? `, named by ${ARCH_DIR_ENV}` : "";
+  const note = diverged
+    ? ` NOTE: that is the checkout this command ran in (${toPosixPath(projectRoot)}) — every other check above describes ${toPosixPath(archDir)}${envNote}, a DIFFERENT project. Hook wiring belongs to a checkout and does not follow the .arch/ location (ADR 0032), so fix hooks in the settings.json named here, not in the other tree.`
+    : "";
+
+  return { projectRoot, archProjectRoot, diverged, settingsLabel, note };
 }
 
 // ─── Aggregation ────────────────────────────────────────────────────────
@@ -312,24 +363,32 @@ export async function runDoctorJson({ archDir, cwd }) {
   // .arch/ can be perfect and still do nothing. The MCP layer is the only
   // surface that can detect this (it's connected regardless of hook wiring).
   const hooks = gatherHooksStatus(cwd);
+  // Which settings.json this verdict is ABOUT — see hooksScopeDisclosure.
+  const hooksScope = hooksScopeDisclosure({ archDir, hooks });
   if (hooks.installed) {
     checks.push({
       id: "D-HOOKS",
       name: "Guardrail hooks installed",
       status: "pass",
-      detail: hooks.via === "plugin"
+      detail: (hooks.via === "plugin"
         ? "Provided by the enabled archkit plugin."
-        : "All guardrail hooks wired in settings.json.",
+        : "All guardrail hooks wired.") +
+        ` Project settings: ${hooksScope.settingsLabel}.` + hooksScope.note,
     });
   } else {
     checks.push({
       id: "D-HOOKS",
       name: "Guardrail hooks installed",
       status: "warn",
-      detail: `${hooks.missing.length}/${hooks.required.length} guardrail hook(s) not wired: ${hooks.missing.join(", ")}.`,
+      detail: `${hooks.missing.length}/${hooks.required.length} guardrail hook(s) not wired: ${hooks.missing.join(", ")}.` +
+        ` Project settings: ${hooksScope.settingsLabel}.` + hooksScope.note,
     });
     warnings.push(
-      `[hooks] ${hooks.missing.length} guardrail hook(s) not installed (${hooks.missing.join(", ")}) — the SessionStart digest, CGR Stop-guard${hooks.missing.includes("Stop") ? "" : ""}, and review-on-edit won't fire. Call archkit_install_hooks to wire the full set into .claude/settings.json.`
+      // The install target is `hooks.projectSettingsPath` verbatim (see
+      // src/commands/hooks.mjs), so this sentence names the same label the
+      // check does — in the divergent case it is the one line that would
+      // otherwise point the fix at the wrong repository.
+      `[hooks] ${hooks.missing.length} guardrail hook(s) not installed (${hooks.missing.join(", ")}) — the SessionStart digest, CGR Stop-guard${hooks.missing.includes("Stop") ? "" : ""}, and review-on-edit won't fire. Call archkit_install_hooks to wire the full set into ${hooksScope.settingsLabel}.`
     );
   }
 
@@ -389,6 +448,20 @@ export async function runDoctorJson({ archDir, cwd }) {
       emptySkills: emptySkills.skills,
       unappliedBans: bans.unapplied,
       weakGoals: goals.weak,
+    },
+    // The same disclosure the D-HOOKS detail carries, structured: which
+    // settings.json the hook verdict is about, which root it came from, and
+    // whether that root is the archDir's (ADR 0032). A caller diffing two runs
+    // can assert the verdict is inert without string-matching the prose.
+    hooks: {
+      installed: hooks.installed,
+      via: hooks.via,
+      missing: hooks.missing,
+      projectSettingsPath: hooks.projectSettingsPath,
+      userSettingsPath: hooks.userSettingsPath,
+      projectRoot: hooksScope.projectRoot,
+      archProjectRoot: hooksScope.archProjectRoot,
+      divergedFromArchDir: hooksScope.diverged,
     },
     sources: {
       warmup: { pass: warmup.pass, blockers: warmup.blockers, summary: warmup.summary },

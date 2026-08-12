@@ -1259,8 +1259,20 @@ test("HOOKS-STATUS: the real CLI — one `archkit doctor` run, goals MOVE and ho
   // The hooks half does NOT move — same warn, same count, both runs.
   assert.equal(hooksCheck(unset).status, "warn");
   assert.equal(hooksCheck(set).status, "warn", "D-HOOKS still describes the checkout the command ran in");
-  assert.equal(hooksCheck(set).detail, hooksCheck(unset).detail, "byte-identical: the variable is inert for hooks");
   assert.match(hooksCheck(set).detail, /6\/6 guardrail hook\(s\) not wired/);
+  // The VERDICT is inert: same file read, same missing set, variable or no
+  // variable. It is asserted on the payload rather than on the detail STRING
+  // because doctor now DISCLOSES the scope split in that string — the ADR 0032
+  // Consequences follow-up, pinned in tests/doctor-hooks-path/. Comparing prose
+  // here would forbid the disclosure; comparing the fields it is derived from
+  // pins the same claim and additionally proves the disclosure is honest.
+  assert.equal(set.hooks.projectSettingsPath, unset.hooks.projectSettingsPath);
+  assert.equal(set.hooks.projectSettingsPath, path.join(worker, ".claude", "settings.json"));
+  assert.deepEqual(set.hooks.missing, unset.hooks.missing);
+  assert.equal(unset.hooks.divergedFromArchDir, false, "no variable, no divergence — one project, quiet output");
+  assert.equal(set.hooks.divergedFromArchDir, true, "…and with it, doctor says the report describes two");
+  assert.ok(hooksCheck(set).detail.includes(path.join(worker, ".claude", "settings.json")));
+  assert.ok(hooksCheck(set).detail.includes(conductorArch), "…naming BOTH trees, so neither is guessed at");
 
   // Control: the conductor's tree really does report PASS, so "warn" above is a
   // genuine difference rather than doctor being unable to see hooks at all.
