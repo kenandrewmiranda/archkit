@@ -1,7 +1,7 @@
 ---
 slug: board-json-mutations-under-lock
 title: Close the remaining lock-free read-modify-writes over .arch/board/ JSON and the chat board
-status: pending
+status: completed
 created: 2026-08-11
 order: 11
 project: state-safety
@@ -25,7 +25,20 @@ feature: concurrency
 verify-command: npm test
 source-ask: "Conductor follow-up from the goal-mutations-under-lock lane: that lane routed every goal-FILE mutation through the ADR 0030 lock, but disclosed three lock-free read-modify-writes it did not own — writeLoopState/bumpLoopBlock and ensureQueueBranch over the JSON under .arch/board/, and appendChatEntry over the gitignored coordination board. ADR 0030's scope names the loop/queue JSON, but that lane's exit criteria did not, and half-fixing them (atomic write without the lock) would not close their lost-update window. Filed so the remaining exposure is closed deliberately rather than assumed closed."
 lane: concurrency
+started: 2026-08-12T02:06:38.286Z
+lease: "{\"worker\":\"worker-concurrency-board-json\",\"expires\":\"2026-08-13T02:06:38.287Z\"}"
+dispatched-since: 2026-08-12T02:06:38.288Z
+dispatched-to: worker-concurrency-board-json
+completed: 2026-08-12T02:30:16.811Z
+completion-notes: "Merged as 68709ec on feat/state-safety, 83/83 green. writeLoopState/bumpLoopBlock/ensureQueueBranch (plus clearQueueBranchIfDrained and resetLoopState) now read INSIDE the lock and write atomically; appendChatEntry converted to a genuinely append-only write (O_CREAT|O_EXCL create, single appendFileSync thereafter, no read on the write path) so it does not depend on the fail-open lock. Deep-reviewed: the new unlocked putLoopState is reachable only from locked bodies, and the conductor's own load-then-lock sabotage went red on the ordering audit while the lock-presence audit stayed green."
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-12
 ---
+
+
+
+
 
 
 # Close the remaining lock-free read-modify-writes over .arch/board/ JSON and the chat board

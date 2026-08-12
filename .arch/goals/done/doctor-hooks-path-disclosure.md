@@ -1,7 +1,7 @@
 ---
 slug: doctor-hooks-path-disclosure
 title: Make archkit doctor name the settings.json D-HOOKS actually read
-status: pending
+status: completed
 created: 2026-08-11
 order: 13
 project: state-safety
@@ -24,7 +24,20 @@ feature: archdir
 verify-command: npm test
 source-ask: "Conductor follow-up from the hooks-status-archdir-alignment lane (ADR 0032). ADR 0032 settles that projectClaudeDir is deliberately cwd-scoped and does NOT follow ARCHKIT_ARCH_DIR, because the variable names a spec dir and promises nothing about its parent. The accepted cost, written into ADR 0032's Consequences as an explicit follow-up: `archkit doctor` run in a worktree with ARCHKIT_ARCH_DIR set becomes a chimera — D-INTENT-* describes the goals in the NAMED .arch/ while D-HOOKS describes the settings.json of the CHECKOUT the command ran in, in one report, with nothing saying so. A user could go edit the wrong repo's settings.json. Since every path involved is ALREADY in the returned JSON payload (projectSettingsPath, userSettingsPath, perSource[].path), the cure is disclosure in the human-readable output, not forced alignment. The lane worker could not do it because src/commands/doctor.mjs was outside its ownership, and recommended filing it with the concrete sites: doctor.mjs:318-336, roughly one line each at :318 and :326."
 lane: archdir
+started: 2026-08-12T02:06:41.021Z
+lease: "{\"worker\":\"worker-archdir-doctor-hooks\",\"expires\":\"2026-08-13T02:06:41.022Z\"}"
+dispatched-since: 2026-08-12T02:06:41.023Z
+dispatched-to: worker-archdir-doctor-hooks
+completed: 2026-08-12T02:29:19.867Z
+completion-notes: "Merged as 0bab300 on feat/state-safety, 82/82 green. D-HOOKS now names the settings.json it read (relative when the archDir parent and cwd root agree, absolute plus an explicit two-projects NOTE when they diverge), and ADR 0032's Consequences follow-up is marked DISCHARGED. Deep-reviewed: the one deleted assertion in the ADR 0031 guard file was logically incompatible with criterion 1 and was replaced by 7 payload-level assertions; conductor re-ran the prior lane's sabotage and got the identical 43/6 signature, so the guard's silent-wrong-answer catch is intact."
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-12
 ---
+
+
+
+
 
 
 # Make archkit doctor name the settings.json D-HOOKS actually read
