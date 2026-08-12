@@ -101,6 +101,18 @@ async function atest(name, fn) {
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 
+// TORN READS ARE A RESULT, NOT A CRASH. An in-place whole-file rewrite lets a
+// shorter write land over a longer file, so the pre-fix runs genuinely leave JSON
+// that no reader can parse — the failure mode atomic replace exists to prevent.
+// The controls must be able to REPORT that instead of dying on it, and the locked
+// runs assert it never happens.
+function readJsonTorn(file) {
+  let raw;
+  try { raw = fs.readFileSync(file, "utf8"); } catch { return { torn: true, value: null }; }
+  try { return { torn: false, value: JSON.parse(raw) }; }
+  catch { return { torn: true, value: null }; }
+}
+
 console.log("\nproposal-json-lock — goal proposals, graph gaps + config.json under the write contract (ADR 0030)\n");
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -121,8 +133,8 @@ async function proposalRace(mode) {
 
   const records = readLog(logFile);
   const creators = records.filter((r) => r.sharedCreated === true).map((r) => r.source);
-  const onDisk = readJson(proposedPath(archDir, SHARED_HASH));
-  return { records, creators, onDisk, archDir };
+  const { torn, value: onDisk } = readJsonTorn(proposedPath(archDir, SHARED_HASH));
+  return { records, creators, onDisk, torn, archDir };
 }
 
 await atest(`locked: ${PROPOSAL_WRITERS} sessions racing one hash, exactly ONE records it`, async () => {
@@ -140,6 +152,7 @@ await atest(`locked: ${PROPOSAL_WRITERS} sessions racing one hash, exactly ONE r
   // The other half of the defect: the record on disk must belong to the caller
   // that was told it created it. A later writer replacing it is exactly the
   // "erased what another session just recorded" failure.
+  assert.equal(r.torn, false, "the record was left unparseable — a reader saw a half-written file");
   assert.equal(r.onDisk.source, r.creators[0], "the surviving record is not the one the creator wrote");
   assert.equal(r.onDisk.contextExcerpt.length, EXCERPT_BYTES, "the record is whole — no torn write");
   // Collateral: the lock must not have cost anyone their OWN distinct proposal.
@@ -164,7 +177,7 @@ await atest("NEGATIVE CONTROL: the pre-fix check-then-act lets several sessions 
     worst > 1,
     `the pre-fix dedup admitted exactly one writer across ${attempts} attempts — the workload is too weak to prove anything`,
   );
-  const clobbered = runs.some((r) => r.creators.length > 1 && r.onDisk.source !== r.creators[0]);
+  const clobbered = runs.some((r) => r.creators.length > 1 && (r.torn || r.onDisk.source !== r.creators[0]));
   assert.ok(clobbered, "and at least one run left a record belonging to a session that wrote over the first one");
   console.log(`      negative control admitted ${runs.map((r) => `${r.creators.length}/${PROPOSAL_WRITERS}`).join(", ")} writers of one hash`);
 });
@@ -223,8 +236,10 @@ async function gapRace(mode) {
   // documented is now undocumented with nothing left to re-detect it.
   const lostNodeLines = (nodesBefore + accepted.length) - nodes.length;
 
-  const proposal = readJson(graphProposalPath(archDir, GAP_SLUG));
-  const gapFiles = new Set(proposal.gaps.map((g) => g.file));
+  // A torn proposal is the worst case of all: every gap in it is lost at once,
+  // so it counts as such rather than aborting the measurement.
+  const { torn, value: proposal } = readJsonTorn(graphProposalPath(archDir, GAP_SLUG));
+  const gapFiles = new Set(torn ? [] : proposal.gaps.map((g) => g.file));
   const lastWitness = witnessFile(recorder?.lastRound ?? -1);
   const witnessLost = !gapFiles.has(lastWitness);
   const fillerLost = BASE_GAPS.filter((g) => g.file.includes("filler") && !gapFiles.has(g.file)).length;
@@ -237,7 +252,7 @@ async function gapRace(mode) {
 
   return {
     records, recorder, accepters, accepted, anomalies,
-    nodes, lostNodeLines, witnessLost, lastWitness, fillerLost, tailMs, archDir,
+    nodes, lostNodeLines, witnessLost, lastWitness, fillerLost, tailMs, torn, archDir,
   };
 }
 
@@ -256,6 +271,7 @@ await atest(`locked: all ${ACCEPT_TOTAL} accepted gaps land, and the last record
     `${r.lostNodeLines}/${ACCEPT_TOTAL} authored node lines were erased by a concurrent accept`,
   );
   assert.equal(new Set(r.nodes).size, r.nodes.length, "no node line was appended twice");
+  assert.equal(r.torn, false, "the gap list was left unparseable — a reader saw a half-written file");
   assert.equal(
     r.witnessLost,
     false,
@@ -289,9 +305,10 @@ await atest("NEGATIVE CONTROL: the pre-fix accept erases node lines and recorded
     `last-recorded gap lost: ${runs.map((r) => r.witnessLost).join(", ")}) — the workload is too weak to prove anything`,
   );
   console.log(
-    `      negative control lost ${runs.map((r) => `${r.lostNodeLines}/${r.accepted.length}`).join(", ")} node lines` +
-    ` and erased the last recorded gap in ${runs.filter((r) => r.witnessLost).length}/${attempts} runs` +
-    ` (accepters kept writing ${runs.map((r) => `${r.tailMs}ms`).join(", ")} past it)`,
+    `      negative control lost ${runs.map((r) => `${r.lostNodeLines}/${r.accepted.length}`).join(", ")} node lines,` +
+    ` erased the last recorded gap in ${runs.filter((r) => r.witnessLost).length}/${attempts} runs` +
+    ` (accepters kept writing ${runs.map((r) => `${r.tailMs}ms`).join(", ")} past it)` +
+    ` and left the gap list unparseable in ${runs.filter((r) => r.torn).length}/${attempts}`,
   );
 });
 
@@ -319,8 +336,11 @@ async function configRace(mode) {
   const records = readLog(logFile);
   const steps = readFinalizeConfig(archDir).steps;
   const wrong = FINALIZE_STEPS.filter((s) => steps[s.key] !== CONFIG_TARGET[s.key]).map((s) => s.key);
-  const after = readJson(configPath(archDir));
-  return { records, steps, wrong, before, after, archDir };
+  // An in-place rewrite can leave config.json unparseable, at which point every
+  // project knob in it silently reverts to a default for every reader. Measured,
+  // not crashed on.
+  const { torn, value: after } = readJsonTorn(configPath(archDir));
+  return { records, steps, wrong, before, after, torn, archDir };
 }
 
 await atest(`locked: ${FINALIZE_STEPS.length} concurrent merge-writes all survive`, async () => {
@@ -331,6 +351,7 @@ await atest(`locked: ${FINALIZE_STEPS.length} concurrent merge-writes all surviv
     assert.equal(rec.failedOpen, 0, `contender ${rec.stepKey} failed OPEN — the run proves nothing about the lock`);
   }
   assert.deepEqual(r.wrong, [], `${r.wrong.length} steps were reverted by a concurrent merge: ${r.wrong.join(", ")}`);
+  assert.equal(r.torn, false, "config.json was left unparseable — every knob in it would read as a default");
   // The collateral, and the reason this file is not a private sidecar: every
   // other project knob must be byte-for-byte what it was.
   assert.deepEqual(r.after.review, r.before.review, "the review disables were rewritten");
@@ -340,7 +361,10 @@ await atest(`locked: ${FINALIZE_STEPS.length} concurrent merge-writes all surviv
 });
 
 await atest("NEGATIVE CONTROL: the pre-fix merge-write reverts concurrent knobs", async () => {
-  const attempts = 2;
+  // Three attempts rather than two: config.json is the smallest of the three
+  // fixtures, so its window is the narrowest and a single sample is the one most
+  // likely to come up clean on a fast, idle machine.
+  const attempts = 3;
   const runs = [];
   for (let i = 0; i < attempts; i++) runs.push(await configRace("nolock"));
   const worst = Math.max(...runs.map((r) => r.wrong.length));
@@ -348,7 +372,10 @@ await atest("NEGATIVE CONTROL: the pre-fix merge-write reverts concurrent knobs"
     worst > 0,
     `the pre-fix merge never lost a knob across ${attempts} attempts — the workload is too weak to prove anything`,
   );
-  console.log(`      negative control reverted ${runs.map((r) => `${r.wrong.length}/${FINALIZE_STEPS.length}`).join(", ")} steps`);
+  console.log(
+    `      negative control reverted ${runs.map((r) => `${r.wrong.length}/${FINALIZE_STEPS.length}`).join(", ")} steps` +
+    ` and left config.json unparseable in ${runs.filter((r) => r.torn).length}/${attempts} runs`,
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
