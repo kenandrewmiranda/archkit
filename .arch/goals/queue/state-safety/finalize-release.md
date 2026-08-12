@@ -2,8 +2,8 @@
 slug: finalize-release
 title: "Finalize: changelog, docs, commits + release"
 status: pending
-created: 2026-08-11
-order: 14
+created: 2026-08-12
+order: 16
 project: state-safety
 exit-criteria:
   - CHANGELOG updated with an entry covering this batch's changes
@@ -13,7 +13,7 @@ exit-criteria:
 files-to-touch: 
 required-reading: 
 depends-on:
-  - doctor-hooks-path-disclosure
+  - proposal-config-json-under-lock
 owns:
   - CHANGELOG.md
   - CHANGELOG
@@ -22,7 +22,7 @@ owns:
 feature: finalize
 exclusive: true
 verify-command: 
-source-ask: "Conductor follow-up from the hooks-status-archdir-alignment lane (ADR 0032). ADR 0032 settles that projectClaudeDir is deliberately cwd-scoped and does NOT follow ARCHKIT_ARCH_DIR, because the variable names a spec dir and promises nothing about its parent. The accepted cost, written into ADR 0032's Consequences as an explicit follow-up: `archkit doctor` run in a worktree with ARCHKIT_ARCH_DIR set becomes a chimera — D-INTENT-* describes the goals in the NAMED .arch/ while D-HOOKS describes the settings.json of the CHECKOUT the command ran in, in one report, with nothing saying so. A user could go edit the wrong repo's settings.json. Since every path involved is ALREADY in the returned JSON payload (projectSettingsPath, userSettingsPath, perSource[].path), the cure is disclosure in the human-readable output, not forced alignment. The lane worker could not do it because src/commands/doctor.mjs was outside its ownership, and recommended filing it with the concrete sites: doctor.mjs:318-336, roughly one line each at :318 and :326."
+source-ask: "Conductor residual from the board-json-mutations-under-lock lane: that lane closed the loop-state, queue-branch and chat-board write paths, but three lock-free read-modify-writes over JSON remain outside its named scope."
 lane: barrier-finalize-release
 ---
 
