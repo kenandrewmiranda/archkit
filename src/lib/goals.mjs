@@ -2063,11 +2063,33 @@ const CHAT_BOARD_HEADER = [
   "",
 ].join("\n");
 
-// Append a stamped entry to the coordination board, creating it (with a header)
-// on first write. Each entry records WHO (goal slug + project/branch), WHEN (ISO
-// timestamp) and WHAT (files-touched) so an agent reading the board sees who is
-// in which files. Tolerant of a missing goals dir/file — it creates the layout
-// first and never throws on a failed write (returns written:false instead).
+// APPEND-ONLY, by construction (ADR 0030 §8's shape, not §2's). This function
+// used to read the whole board, concatenate its own block, and write the whole
+// file back — a read-modify-write over the ONE artifact whose entire purpose is
+// that several agents write it at the same time. Two agents announcing in the
+// same instant both read the board without the other's entry and the second
+// whole-file write erased the first, so the coordination board silently dropped
+// exactly the announcement that would have prevented a collision.
+//
+// The fix is not a lock. The board's format is a sequence of independent blocks
+// with no cross-entry invariant, which is precisely the shape that can be made
+// safe WITHOUT coordination: one O_APPEND write of one buffer per entry, exactly
+// as `appendEvent` writes events.ndjson. Preferring that to the lock is
+// deliberate — the lock FAILS OPEN after its bounded wait (ADR 0030 §7), so a
+// locked version would still lose an entry under a stale lockfile, whereas an
+// append cannot lose one at all. It also keeps announce off the lock that every
+// lifecycle mutation contends for.
+//
+// Concurrency contract: the O_APPEND offset advance is atomic per write(2), and
+// one entry is a single write of a few hundred bytes — well inside the size at
+// which a regular-file append is indivisible in practice (same bound appendEvent
+// relies on). Two appenders therefore interleave as whole blocks, never as
+// halves of a block, and readChatBoard's regex parse is per-block.
+//
+// Each entry records WHO (goal slug + project/branch), WHEN (ISO timestamp) and
+// WHAT (files-touched) so an agent reading the board sees who is in which files.
+// Tolerant of a missing goals dir/file — it creates the layout first and never
+// throws on a failed write (returns written:false, and says so on stderr).
 export function appendChatEntry(archDir, { slug = "", project = "", branch = "", files = [], note = "" } = {}) {
   const filepath = chatBoardPath(archDir);
   const at = new Date().toISOString();
@@ -2093,15 +2115,45 @@ export function appendChatEntry(archDir, { slug = "", project = "", branch = "",
 
   try {
     ensureGoalsLayout(archDir);
-    const existing = fs.existsSync(filepath) ? fs.readFileSync(filepath, "utf8") : "";
-    const content = existing.trim()
-      ? existing.trimEnd() + "\n\n" + block + "\n"
-      : CHAT_BOARD_HEADER + block + "\n";
-    fs.writeFileSync(filepath, content);
-  } catch {
+    appendChatBlock(filepath, block);
+  } catch (err) {
+    // A dropped announcement is how two agents end up in one file believing they
+    // are alone, so the failure is REPORTED even though it is not fatal. stderr,
+    // never stdout — the MCP transport owns stdout.
+    process.emitWarning(
+      `appendChatEntry could not write the coordination board at ${filepath}: ${err.message}`,
+      "ArchkitBoardWarning",
+    );
     return { ...entry, filepath, written: false };
   }
   return { ...entry, filepath, written: true };
+}
+
+// One entry, one append. The header is written by whoever CREATES the file, in
+// the same single exclusive (O_CREAT|O_EXCL) write as their own first block — so
+// the create is not a read-modify-write either, and a racing second creator gets
+// EEXIST and falls through to a plain append rather than overwriting.
+//
+// Byte-for-byte compatible with the pre-append-only layout: a created board is
+// `header + block + "\n"`, and every later entry contributes `"\n" + block +
+// "\n"`, which reproduces the old `trimEnd() + "\n\n" + block + "\n"` separator
+// for any board this function wrote.
+function appendChatBlock(filepath, block) {
+  try {
+    const fd = fs.openSync(filepath, "ax");
+    try { fs.writeFileSync(fd, `${CHAT_BOARD_HEADER}${block}\n`); }
+    finally { fs.closeSync(fd); }
+    return;
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+  }
+  // The file exists. An EMPTY one (truncated by hand, or pruned) still deserves
+  // the header, and re-adding it costs one stat — the old code special-cased the
+  // same thing off a full read. Worst case under a race is a duplicated header,
+  // which is cosmetic; an entry is never lost either way.
+  let size = 0;
+  try { size = fs.statSync(filepath).size; } catch { /* treat as non-empty */ }
+  fs.appendFileSync(filepath, size === 0 ? `${CHAT_BOARD_HEADER}${block}\n` : `\n${block}\n`);
 }
 
 // Read recent board entries, NEWEST FIRST. Tolerant of a missing file (returns
@@ -2983,22 +3035,61 @@ export function triageNextGoal(archDir) {
 function loopStatePath(archDir) {
   return path.join(goalsDir(archDir), ".loop-state.json");
 }
+// Reads stay lock-free and tolerant (ADR 0030 scope note) — a missing or garbage
+// counter file is an empty state, never a throw on the Stop hook's hot path.
 export function readLoopState(archDir) {
   try { return JSON.parse(fs.readFileSync(loopStatePath(archDir), "utf8")); }
   catch { return {}; }
 }
-function writeLoopState(archDir, state) {
+
+// EVERY writer of the turn-cap file holds the archDir lock and replaces the file
+// atomically (ADR 0030 §1/§2). The counter is the one piece of CGR state whose
+// writer is, by construction, a SEPARATE PROCESS PER TURN-END: bin/archkit-stop-
+// hook.mjs is spawned fresh at every turn-end in every open session, and two
+// sessions guarding two goals in one tree bump the same file. Unlocked, that is
+// a textbook lost increment — and a lost increment is not cosmetic, it is a turn
+// the escape hatch never counted, so a stuck loop keeps trapping the agent.
+//
+// The raw replace. PRIVATE, and preconditioned on the caller holding the lock —
+// split out from writeLoopState so a caller that is ALREADY inside the critical
+// section does not attempt a second acquisition. Nesting is free when the lock
+// is held (it re-enters), but it is NOT free when the outer acquire failed open:
+// the inner one would queue behind the same stuck holder and pay the 2s budget a
+// second time, doubling the Stop hook's worst-case stall to buy nothing, since
+// by then the caller is already running unprotected by contract (§7).
+function putLoopState(archDir, state) {
   ensureGoalsLayout(archDir);
-  fs.writeFileSync(loopStatePath(archDir), JSON.stringify(state, null, 2));
+  atomicWriteFileSync(loopStatePath(archDir), JSON.stringify(state, null, 2));
 }
+
+// The entry point for callers that are NOT already inside a critical section (the
+// *Locked lifecycle bodies are, and re-enter for free). It takes the lock itself
+// rather than trusting a call site to: the invariant "no loop-state byte is
+// written outside the lock" should be true of the FILE, not of a list of call
+// sites someone has to keep current.
+function writeLoopState(archDir, state) {
+  return withGoalsLock(archDir, "writeLoopState", () => putLoopState(archDir, state));
+}
+
+// Lock-THEN-read (ADR 0030 §4). Reading before acquiring would leave the whole
+// increment computed against a snapshot that a concurrent turn-end has already
+// superseded — holding a lock around a stale read buys nothing.
 export function bumpLoopBlock(archDir, slug) {
-  const state = readLoopState(archDir);
-  state[slug] = (state[slug] || 0) + 1;
-  writeLoopState(archDir, state);
-  return state[slug];
+  return withGoalsLock(archDir, `bumpLoopBlock:${slug}`, () => {
+    const state = readLoopState(archDir);
+    state[slug] = (state[slug] || 0) + 1;
+    putLoopState(archDir, state);
+    return state[slug];
+  });
 }
+
+// Clearing is a whole-file removal, not a read-modify-write — but it still takes
+// the lock, because an unlocked unlink landing between a concurrent bump's read
+// and its write resurrects the counter the reset was supposed to drop.
 export function resetLoopState(archDir) {
-  try { fs.rmSync(loopStatePath(archDir), { force: true }); } catch { /* ignore */ }
+  return withGoalsLock(archDir, "resetLoopState", () => {
+    try { fs.rmSync(loopStatePath(archDir), { force: true }); } catch { /* ignore */ }
+  });
 }
 
 // ── Shared dated queue branch (cgr-relay-queue-vs-project-routing) ──
@@ -3037,30 +3128,55 @@ export function readQueueBranch(archDir) {
 // Idempotent: once recorded it returns the existing name unchanged (so the whole
 // batch shares one branch). Best-effort write — a state-write hiccup degrades to
 // re-deriving today's name, never blocks the relay.
+//
+// "Record ONCE, then reuse" is a check-then-act, so it is exactly the shape ADR
+// 0030 §4 is about: two sessions starting a queue goal at the same moment both
+// read "nothing minted", both mint, and the second write clobbers the first —
+// after the first has already RETURNED its name to its caller. That is not a
+// lost byte, it is two agents told to work on two different branches for the
+// same batch. So the read happens INSIDE the lock, and the loser of the race
+// sees the winner's record and returns it.
 export function ensureQueueBranch(archDir, { date } = {}) {
-  const existing = readQueueBranch(archDir);
-  if (existing) return existing;
-  const branch = queueBranchName(date);
-  try {
-    ensureGoalsLayout(archDir);
-    fs.writeFileSync(queueStatePath(archDir), JSON.stringify({
-      branch,
-      minted: stampDate(date) || new Date().toISOString().slice(0, 10),
-    }, null, 2));
-  } catch { /* best-effort: re-derivable from date */ }
-  return branch;
+  return withGoalsLock(archDir, "ensureQueueBranch", () => {
+    const existing = readQueueBranch(archDir);
+    if (existing) return existing;
+    const branch = queueBranchName(date);
+    try {
+      ensureGoalsLayout(archDir);
+      atomicWriteFileSync(queueStatePath(archDir), JSON.stringify({
+        branch,
+        minted: stampDate(date) || new Date().toISOString().slice(0, 10),
+      }, null, 2));
+    } catch (err) {
+      // Still best-effort — blocking the relay on a state-file hiccup is worse
+      // than re-deriving today's name. But NOT silent (ADR 0030 §7's spirit):
+      // an unrecorded mint is how two goals in one batch end up on two
+      // branches, and that must be auditable rather than invisible.
+      process.emitWarning(
+        `ensureQueueBranch could not record the queue branch ${branch}: ${err.message} — a concurrent queue goal may mint a different one.`,
+        "ArchkitLockWarning",
+      );
+    }
+    return branch;
+  });
 }
 
 // Drop the recorded queue branch once no ungrouped (queue) goal remains live, so
 // the next batch of plain goals mints a fresh cgr-queue-<date> rather than
 // reusing a stale day's branch. Project goals are irrelevant here (they branch
 // per feat/<project>). Never throws.
+// The scan and the removal are ONE decision (ADR 0030 §2): a queue goal started
+// between the listGoals pass and the unlink would have its freshly minted branch
+// record deleted out from under it, and the next queue pick would mint a second
+// branch for a batch that is demonstrably still live.
 export function clearQueueBranchIfDrained(archDir) {
-  try {
-    const stillQueued = listGoals(archDir).some((g) =>
-      statusOf(g) !== STATUS_COMPLETED && !String(g?.meta?.project || "").trim());
-    if (!stillQueued) fs.rmSync(queueStatePath(archDir), { force: true });
-  } catch { /* ignore */ }
+  return withGoalsLock(archDir, "clearQueueBranchIfDrained", () => {
+    try {
+      const stillQueued = listGoals(archDir).some((g) =>
+        statusOf(g) !== STATUS_COMPLETED && !String(g?.meta?.project || "").trim());
+      if (!stillQueued) fs.rmSync(queueStatePath(archDir), { force: true });
+    } catch { /* ignore */ }
+  });
 }
 
 // ── End-of-bucket completion: merge-or-archive (cgr-project-completion-merge-or-archive) ──
