@@ -1,7 +1,7 @@
 ---
 slug: proposal-config-json-under-lock
 title: "Close the last lock-free read-modify-writes: goal proposals and the archkit config JSON"
-status: in-progress
+status: completed
 created: 2026-08-12
 order: 20
 project: state-safety
@@ -26,7 +26,13 @@ verify-command: npm test
 source-ask: "Conductor residual from the board-json-mutations-under-lock lane: that lane closed the loop-state, queue-branch and chat-board write paths, but three lock-free read-modify-writes over JSON remain outside its named scope."
 lane: concurrency
 started: 2026-08-12T04:02:35.815Z
+completed: 2026-08-12T04:39:22.726Z
+completion-notes: Converted writeGoalProposal, writeGraphProposal, acceptGraphProposal (+ appendValidatedNodeLine), writeFinalizeConfig and promoteGoalProposal to read-inside-withGoalsLock + atomicWriteFileSync per ADR 0030; new tests/proposal-json-lock proves it with 3 real-process races, a pre-fix negative control each, fail-open warning tests and source audits. 84/84 suites green.
+tests-passed: true
+tests-command: npm test
+tests-at: 2026-08-12
 ---
+
 
 
 
