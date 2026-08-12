@@ -48,6 +48,7 @@ import {
   STATUS_PENDING,
   triageNextGoal,
 } from "./goals.mjs";
+import { atomicWriteFileSync } from "./fslock.mjs";
 // Detection ONLY (a package.json read) — board.mjs never RUNS a command. The
 // post-integration verify command is resolved here and EMITTED in the plan; the
 // agent runs it and reports the result back via recordMerge (instruct-not-act).
@@ -220,7 +221,11 @@ export function writeHandoff(archDir, slug, input = {}) {
   };
   const fp = handoffPath(archDir, slug);
   fs.mkdirSync(path.dirname(fp), { recursive: true });
-  fs.writeFileSync(fp, renderHandoffMarkdown(data));
+  // Whole-file replace of shared state → atomic (ADR 0030 §1). Not a
+  // read-modify-write (the artifact is authored, not edited), so it needs no
+  // lock — but a concurrent readHandoff must see the old artifact or the new
+  // one, never a half-rendered markdown body its json-block parse would reject.
+  atomicWriteFileSync(fp, renderHandoffMarkdown(data));
   return {
     slug,
     path: fp,
@@ -1707,7 +1712,10 @@ export function writeFlushMarker(archDir, { now = new Date().toISOString(), trig
   const fp = flushMarkerPath(archDir);
   try {
     fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, JSON.stringify(marker, null, 2));
+    // Atomic replace (ADR 0030 §1): the post-compaction SessionStart reads this
+    // marker without a lock, and a torn read is indistinguishable from "no
+    // compaction happened" — the exact signal the marker exists to carry.
+    atomicWriteFileSync(fp, JSON.stringify(marker, null, 2));
   } catch { return { ...marker, path: fp, written: false }; }
   return { ...marker, path: fp, written: true };
 }
