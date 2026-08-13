@@ -1,7 +1,7 @@
 ---
 slug: finalize-release
 title: "Finalize: changelog, docs, commits + release"
-status: pending
+status: in-progress
 created: 2026-08-12
 order: 16
 project: state-safety
@@ -24,7 +24,9 @@ exclusive: true
 verify-command: 
 source-ask: "Conductor residual from the board-json-mutations-under-lock lane: that lane closed the loop-state, queue-branch and chat-board write paths, but three lock-free read-modify-writes over JSON remain outside its named scope."
 lane: barrier-finalize-release
+started: 2026-08-13T03:37:32.625Z
 ---
+
 
 
 # Finalize: changelog, docs, commits + release
