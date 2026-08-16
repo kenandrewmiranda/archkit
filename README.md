@@ -56,7 +56,8 @@ archkit solves this by compiling your architecture into structured files the age
 - **Static review engine** — categorized check modules (imports, DB, API, frontend, event, cache/queue, production, completeness, app-specific) with required-justification suppression and language gating.
 - **Live runtime signal** — `preflight` surfaces recent commits, scoped gotchas, active drift, and **related ADRs** per feature/layer, so agents see current state and prior decisions, not yesterday's snapshot.
 - **Institutional memory** — log architectural decisions (`archkit_log_decision`) and read them back (`archkit_decisions_search`) so settled choices survive context resets.
-- **Lean footprint** — 3 runtime dependencies (`inquirer` for the wizard, `@modelcontextprotocol/sdk` + `zod` for the MCP server), pure ESM with no build step, 98 source modules, 77 integration test suites.
+- **Concurrency-safe shared state** *(ADRs 0030–0031)* — parallel lanes and a per-turn Stop hook mean several processes write `.arch/` at once. Every mutation is now an **atomic replace**, every read-modify-write holds an **advisory lock** and re-reads inside it, and contention **fails open** so a stuck lockfile can never hang a turn-end. `ARCHKIT_ARCH_DIR` makes *which* `.arch/` a call touches an explicit contract instead of an accident of cwd. [See below](#shared-state-under-concurrency-adrs-00300031).
+- **Lean footprint** — 3 runtime dependencies (`inquirer` for the wizard, `@modelcontextprotocol/sdk` + `zod` for the MCP server), pure ESM with no build step, 109 source modules, 84 integration test suites.
 
 ---
 
@@ -336,12 +337,26 @@ A goal moves through a small, explicit set of states (the `status:` field in the
 
 When intake partitions a batch into independent lanes, `/mcp__archkit__conductor` runs an orchestration pass instead of working a single goal. archkit **emits the plan; you run the git and the tests** — it spawns nothing and merges nothing itself.
 
-- **Claim, then spawn.** The pass renders `archkit_goal_start {slug, worker}` for each claimable lane *before* the worker is spawned, so the lane lands `dispatched` — lease held, the conductor's guard released, and the claim survives a `/clear`.
+- **Claim, then spawn.** The pass renders `archkit_goal_start {slug, worker}` for each claimable lane *before* the worker is spawned, so the lane lands `dispatched` — lease held, the conductor's guard released, and the claim survives a `/clear`. The same step carries the `ARCHKIT_ARCH_DIR` the worker must be spawned with, so its sharing of the conductor's board and goal tree is deliberate rather than an accident of cwd ([below](#shared-state-under-concurrency-adrs-00300031)).
 - **Converge, don't drain.** Worktree workers branch from a **stale base**, so merging each CGR independently lets a later merge silently revert an earlier one. Each *lane* lands as **one integration point**, with an explicit **rebase-onto-branch-tip precondition** so the merge can only fast-forward or conflict — plus a **path-extract fallback** (`git checkout <lane-branch> -- <owned paths>`) bounded by the lane's declared ownership, for when the base is unrecoverably stale. Cross-lane dependency order is preserved; a genuine cycle degrades to ordered segments and is flagged rather than mis-ordered.
 - **Verify with a real command.** Each integration point carries a resolved verify command — the CGR's own `verify-command`, else the detected project test command, else an explicit "no command resolved, record it as unverified." A lane whose CGRs resolve differently gets the union joined with `&&`.
 - **Record the outcome.** `archkit_board_merged` appends the result per CGR, and the status is **derived, never trusted**: passed → `green`, failed → `red`, no command or no reported result → `unverified`. Silence never reads as success — unverified merges surface as **integration debt** that keeps the conductor non-idle.
 - **Land through CI.** When `cgr.finalize.ciCd` names a provider, a drained bucket's guidance is push + open a PR and **wait for the required checks** — the PR *is* the gate. With no provider configured the guidance stays a plain local merge, unchanged.
 - **Escalate real collisions.** Two lanes that genuinely collide on file *content* get escalated by `archkit_board_conflict` into an exclusive `merge-reconcile-*` barrier CGR that depends on both — resolved as its own goal in its own context, not inline in the conductor's window.
+
+### Shared state under concurrency (ADRs 0030–0031)
+
+Parallel lanes are not the only concurrency in archkit: the Stop hook is a separate process spawned at every turn-end in *every* open session, and several sessions can share one tree. Two stores back CGR, and they get opposite treatment.
+
+**The board is append-only and stays lock-free.** `.arch/board/events.ndjson` writes one `O_APPEND` line per event, torn lines are discarded on read, and the fold is pure — concurrent appenders are correct with no coordination, so archkit deliberately does *not* put a lock on its highest-frequency write.
+
+**Goal frontmatter is the source of truth, so it gets a write contract.** Every whole-file write under `.arch/` is a **tmp+rename atomic replace** — a reader sees the old file or the new one, never a truncated one. Anything that reads state and writes a value derived from it, or touches more than one file, holds a **coarse advisory lock** scoped to the archDir (an `O_EXCL` lockfile carrying pid, host and acquisition time) and **re-reads inside the lock**, so a concurrent stamp of a different field can no longer be lost. Stale locks break on a 30 s TTL and **every break is reported**. Consolidation goes further and is structurally append-only — archival and claim are one atomic **claim-by-rename**, and digest entries are appended, never rewritten.
+
+**Contention fails open, loudly.** These mutators sit on the Stop hook and the MCP request path, so a stuck lockfile must never hang a turn-end. Past the wait budget the mutation proceeds unlocked and says so on stderr with the blocking holder named. That is a deliberate trade: fail-open's worst case is the pre-contract behavior, and goal frontmatter is git-tracked, so a lost update is recoverable. If the atomic **write** fails, though, it fails loudly — there is no in-place fallback.
+
+**`ARCHKIT_ARCH_DIR` — which `.arch/` a call touches.** Resolution happens in exactly one place, with precedence **explicit argument → `ARCHKIT_ARCH_DIR` → `process.cwd()` walked up to the nearest `.arch/`**. Set, the variable wins outright and no walk happens; it names the `.arch` directory itself, a relative value resolves against cwd, and a value pointing at nothing is an **error**, not a silent fallback. This is what makes the lock mean anything across worktrees — two processes exclude each other only if they resolve the *same* archDir — so the rendered dispatch step carries the conductor's real `.arch` path for each spawned worker. With the variable unset, single-tree behavior is unchanged.
+
+> One deliberate exception: `archkit doctor`'s `D-HOOKS` check and `archkit_install_hooks` resolve the `.claude/` of the **checkout you are standing in**, not the named `.arch/` (ADR 0032) — hooks are configuration of a checkout, and `ARCHKIT_ARCH_DIR` makes no promise about its parent directory. When the two diverge, `doctor` says so explicitly and names both paths.
 
 ### API-doc gate (ADR 0022)
 
@@ -615,6 +630,17 @@ Most CGR usage is via MCP: `/mcp__archkit__intake` to decompose, then `/clear` +
 | `archkit resolve plan "<prompt>"` | Use `preflight` or read `CONTEXT.compact.md` |
 
 </details>
+
+---
+
+## Environment
+
+| Variable | Effect |
+|----------|--------|
+| `ARCHKIT_ARCH_DIR` | Names the `.arch` directory every command, hook and MCP handler resolves to. Wins over cwd outright — no walk-up happens. Relative values resolve against cwd; a path that does not exist is an **error**, not a fallback. Set it when spawning a worktree worker that should share the conductor's board, goals and locks (ADR 0031). |
+| `ARCHKIT_PRESET` | Path to a preset used when scaffolding `.arch/`. |
+| `ARCHKIT_MARKET_URL` | Override the marketplace base URL used by `archkit market`. |
+| `ARCHKIT_API_KEY` | Supplies the `am_sk_…` key to `archkit market login` instead of passing it as an argument. |
 
 ---
 

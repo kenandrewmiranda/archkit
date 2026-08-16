@@ -1,0 +1,16 @@
+{
+  "hash": "de4b24b7b695",
+  "title": "A mixed-project intake silently files the finalize barrier onto a branch with none of the work",
+  "why": "inheritedBatchProject (goals.mjs:2373) requires unanimity and returns \"\" for a mixed batch, so buildFinalizeGoal files the barrier ungrouped and its payload says `git switch -c cgr-queue-<date>` — a branch containing none of the goals it depends on. The comment shows the fallback is deliberate (\"so a mixed batch FALLS BACK to the shared dated queue branch instead of guessing one of the projects\"), and not-guessing is right; the defect is that the chosen fallback is not a safe default. Declining to guess produces a changelog/commit/push step on an empty branch, which is a worse outcome than asking. Observed live: the state-safety intake spanned two projects and the barrier had to be re-homed by hand.",
+  "exitCriteria": [
+    "A mixed-project intake no longer silently produces a finalize barrier on a branch that holds none of the batch's work",
+    "The chosen resolution is explicit rather than a silent fallback — either one finalize barrier per project (each depending only on that project's goals), or the ambiguity surfaced at intake for the user to resolve, or the auto-append declined with a stated reason",
+    "The unanimous-project case stays byte-identical, and the genuinely-ungrouped case (no goal carries a project) still falls back to the shared dated queue branch as it does today",
+    "A test covers the mixed-project batch specifically — the existing coverage only exercises unanimous and no-project batches, which is why this shipped",
+    "The chosen behavior is recorded as an ADR or as an amendment to ADR 0018, since it changes what cgr.finalize guarantees"
+  ],
+  "contextExcerpt": "Filed while planning the state-safety batch. The intake spanned project \"lane-integration\" (windows-path-portability, routed there so PR #29 could go green) and project \"state-safety\" (the five concurrency goals). inheritedBatchProject saw two distinct values, returned \"\", and buildFinalizeGoal wrote .arch/goals/queue/finalize-release.md with no project key. Corrected by hand: set project: state-safety, moved into queue/state-safety/, and dropped windows-path-portability from depends-on since that goal's changelog belongs to the already-PR'd feat/lane-integration branch.",
+  "patternName": null,
+  "source": "goal-defer",
+  "createdAt": "2026-08-10T20:24:05.031Z"
+}

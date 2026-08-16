@@ -2,9 +2,9 @@
 slug: finalize-release
 title: "Finalize: changelog, docs, commits + release"
 status: completed
-created: 2026-08-02
-order: 19
-project: lane-integration
+created: 2026-08-12
+order: 16
+project: state-safety
 exit-criteria:
   - CHANGELOG updated with an entry covering this batch's changes
   - Docs (README / docs/) updated to match the changes
@@ -13,7 +13,7 @@ exit-criteria:
 files-to-touch: 
 required-reading: 
 depends-on:
-  - conductor-dispatch-claim-wiring
+  - proposal-config-json-under-lock
 owns:
   - CHANGELOG.md
   - CHANGELOG
@@ -22,11 +22,11 @@ owns:
 feature: finalize
 exclusive: true
 verify-command: 
-source-ask: file the conductor-wiring follow-up — ADR 0027's `dispatched` state is implemented and tested but never reached in practice, because archkit_conductor's dispatch step still doesn't tell the conductor to claim each lane with archkit_goal_start {worker}. Until that wiring lands, conductors keep falling back to the archkit_goal_hold workaround, which misrepresents an actively-worked lane as deliberately parked. Observed six times across two sessions.
+source-ask: "Conductor residual from the board-json-mutations-under-lock lane: that lane closed the loop-state, queue-branch and chat-board write paths, but three lock-free read-modify-writes over JSON remain outside its named scope."
 lane: barrier-finalize-release
-started: 2026-08-03T01:19:54.489Z
-completed: 2026-08-10T00:08:08.249Z
-completion-notes: "All four exit-criteria met. CHANGELOG gained a third Unreleased body of work covering ADRs 0023-0029 (lane convergence, per-lane verify, PR-gated landing, graph output contract, dispatched state, claim-is-the-dispatch, gated completed event) plus the finalize version-bump step and the intake/test-isolation fixes. README corrected from a stale 35 tools to 49 with the 14 missing CGR 2.0 orchestration tools added, `dispatched` documented in the lifecycle, and a new dispatch->converge->verify->land section. Committed as 4bc5fee with the project trailer; branch pushed and landed through PR #29 per ADR 0025 (github-actions is configured, so the PR is the gate). 77/77 suites green."
+started: 2026-08-13T03:37:32.625Z
+completed: 2026-08-13T03:42:05.475Z
+completion-notes: CHANGELOG Unreleased grew from three bodies of work to four — the shared-state write contract (fslock primitive, atomic replace, advisory lock, 30s stale TTL, appendEvent deliberately unwrapped), the five race families it closed, the ARCHKIT_ARCH_DIR resolution contract incl. its one intended divergence, and doctor's D-HOOKS path disclosure. README gained a Highlights bullet, a "Shared state under concurrency" section, an Environment table documenting ARCHKIT_ARCH_DIR as public interface per ADR 0031, and a refreshed footprint (109 modules / 84 suites; tool count re-verified at 49). Committed d5420a8 with the Co-Authored-By trailer and pushed to origin/feat/state-safety. 84/84 suites green. PR to main not opened — PR-gated landing is the user's call.
 ---
 
 

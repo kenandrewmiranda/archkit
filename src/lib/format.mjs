@@ -237,7 +237,9 @@ export function debtLine(unverifiedMerges = [], opts = {}) {
   return `${sym(d.severity)} ${d.text}`;
 }
 
-// The whole conductor orchestration pass, as a graph. `plan` is conductorPlan().
+// The whole conductor orchestration pass, as a graph. `plan` is conductorPlan()
+// (optionally carrying `archDir`, the resolved .arch/ the dispatch step tells
+// the conductor to hand each worker — ADR 0031).
 // This is the reference implementation of the output contract: header (role +
 // instruct-not-act framing), legend, board strip, then the numbered dispatch loop
 // with lanes as a tree and the convergence stage as a template + point list.
@@ -267,6 +269,12 @@ export function conductorGraph(plan = {}) {
     // session's guard, which is what drove conductors to goal_hold.
     lines.push(
       `   ${SYM.action} CLAIM first: ${code("archkit_goal_start {slug, worker:w-<lane>}")} ${GLYPH.flow} ${strong("dispatched")} (lease held, THIS guard freed, survives /clear) ${SYM.error}${code("archkit_goal_hold")}: parked ≠ live`,
+      // The dispatch ENVIRONMENT requirement (ADR 0031). A worktree carries no
+      // board at all (.arch/board/ is gitignored) and a goal tree forked at its
+      // base commit, so a worker spawned without this reads stale goals and
+      // writes a board nobody folds. Naming the path here makes sharing the
+      // conductor's state deliberate and visible at the point of spawn.
+      `   ${SYM.attention} SPAWN env ${code(`ARCHKIT_ARCH_DIR=${plan.archDir || "<conductor .arch>"}`)} per worker — worktrees have NO board (gitignored) + stale goals; unset = its own isolated state`,
     );
     lines.push(...laneTree(plan.claimableLanes || {}, plan.barriers || []));
   }

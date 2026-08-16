@@ -20,9 +20,14 @@
 //
 // Always exits 0; never blocks the tool call (which already ran anyway).
 
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The ONE archDir resolver (ADR 0031): ARCHKIT_ARCH_DIR when set (so a worker
+// spawned into a worktree still answers against the .arch/ it was pointed at),
+// else the walk up from the harness-supplied event.cwd. Hook-shaped variant — a
+// bad explicit value is reported on stderr and read as "no project", never
+// thrown, so the hook still exits 0.
+import { resolveArchDirForHook } from "../src/lib/archdir.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,17 +41,6 @@ const { loadOrInit, recordToolCall, save } = await importPath(path.join(LIB, "se
 
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rb", ".rs", ".java"]);
 const SKIP_DIRS = ["node_modules", "dist", "build", ".archkit", ".next", ".turbo", "coverage"];
-
-function findArchDir(start) {
-  let dir = start;
-  while (true) {
-    const candidate = path.join(dir, ".arch");
-    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
 
 function extractEditedFile(toolName, toolInput) {
   if (!toolInput || typeof toolInput !== "object") return null;
@@ -108,7 +102,7 @@ async function main() {
   try { event = JSON.parse(raw); } catch { /* ignore */ }
 
   const cwd = event.cwd || process.cwd();
-  const archDir = findArchDir(cwd);
+  const archDir = resolveArchDirForHook("archkit-posttooluse-hook", { cwd, requireFile: "SYSTEM.md" });
   if (!archDir) process.exit(0);
 
   const projectRoot = path.dirname(archDir);

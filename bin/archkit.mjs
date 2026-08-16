@@ -150,6 +150,24 @@ Run with no command to launch the interactive wizard.
   --help, -h         Show this help`);
 }
 
+// ADR 0031: ARCHKIT_ARCH_DIR is the explicit archDir signal on every surface,
+// and a set-but-nonexistent value is an ERROR rather than a quiet fall back to
+// cwd. Validate it ONCE here so a stale exported variable fails with one clear
+// line instead of surfacing per-command as a confusing "no .arch/ found" — or
+// being swallowed entirely by a command that degrades quietly (statusline).
+// Unset (the single-tree default) skips this whole block: no import, no walk,
+// and every command resolves from cwd exactly as it always did.
+if (process.env.ARCHKIT_ARCH_DIR && !HELP_FLAGS.has(command) && !VERSION_FLAGS.has(command)) {
+  const { resolveArchDir } = await importPath(path.resolve(__dirname, "../src/lib/archdir.mjs"));
+  try {
+    resolveArchDir();
+  } catch (err) {
+    console.error(`archkit: ${err.message}`);
+    if (err.suggestion) console.error(`  ${err.suggestion}`);
+    process.exit(1);
+  }
+}
+
 if (command === "mcp") {
   // archkit mcp  →  archkit-mcp (stdio MCP server)
   await importPath(path.resolve(__dirname, "../bin/archkit-mcp.mjs"));

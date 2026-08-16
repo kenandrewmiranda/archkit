@@ -25,6 +25,8 @@
     "archkit-session-start": "bin/archkit-session-start.mjs",
     "archkit-stop-hook": "bin/archkit-stop-hook.mjs",
     "archkit-posttooluse-hook": "bin/archkit-posttooluse-hook.mjs",
+    "archkit-pretooluse-hook": "bin/archkit-pretooluse-hook.mjs",
+    "archkit-precompact-hook": "bin/archkit-precompact-hook.mjs",
     "archkit-userpromptsubmit-hook": "bin/archkit-userpromptsubmit-hook.mjs"
   },
   "scripts": {

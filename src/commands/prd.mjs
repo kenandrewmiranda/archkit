@@ -26,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { archkitError } from "../lib/errors.mjs";
 import { isMainModule, C, ICONS as I } from "../lib/shared.mjs";
+import { resolveArchDir } from "../lib/archdir.mjs";
 
 const PRD_CANDIDATES = [
   "PRD.md", "prd.md",
@@ -327,16 +328,11 @@ export async function runPrdCheckJson({ archDir, cwd, prdPath }) {
 
 // ── CLI mode ──────────────────────────────────────────────────────────────
 
-function findArchDir(start) {
-  let dir = start;
-  while (true) {
-    const candidate = path.join(dir, ".arch");
-    if (fs.existsSync(path.join(candidate, "SYSTEM.md"))) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
+// ADR 0031: no private walker here. This CLI path used to carry its own copy of
+// findArchDir, so `archkit prd check` diffed the PRD against whichever .arch/
+// happened to sit above cwd and silently ignored ARCHKIT_ARCH_DIR. The PRD
+// itself is still located from cwd — it belongs to the tree you are standing in
+// — but the SYSTEM.md it is checked against is the one the contract names.
 
 async function cliMode(args) {
   const sub = args[0];
@@ -359,7 +355,7 @@ async function cliMode(args) {
   }
 
   const cwd = process.cwd();
-  const archDir = findArchDir(cwd);
+  const archDir = resolveArchDir({ cwd, requireFile: "SYSTEM.md" });
 
   let prdPath;
   const pathIdx = args.indexOf("--path");

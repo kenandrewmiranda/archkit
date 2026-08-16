@@ -18,3 +18,4 @@ GoalTriage [U] : src/lib/goal-triage.mjs — advisory staleness triage; scores l
 ApiRegistry [S] : src/lib/api-registry.mjs — read/write .arch/apis.json API-doc clearance manifest (atomic, corruption-tolerant) + readApiGateConfig; isApiCleared/registerApi/overrideApi/listApis | ApiTools,ApiGateHook → THIS
 ApiDetect [U] : src/lib/api-detect.mjs — detectApis heuristic scan flagging SDK imports / non-internal fetch+base-URL hosts / declared apis in an edit, pure never-throws | ApiGateHook → THIS
 Format [U] : src/lib/format.mjs — terse MCP output contract: lane/board graph renderer + four-symbol severity vocabulary, markdown emphasis only (no ANSI) | Board,Prompts → THIS → McpTools
+Fslock [U] : src/lib/fslock.mjs — atomic replace (tmp+rename) + wx advisory lock carrying pid/TTL; reentrant per-process, breaks stale locks on TTL and fails open loudly | Goals,Board → THIS
